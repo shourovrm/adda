@@ -505,3 +505,69 @@ still sequential; frames shapes.
 
 - **S7 backend:** `adda/**`, `tests/**`, `README.md`.
 - **S8 frontend:** `static/**`, `scripts/mock_server.py`.
+
+---
+
+# v0.5 delta (2026-10-14): threads inside rooms, memory review, open folder, fonts
+
+## F1. Fonts
+
+Display (wordmark, h1, h2, panel titles): **Instrument Sans**, weight 650–750, tracking -0.02em.
+Body and interface (messages, meta, forms, buttons, seat cards): **Manrope**, 17 px / 1.55,
+`font-variant-numeric: tabular-nums` on meta, seat cards and forms. Code: **IBM Plex Mono**.
+Bengali wordmark: system "Noto Sans Bengali" fallback, not bundled. Font files: copy
+`.taste-skill/mockups/fonts/files/{instrumentsans,manrope,plexmono}.ttf` to `static/fonts/`
+and delete `imbue-latin.woff2` and `albert-sans-latin.woff2`. All pages and the mock use them.
+
+## F2. Threads inside a room (a room is a project)
+
+- New table `threads(id, room_id, title, created_at, ended_at)`. `messages.thread_id` (guarded
+  ALTER). Migration: every existing room gets one thread titled after the room, all its
+  messages assigned to it. `seat_sessions` keyed by `(thread_id, seat_id)` (a tool session
+  lasts one thread; old rows dropped as in v0.2).
+- Room keeps seats, folder, budget, spend, liveliness, mode, max_concurrent. `Room.ended_at`
+  means archived. Threads end individually; ending a thread writes memory notes.
+- `ThreadSummary = {id, room_id, title, created_at, ended_at, message_count, last_author, last_line}`;
+  `Room.threads: list[ThreadSummary]` newest first.
+- REST: `GET /api/rooms/{id}/threads`, `POST /api/rooms/{id}/threads {title}` -> Thread,
+  `GET /api/threads/{tid}` -> `{"thread", "room", "messages"}`, `PATCH /api/threads/{tid}
+  {title}`, `POST /api/threads/{tid}/end` -> `{"thread", "notes"}`. `GET /api/rooms/{id}` keeps
+  returning the room (with `threads`) and the messages of the newest open thread for
+  compatibility. `POST /api/rooms` creates a first thread titled like the room.
+- WebSocket: `WS /ws/threads/{thread_id}`; `hello` carries `room`, `thread`, `messages`,
+  `owner`, `router`. Frames unchanged otherwise; `room` frames still broadcast to every
+  thread of that room (spend, seats). New `{"type":"thread","thread":ThreadSummary}` on
+  title change or end. `end` over WS ends the thread.
+- Scheduler instance per thread; budget and spend are read from the room. Afterthought
+  ticks per thread.
+- Search hits carry `thread_id` and `thread_title`.
+- Pages: `/room/{room_id}` opens the newest open thread; `/room/{room_id}/thread/{thread_id}`
+  opens a specific one. The room page gets a left column: thread list (title, last line,
+  message count, ended tag), "New thread" with a title field, rename on double-click.
+
+## F3. Memory review
+
+- `write_memory_note(persona, title, body, source=None)` writes frontmatter
+  `room`, `room_title`, `thread`, `thread_title`, `written` (ISO) when `source` is given.
+  `list_memory_notes(persona) -> [MemoryNote(file, title, body, room_id, room_title,
+  thread_id, thread_title, written)]` (legacy notes have None fields). `update_memory_note`,
+  `delete_memory_note`, and `rebuild_memory_index(persona)` regenerating `index.md` from files.
+- REST: `GET /api/personas/{slug}/memory` -> [MemoryNote]; `PUT /api/personas/{slug}/memory/{file}
+  {title?, body?}`; `DELETE /api/personas/{slug}/memory/{file}` (file names validated against
+  `^\d{3}-[a-z0-9-]+\.md$`); `GET /api/rooms/{id}/memory` -> `{persona_slug: [MemoryNote]}` for
+  notes whose `room` is this room.
+- UI: a "Memory" button in the room header opens a drawer with tabs: one per seat (its
+  persona's notes, newest first, with inline edit and delete; seats without a persona show
+  "no persona, so no memory") and "This room" (notes written from this room, grouped by seat).
+
+## F4. Open folder
+
+`POST /api/rooms/{id}/open-folder` runs the platform opener detached (`xdg-open` on Linux,
+`open` on macOS, `explorer` on Windows; injectable for tests) on the room folder, creating
+it if missing; returns `{"opened": path}`; 400 if the folder is outside home. UI: an
+"Open folder" button beside the folder path on the room page and on each room card.
+
+## F5. Ownership
+
+- **Opus A backend:** `adda/**`, `tests/**`, `README.md`.
+- **Opus B frontend:** `static/**`, `scripts/mock_server.py`.
