@@ -1,253 +1,329 @@
-# Adda build spec (v0.1)
+# Adda build spec (v0.2)
 
-Adda (আড্ডা) is a local chat room where several AI coding agents installed on this machine and one
-human (the owner) discuss one issue in one shared thread. Python 3.12+ server with FastAPI and
-WebSockets; one static page as UI; one subprocess adapter per agent program; a decision model
-(Jev) scores who speaks next. Personal tool, single user, runs on 127.0.0.1:8765.
+Adda (আড্ডা) is a local chat room where several AI coding agents (seats) and one human (the owner)
+discuss one issue in one shared thread. Python 3.12+ server with FastAPI and WebSockets; static
+pages as UI; one subprocess adapter per harness; a decision model (Jev) scores who speaks next.
+Personal tool, single user, 127.0.0.1:8765.
 
-This file is the contract between the backend and the frontend. Both are built in parallel
-against it. Change it only by editing this file and telling the other side.
+v0.2 changes v0.1 in these ways: rooms replace threads as the top-level object and carry their
+own seats, folder, budget and liveliness; personas become a library that seats reference;
+the hard auto-turn cap is replaced by liveliness and budget; `@all` and wildcard mentions;
+Markdown rendering with copy; the owner has a name; settings live in a TOML file and are
+editable from a settings page; three pages instead of one. Section 11 lists what v0.1 code
+must change. Sections marked **unchanged** are the same as v0.1.
+
+This file is the contract between agents building in parallel. Change it only by editing this
+file and telling the main session.
 
 ## 1. Repository layout
 
 ```
-adda/                 Python package (backend)
-  cli.py              `adda serve|seats|search|threads` entry point (project.scripts)
-  config.py           Settings loaded from env vars (section 7)
-  models.py           Pydantic models: Thread, Message, Seat, Bid, SeatReply
-  store.py            SQLite (stdlib sqlite3) + FTS5; threads, messages, seat_sessions
-  personas.py         Load personas/<name>/, memory index, write memory notes
-  prompts.py          Build the text sent to a seat on its turn, and the end-of-discussion prompt
-  scheduler.py        Turn-taking loop (section 5)
-  server.py           FastAPI app: REST + WebSocket + static files (section 6)
-  seats/
-    base.py           SeatAdapter protocol + subprocess runner
-    claude.py  opencode.py  pi.py  codex.py
-    registry.py       Build adapters from persona frontmatter
-  routers/
-    base.py           Router protocol
-    jev.py            Decision-model router (OpenRouter or TypeSafe provider)
-    heuristic.py      No-network fallback: mentions, then longest-silent seat
-static/               index.html, app.js, style.css (frontend, vanilla JS, no build)
-personas/<name>/      persona.md, memory/index.md, memory/*.md, sessions/.gitkeep
-tests/                pytest; unit tests mock subprocesses and HTTP. `integration` marker = real
-scripts/mock_server.py  Fake server on 127.0.0.1:8766 that speaks the WS protocol with canned
-                      messages, for frontend work without real seats
-data/                 runtime (gitignored): adda.db
+adda/
+  cli.py            adda serve|rooms|search|harnesses
+  config.py         Settings: defaults < ~/.config/adda/config.toml < env vars (section 7)
+  harnesses.py      Detect installed harnesses, versions, model suggestions, thinking support
+  models.py         Pydantic models (section 2)
+  store.py          SQLite + FTS5: rooms, room_seats, messages, seat_sessions
+  personas.py       Persona library: load, memory index, write memory notes
+  prompts.py        Seat system prompt and turn prompt, end-of-room prompt
+  scheduler.py      Turn-taking (section 5)
+  server.py         REST + WebSocket + pages (section 6)
+  seats/            base.py, claude.py, opencode.py, pi.py, codex.py, registry.py
+  routers/          base.py, jev.py, heuristic.py  (unchanged)
+static/
+  index.html rooms.js        Rooms page: list + new-room card
+  room.html  room.js         The chat room
+  settings.html settings.js  Settings page
+  common.js                  fetchJson, WebSocket client, colour helpers, toasts
+  markdown.js                Markdown subset renderer + copy helpers (section 9)
+  style.css, fonts/
+personas/<slug>/     persona.md, memory/index.md, memory/NNN-slug.md
+scripts/mock_server.py   Fake server on 8766 speaking this spec, for UI work
+tests/
 ```
 
-## 2. Core models (adda/models.py)
+## 2. Models (adda/models.py)
 
 ```python
-class Thread:   id: str (uuid4 hex[:12]); title: str; created_at: datetime; ended_at: datetime|None;
-                mode: Literal["bidding","roundrobin","manual"]
-class Message:  id: str; thread_id: str; author: str  # "owner" | seat name | "system"
-                role: Literal["owner","seat","system"]; text: str; created_at: datetime;
-                mentions: list[str]; cost_usd: float|None; meta: dict  # bid score, model, latency_ms
-class Seat:     name: str; program: Literal["claude","opencode","pi","codex"]; model: str|None;
-                color: str (hex); role: str (one line); available: bool  # binary found on PATH
-class Bid:      seat: str; score: float (0-10); confidence: float (0-1)
-class SeatReply: text: str; session_id: str|None; cost_usd: float|None; raw: dict
+Mode = Literal["bidding", "roundrobin", "manual"]
+Thinking = Literal["default", "low", "medium", "high"]
+
+class SeatConfig:      # one seat in one room; stored in room_seats
+    id: str            # uuid4 hex[:12]; stable even if the seat is renamed
+    room_id: str
+    name: str          # display name, unique within the room, e.g. "Ravi", "Scout2"
+    program: Literal["claude", "opencode", "pi", "codex"]
+    model: str | None  # None = harness default from settings
+    thinking: Thinking # "default" when the harness has no such flag
+    persona: str | None      # persona slug from the library, or None
+    instruction: str | None  # custom instruction text; may be combined with a persona
+    color: str         # hex
+    enabled: bool
+    position: int      # order in the room (roster order; @all uses it)
+
+class Seat(SeatConfig):  # what the UI gets: config plus live facts
+    handle: str        # mention handle: name with whitespace removed, lowercased
+    available: bool    # harness binary found
+    harness_version: str | None
+
+class Room:
+    id: str; title: str; folder: str          # absolute path, created on room creation
+    mode: Mode; liveliness: int (0..10); budget_usd: float (0 = unlimited)
+    spent_usd: float; created_at; ended_at: datetime | None
+    seats: list[Seat]
+
+class Message:  # unchanged fields plus:
+    seat_id: str | None   # None for owner/system
+    author: str           # display name at the time ("owner" stays "owner" for role owner)
+    role: Literal["owner","seat","system"]; text; created_at; mentions: list[str]  # seat ids
+    cost_usd: float | None; meta: dict  # bid_score, model, latency_ms, woken_by ("mention"|"all"|"wake"|"bid"|"roundrobin")
+
+class Bid: seat: str (seat id); score: float; confidence: float
+class SeatReply: unchanged
+
+class Harness:
+    program: str; found: bool; path: str | None; version: str | None
+    supports_thinking: bool; model_suggestions: list[str]; login_hint: str
+    default_model: str | None; default_thinking: Thinking; enabled: bool
+
+class PersonaSummary: slug: str; name: str; role: str; stance: str; color: str; note_count: int
 ```
 
-JSON over the wire uses these field names exactly, datetimes as ISO-8601 strings with timezone.
+## 3. Personas (personas/<slug>/) — library
 
-## 3. Personas (personas/<name>/)
+`persona.md` frontmatter: `name`, `role`, `stance`, `color` (default colour for seats using it).
+`program` and `model` are **ignored** if present (v0.1 leftovers). Body = the voice.
+Memory folder and notes are unchanged. Memory belongs to the persona: two seats on the same
+persona share it. Index lines are `- [title](NNN-slug.md)`.
 
-`persona.md` = YAML frontmatter + markdown body (the seat's system prompt):
+Rename the four shipped folders to slugs by role: `architecture`, `implementation`,
+`users-view`, `tests` (names Ravi, Tuli, Pi, Codex stay inside as `name`).
 
-```markdown
----
-name: claude
-program: claude            # claude | opencode | pi | codex
-model: sonnet              # optional; passed to the program's model flag
-color: "#D9480F"           # UI colour for this seat
-role: Architecture and trade-offs
-stance: Prefers the smallest design that survives the next requirement.
----
-You are Claude, a seat in Adda ... (voice, stance, what you refuse to do)
-```
+## 4. Harnesses and seats
 
-`memory/index.md` is a bullet list, one line per note file, injected into the system prompt at
-wake-up. `memory/NNN-slug.md` holds one fact each. `personas.py` exposes
-`load_personas(dir) -> dict[name, Persona]`, `memory_index(persona) -> str`,
-`write_memory_note(persona, title, body)` (next NNN, appends index line).
+`harnesses.py`: `detect_harnesses(settings) -> list[Harness]`. For each program: `shutil.which`,
+version via `<bin> --version` (claude prints "x.y.z (Claude Code)"; opencode and pi print a
+version; codex per its help; 5 s timeout, failure -> None). `model_suggestions`: claude
+`["sonnet","opus","haiku"]` + settings extras; opencode from `opencode models` (cached 10 min,
+timeout 15 s, empty on failure); pi `["z-ai/glm-5.3-flash"]` + extras; codex `["gpt-5-codex"]`.
+`supports_thinking`: claude `--effort <level>`, pi `--thinking <level>`, opencode
+`--variant <level>`, codex `-c model_reasoning_effort=<level>`. Verify each flag's accepted values
+with `--help` and record them in the adapter header; map our four levels onto what each accepts
+(claude and codex: low/medium/high; pi: low/medium/high; opencode: pass through; "default" sends
+nothing).
 
-Seat name = folder name = `name` in frontmatter. The seat is mentioned in chat as `@name`.
+Seat adapters (`seats/*`) are built per room from `SeatConfig` by `registry.build_adapter(
+config, harness_defaults, working_directory=room.folder)`. Working directory is **the room
+folder** (sessions are per cwd for claude and pi, so one folder per room keeps resume working).
+Other runner rules unchanged: no shell, `ANTHROPIC_API_KEY` stripped, timeout, cancellation
+kills the child, `PASS` means silence, nested error messages extracted.
 
-## 4. Seats (adda/seats/)
-
-`SeatAdapter` protocol:
-
-```python
-class SeatAdapter(Protocol):
-    name: str
-    program: str
-    async def run(self, prompt: str, system_prompt: str, session_id: str|None,
-                  timeout_s: float) -> SeatReply: ...
-    def available(self) -> bool  # shutil.which(binary)
-```
-
-Commands (persona/system prompt via the tool's flag; file and shell tools removed; JSON output;
-resume by session id). First turn has no session id and the reply's session id is stored per
-(thread, seat) in `seat_sessions`.
-
-| program  | first turn | resume | output | system prompt | no tools |
-|---|---|---|---|---|---|
-| claude   | `claude -p <prompt> --output-format json [--model M]` | `--resume <id>` | json: `.result`, `.session_id`, `.total_cost_usd` | `--append-system-prompt <text>` | `--tools ""` |
-| opencode | `opencode run <prompt> --format json [--model M]` | `--session <id>` | json (parse text parts; session id field) | prepend to prompt if no flag | n/a; persona says talk only |
-| pi       | `pi -p <prompt> --mode json [--model M]` | `--session-id <id>` | json | `--system-prompt` or prepend | n/a |
-| codex    | `codex exec <prompt> --json [--model M]` | `codex exec resume <id> <prompt>` | jsonl | prepend | `--sandbox read-only` |
-
-Rules for the subprocess runner (`seats/base.py`):
-- `asyncio.create_subprocess_exec`, never a shell. Prompt passed as an argument, not via shell.
-- Environment: copy of `os.environ` with `ANTHROPIC_API_KEY` **deleted** (billing gotcha). Never
-  read, print or forward tokens.
-- Timeout (`ADDA_SEAT_TIMEOUT_S`, default 180): kill the process, return a system message.
-- Cancellation: the scheduler cancels the task when the owner interrupts; the runner must kill
-  the child on `CancelledError`.
-- Non-zero exit or unparseable output → raise `SeatError(seat, stderr_tail)`; the scheduler posts
-  a `system` message with the error text. Nothing is swallowed.
-- The reply text `PASS` (exact, trimmed) means the seat chose not to speak; no message is posted.
-
-Exact flags for opencode and pi: verify with `<binary> --help` on this machine before coding;
-record what was verified in a comment at the top of the adapter.
+System prompt for a seat = owner line (settings) + persona body (if any) + custom instruction
+(if any) + memory index (if persona) + room rules (names of the other seats with handles, how
+to mention, PASS). Turn prompt unchanged.
 
 ## 5. Turn-taking (adda/scheduler.py)
 
-Per thread, one `Scheduler` with one `asyncio.Task` for the current speaker (or none).
+Per room. On every new message:
 
-On every new message (owner or seat):
-1. If the author is the owner and a seat is speaking → cancel it (owner interrupt).
-2. Mentions: `@name` tokens that match a seat → those seats are woken in order, bypassing bids.
-3. Otherwise by mode:
-   - `bidding`: call `router.bids(thread, seats)`; drop seats on cooldown
-     (`ADDA_COOLDOWN_S`, default 20) and the author; pick the top score if
-     `>= ADDA_BID_THRESHOLD` (default 5.0); else the room goes quiet.
-   - `roundrobin`: each seat speaks once in persona order after an owner message, then quiet.
-   - `manual`: only mentions wake seats.
-4. Cap: at most `ADDA_MAX_AUTO_TURNS` (default 6) seat messages after the last owner message,
-   then quiet until the owner speaks again.
-5. Broadcast `bids` frame (scores + chosen seat), `typing start`, run the seat, post the message,
-   `typing stop`, loop back to step 2 with the new message.
+1. Owner message cancels the current speaker.
+2. **Mentions.** Tokens `@<handle>` matched case-insensitively against enabled seats' handles,
+   not preceded by a word character. `@all` = every enabled, available seat in position order.
+   `@<prefix>*` = every enabled seat whose handle starts with prefix. Mentioned seats are queued
+   in order and bypass bidding. The author is never queued by its own mention.
+3. **Budget.** If `budget_usd > 0` and `spent_usd >= budget_usd`: post one system message
+   "Budget of $X reached; raise it to continue." and go quiet. Mentions and wakes are also
+   refused while over budget (error frame).
+4. **Liveliness** L (0..10) replaces `max_auto_turns`:
+   - L = 0: paused. No bidding, no round-robin. Only mentions and wake.
+   - threshold(L, k) = base(L) + ramp(L) * k, where k = automatic turns since the last owner
+     message or wake, base(L) = 9.5 - 0.65 * L, ramp(L) = 0.6 - 0.05 * L.
+     L=10: base 3.0, ramp 0.1. L=6: base 5.6, ramp 0.3. L=1: base 8.85, ramp 0.55.
+   - bidding: top eligible bid >= threshold speaks; else quiet. Cooldown unchanged.
+   - roundrobin: one pass over enabled seats after an owner message, then quiet (L only gates
+     whether the pass runs: L=0 disables).
+   - A hard safety stop remains at 40 automatic turns per owner message, configurable
+     (`ADDA_MAX_AUTO_TURNS`, default 40), to protect against runaway rooms when budget is 0.
+5. Broadcast `bids` (bidding only), `typing`, run the seat, post, add cost to `spent_usd`,
+   broadcast `room` (spend changed), loop.
 
-Router protocol (`routers/base.py`): `async def bids(self, transcript: str, seats: list[Seat],
-personas: dict) -> list[Bid]`. The transcript is the last `ADDA_ROUTER_WINDOW` (default 20)
-messages rendered as `author: text` lines.
+Renaming a seat mid-room: `store.rename_seat(seat_id, new_name)` updates `room_seats.name`
+and `messages.author` for that seat's messages in that room; sessions key on seat id so resume
+continues. Changing model, thinking, persona or instruction takes effect on the seat's next
+turn (next prompt; same session unless program changes, which starts a fresh session).
 
-`routers/jev.py`: one request, one `score` question per seat, criteria = 10 ordered levels from
-"nothing to add" to "must answer now (addressed, corrected, or has the decisive point)"; the
-instructions include the persona role and stance. Provider from config:
-- `openrouter`: `POST https://openrouter.ai/api/alpha/decisions`, header `Authorization: Bearer
-  $OPENROUTER_API_KEY`, body `{"model": "typesafe/jev-1.13", "state": ..., "questions": {...},
-  "provider": {"data_collection": "deny", "zdr": true}}`.
-- `typesafe`: `POST https://api.typesafe.ai/v1/systemone`, header `Authorization: Bearer
-  $TYPESAFE_API_KEY`, body `{"model": "jev-latest", "state": ..., "questions": {...}}`.
-Both return `answers.<name>.score` (float level, 1..10), `.confidence`, and `usage`. Map score to
-`Bid.score`. Confidence below 0.6 is still used but logged. Any HTTP error → raise
-`RouterError`; the scheduler then falls back to `heuristic` for that turn and posts a `system`
-message once per thread.
+End of room: unchanged (memory notes per persona for seats that spoke; seats without a
+persona write no notes).
 
-`routers/heuristic.py`: mentioned seats 10, else the seat silent longest gets 6, others 0.
+## 6. Server (adda/server.py)
 
-End of discussion (`POST /api/threads/{id}/end` or WS `end`): for each seat that spoke, run one
-more turn with the end-of-discussion prompt ("In at most 3 bullets, what should you remember
-from this discussion for future ones? Reply NONE if nothing."); each bullet becomes a memory
-note via `write_memory_note`. Then set `ended_at`.
+Pages: `GET /` -> `static/index.html`; `GET /room/{room_id}` -> `static/room.html`;
+`GET /settings` -> `static/settings.html`; `/static/*`.
 
-## 6. Server API (adda/server.py)
-
-Static: `GET /` → `static/index.html`; `/static/*` files.
-
-REST (JSON):
-- `GET  /api/seats` → `[Seat]`
-- `GET  /api/threads` → `[Thread]` newest first
-- `POST /api/threads` body `{"title": str, "mode"?: str}` → `Thread`
-- `GET  /api/threads/{id}` → `{"thread": Thread, "messages": [Message]}`
-- `POST /api/threads/{id}/mode` body `{"mode": str}` → `Thread`
-- `POST /api/threads/{id}/end` → `{"thread": Thread, "notes": {seat: [str]}}`
-- `GET  /api/search?q=` → `[{"message": Message, "thread_title": str, "snippet": str}]` (FTS5)
-
-WebSocket `WS /ws/{thread_id}`. All frames are JSON objects with a `type`.
-
-Server → client:
+REST (JSON; errors `{"detail": str}` with 4xx):
 ```
-{"type":"hello","thread":Thread,"seats":[Seat],"messages":[Message]}
+GET  /api/harnesses                       -> [Harness]
+GET  /api/personas                        -> [PersonaSummary]
+GET  /api/settings                        -> Settings view (section 7), keys masked as booleans
+PUT  /api/settings  body = same shape      -> saves config.toml; keys: {"openrouter": "sk-..."} only when present; never echoed
+GET  /api/rooms                           -> [Room] newest first (seats included)
+POST /api/rooms   body {title, folder?, mode?, liveliness?, budget_usd?, seats: [NewSeat]}
+       NewSeat = {name, program, model?, thinking?, persona?, instruction?, color?, copies?: int}
+       copies>1 expands to "<name>1".."<name>N" sharing persona/instruction; folder defaults to
+       <rooms_dir>/<slug-of-title>-<id>; folder is created (parents ok) -> Room
+GET  /api/rooms/{id}                      -> {"room": Room, "messages": [Message]}
+PATCH /api/rooms/{id}  body any of {title, mode, liveliness, budget_usd}  -> Room
+POST /api/rooms/{id}/seats  body NewSeat   -> Room
+PATCH /api/rooms/{id}/seats/{seat_id} body any of {name, model, thinking, persona, instruction, color, enabled, position} -> Room
+DELETE /api/rooms/{id}/seats/{seat_id}     -> Room  (messages stay; seat_sessions row removed)
+POST /api/rooms/{id}/end                  -> {"room": Room, "notes": {seat_id: [str]}}
+GET  /api/search?q=                       -> [{"message": Message, "room_title": str, "snippet": str}]
+GET  /api/rooms/last-seats                -> [NewSeat]  (seats of the newest room, for "same as last room")
+```
+The v0.1 `/api/threads*` and `/api/seats` routes are removed.
+
+WebSocket `WS /ws/{room_id}`:
+```
+server -> client
+{"type":"hello","room":Room,"messages":[Message],"owner":{"name":str},"router":"jev"|"heuristic"}
 {"type":"message","message":Message}
-{"type":"typing","seat":"claude","state":"start"|"stop"}
-{"type":"bids","bids":[Bid],"chosen":"claude"|null,"router":"jev"|"heuristic"}
-{"type":"mode","mode":"bidding"}
-{"type":"quiet"}                       # nobody wanted to speak
-{"type":"ended","notes":{"claude":["..."]}}
-{"type":"error","text":"..."}
+{"type":"typing","seat":<seat id>,"state":"start"|"stop"}
+{"type":"bids","bids":[Bid],"chosen":<seat id>|null,"threshold":float,"router":str}
+{"type":"room","room":Room}            # any change: liveliness, budget, spend, seats, mode, title
+{"type":"quiet","reason":"nobody"|"budget"|"paused"|"safety"}
+{"type":"ended","notes":{seat_id:[str]}}
+{"type":"error","text":str}
+client -> server
+{"type":"say","text":str}
+{"type":"wake","seat":<seat id>}         {"type":"wake_all"}
+{"type":"stop"}                          {"type":"end"}
+{"type":"room","patch":{liveliness?|budget_usd?|mode?|title?}}      # same as PATCH
+{"type":"seat","seat":<seat id>,"patch":{...}}                       # same as PATCH seat
 ```
-Client → server:
+All frames go to every tab on the room.
+
+## 7. Configuration (adda/config.py)
+
+Precedence: built-in defaults < `~/.config/adda/config.toml` < environment variables. The
+settings view returned by the API marks each field that an env var is overriding.
+
+```toml
+[owner]
+name = "Riad"
+line = "Owner of Adda. Prefers short answers and a decision at the end."
+
+[folders]
+rooms_dir = "~/Adda-Rooms"        # each room gets a folder here unless one is given
+data_dir = "~/.adda"              # adda.db
+personas_dir = "<repo>/personas"
+
+[router]
+kind = "jev"                      # jev | heuristic
+provider = "openrouter"           # openrouter | typesafe
+model = ""                        # empty = provider default
+threshold_floor = 3.0             # never below this whatever liveliness says
+window = 20
+
+[room_defaults]
+liveliness = 6
+budget_usd = 1.0
+mode = "bidding"
+cooldown_s = 20
+seat_timeout_s = 180
+max_auto_turns = 40
+
+[harness.claude]
+model = "sonnet"
+thinking = "medium"
+enabled = true
+extra_models = []
+[harness.opencode]   model = "deepseek/deepseek-flash"   thinking = "default"  enabled = true
+[harness.pi]         model = ""                          thinking = "default"  enabled = true
+[harness.codex]      model = "gpt-5-codex"               thinking = "default"  enabled = false
 ```
-{"type":"say","text":"..."}            # owner message
-{"type":"wake","seat":"pi"}            # same as mentioning the seat
-{"type":"mode","mode":"roundrobin"}
-{"type":"stop"}                        # interrupt the current speaker
-{"type":"end"}                         # end discussion, write memory notes
-```
-Several browser tabs may be open on one thread; every frame goes to all of them.
+Keys: `~/.config/adda/keys.env` (mode 600, `NAME=value` lines): `OPENROUTER_API_KEY`,
+`TYPESAFE_API_KEY`, `DEEPSEEK_API_KEY`. Lookup order for each: env var, keys.env, then for
+OpenRouter the legacy `~/.config/jev/openrouter.env`. The API never returns key values.
+`ANTHROPIC_API_KEY` is never read, never stored, and is stripped from seat environments.
+Env var names stay as in v0.1 (`ADDA_PORT`, `ADDA_DATA_DIR`, `ADDA_ROUTER`, ...) plus
+`ADDA_ROOMS_DIR`, `ADDA_OWNER_NAME`, `ADDA_CONFIG` (path of the toml).
 
-## 7. Configuration (adda/config.py), all env vars, all optional
+## 8. Pages (static/)
 
-| var | default | meaning |
-|---|---|---|
-| ADDA_HOST / ADDA_PORT | 127.0.0.1 / 8765 | bind |
-| ADDA_DATA_DIR | ./data | holds adda.db |
-| ADDA_PERSONAS_DIR | ./personas | persona folders |
-| ADDA_ROUTER | jev | jev or heuristic |
-| ADDA_JEV_PROVIDER | openrouter | openrouter or typesafe |
-| ADDA_JEV_MODEL | typesafe/jev-1.13 (openrouter) / jev-latest (typesafe) | decision model id |
-| OPENROUTER_API_KEY | read from ADDA_JEV_KEY_FILE if unset | |
-| TYPESAFE_API_KEY | read from ADDA_JEV_KEY_FILE if unset | |
-| ADDA_JEV_KEY_FILE | ~/.config/jev/openrouter.env | `KEY=value` lines, sourced if the env var is unset |
-| ADDA_BID_THRESHOLD | 5.0 | |
-| ADDA_COOLDOWN_S | 20 | |
-| ADDA_MAX_AUTO_TURNS | 6 | |
-| ADDA_SEAT_TIMEOUT_S | 180 | |
-| ADDA_ROUTER_WINDOW | 20 | messages in the router transcript |
+Vanilla, no build, no CDN. Shared `style.css` keeps the v0.1 direction (Imbue + Albert Sans,
+graphite ground, taxi-yellow accent, seat colours, light and dark). Reference mockups:
+`.taste-skill/mockups/v2/*.html` (11 rooms, 12 new room, 13 room, 14 settings). Match them.
 
-`ANTHROPIC_API_KEY` is never read and is removed from seat subprocess environments.
+**Rooms page `/`:** list of rooms newest first (title, live/ended/paused tag, seats with colours,
+folder, spend/budget, last line); "New room" opens the new-room card on the same page.
+Card: title; folder (text field prefilled with `<rooms_dir>/<slug>`, editable); budget (0 =
+unlimited, say so); mode; liveliness slider; seats table with rows: colour, name, harness
+(installed only, version shown), model (text with datalist from harness suggestions), thinking
+(disabled when unsupported), persona (dropdown: none + library), access column **omitted in
+v0.2**, copies; a **custom instruction card** under a row appears when the user clicks
+"Add instruction" on that row (a textarea in a card; shown automatically when persona is none);
+"Same as last room" button fills the seats table from `/api/rooms/last-seats`; a summary line
+(seat count, harness count); "Open the room". Right column: harnesses on this machine (from
+`/api/harnesses`) with login hints.
 
-## 8. Frontend (static/)
+**Room page `/room/{id}`:** as v0.1 plus: Markdown rendering of every message (section 9);
+Copy on every message (copies the raw Markdown), Copy on every code block, Quote (prefills the
+composer with `> ...`), "Copy thread as Markdown"; the owner's messages show the owner's name;
+`@` menu lists `@all`, each seat with role and state, and `@<prefix>*` groups when two or more
+seats share a prefix; a line under a message that woke several seats ("@all woke Ravi, Tuli, Pi");
+"woken by" in the meta line. Right panel: liveliness slider with a one-sentence explanation of
+the current threshold, budget field with spend, Pause (sets liveliness 0 and remembers the old
+value), Wake all, seat list where each seat card expands to an editor: name, model (datalist),
+thinking, persona, instruction (card textarea), colour, enabled, remove; "Add a seat". Edits
+send `seat` frames and take effect next turn.
 
-Vanilla HTML/CSS/JS, no build step, served by the backend. Must work on
-http://127.0.0.1:8765 and, for development, against `scripts/mock_server.py` on 8766
-(`?ws=ws://127.0.0.1:8766` override or a base-URL constant at the top of app.js).
+**Settings page `/settings`:** You (name, line); Harnesses table (found, path, version, default
+model, thinking, login hint, enabled, re-scan); Personas (list with note counts, link to folder);
+Keys and router (router kind/provider/model, three key fields that accept a paste and show only
+"set"/"not set"; threshold floor; window); Room defaults; Folders (rooms_dir, data_dir,
+personas_dir; env-override badge). Save button; `PUT /api/settings`.
 
-Screens and behaviour:
-- Thread list (left): titles, newest first, "new thread" with title input; ended threads marked.
-- Room (centre): messages; owner right-aligned or otherwise distinct; each seat in its own colour
-  from `Seat.color`; `@mentions` highlighted in the mentioned seat's colour; system messages muted;
-  per-message cost and latency shown small; typing indicator per seat; auto-scroll unless the
-  owner scrolled up.
-- Composer: textarea, Enter sends, Shift+Enter newline; `@` autocompletes seat names; buttons:
-  stop (interrupt), end discussion.
-- Seats panel (right): one card per seat with colour, role, availability, last bid score as a
-  meter that animates when a `bids` frame arrives, cooldown countdown, "wake" button; mode
-  switch (bidding / roundrobin / manual); router name (jev / heuristic).
-- Search box over `/api/search`, results link to thread + message.
-- Reconnect WebSocket with backoff; show connection state.
-- Keyboard: Ctrl+K focuses search, Esc stops the current speaker.
+## 9. Markdown (static/markdown.js)
 
-Design: follow the `design-taste-frontend` skill for art direction. Interactive and colourful,
-each seat a clear colour identity, chat is the hero; still professional and legible for hours of
-reading. Dark and light via `prefers-color-scheme`. No frameworks, no icon fonts, no CDN.
+A small subset, modelled on jonaki's parser: paragraphs, headings 1–6 (rendered no larger than
+the message's bold line), fenced code with language (`<pre><code class="language-x">`), bullet
+and ordered lists, thematic break, GitHub tables with alignment, inline strong, emphasis,
+inline code, links (open in new tab, `rel="noopener"`), and `@mentions` highlighted in the seat's
+colour. Escape HTML first; never pass raw HTML through. Unknown syntax stays as text. Must not
+throw on any input. `renderMarkdown(text, seatsByHandle) -> DocumentFragment`;
+`copyText(text)` uses the Clipboard API with a textarea fallback. Tables keep their source for
+copy. Unit-test it in the browser with a `tests/markdown.test.html` page that asserts a dozen
+cases and prints pass/fail (run by hand in Playwright).
 
-## 9. Testing and verification
+## 10. Testing and verification — **unchanged** plus
 
-- `uv run ruff check . && uv run ruff format .` clean.
-- `uv run pytest` runs unit tests only (integration marker excluded by default). Unit tests mock
-  `create_subprocess_exec` and HTTP (`httpx.MockTransport`).
-- `uv run pytest -m integration` runs real seats and real Jev; main session only.
-- Nothing in tests or scripts binds port 8765. Mock server uses 8766.
+Unit tests for: config precedence (defaults, toml, env), key lookup order and masking;
+harness detection with faked `which`/subprocess; room creation with copies and folder;
+seat rename rewriting authors; mentions (`@all`, prefix `*`, case, handles); liveliness
+thresholds and ramp; budget stop; settings PUT round trip; markdown page in Playwright.
 
-## 10. Ownership during the build
+## 11. What changes from v0.1 (for whoever edits existing code)
 
-- Backend agent: everything under `adda/`, `tests/`, `personas/`
-  loader fixtures under `tests/fixtures/personas/`.
-- Frontend agent: everything under `static/`, `scripts/mock_server.py`, the four real `personas/*/` folders, `README.md`.
-- Shared read-only: this file. Conflicts → ask the main session.
+- `Thread` -> `Room` with new columns; `seats` move from persona folders to `room_seats`.
+  No data migration needed beyond `CREATE TABLE IF NOT EXISTS` + `ALTER TABLE ... ADD COLUMN`
+  guarded by `PRAGMA table_info`; v0.1 threads get `folder=""`, `liveliness=6`, `budget_usd=0`.
+- `Settings` dataclass gains the toml layer and the new fields; `load_settings` signature kept.
+- `Persona` loses `program`/`model` (ignored if present).
+- `Scheduler` takes `room` + adapters built from `room.seats`; `max_auto_turns` becomes the
+  safety stop; threshold from liveliness; budget; `@all`.
+- Scheduler, store and WS frames identify seats by **id**, UI shows names.
+- `static/app.js` is split into the files in section 1; v0.1's single page is removed.
+
+## 12. Ownership during the build
+
+Wave 1 (parallel, disjoint files):
+- **S1 backend data:** `adda/config.py`, `adda/models.py`, `adda/store.py`, `adda/personas.py`,
+  `adda/harnesses.py`, the four `personas/*` folders (rename + frontmatter), and their tests.
+- **S3 markdown + logos:** `static/markdown.js`, `tests/markdown.test.html`,
+  `.taste-skill/mockups/logos/index.html` (five logo options, inline SVG; not part of the app).
+- **S4 pages + mock:** `static/index.html|room.html|settings.html`, `static/rooms.js|room.js|
+  settings.js|common.js`, `static/style.css`, `scripts/mock_server.py`. Builds against the mock.
+Wave 2 (after S1 lands):
+- **S2 backend behaviour:** `adda/scheduler.py`, `adda/server.py`, `adda/prompts.py`,
+  `adda/seats/*`, `adda/cli.py`, `README.md`, and their tests.
+Main session: integrates, runs the real server, Playwright, live seats, commits.
