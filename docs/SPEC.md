@@ -412,3 +412,96 @@ href="/static/favicon.svg?v=0.3">`, and the header wordmark shows the mark at 28
 - **S5 backend:** `adda/**`, `tests/**`, `README.md` (D1, D2, D3 API, D4, D5, tests).
 - **S6 frontend:** `static/**`, `scripts/mock_server.py` (D2 UI, D3 UI, D4 prefill, D5
   datalists, D6, D7, D8, `passed` line, bids `raw_score` tooltip).
+
+---
+
+# v0.4 delta (2026-10-14): a room, not a turn loop
+
+Owner decision: Adda is not turn-based. Several seats may compose at once, a seat may finish
+its own thought, and seats come back with afterthoughts while the owner is away. Replaces
+SPEC §5 and v0.3 D1 where they conflict.
+
+## E1. Scheduler model (adda/scheduler.py)
+
+Event-driven, no single driver loop. Per room:
+
+- `speaking: dict[seat_id, asyncio.Task]` (a seat composes at most one reply at a time);
+  `follow_up: set[seat_id]` (a mention arrived while the seat was speaking: run it once more
+  when it finishes, with the new messages); `bid_turns_since_owner: int`; `more_streak:
+  dict[seat_id, int]`; `afterthought: asyncio.Task | None`; `afterthoughts_this_spell: int`.
+- `on_message(message)` runs after every posted message (owner or seat):
+  1. Budget and ended checks (unchanged). Safety stop: `max_auto_turns` automatic starts since
+     the last owner message.
+  2. Mentions (`@handle`, `@all`, `@prefix*`): start each mentioned seat now if idle, else mark
+     `follow_up`. Never the author itself.
+  3. `[more]`: if a seat's reply ends with a line that is exactly `[more]` (case-insensitive),
+     strip it before storing/broadcasting, and start the same seat again immediately without a
+     bid (woken_by "more"), at most `more_limit` (default 2) times in a row.
+  4. Bidding (mode bidding, liveliness > 0, and the message is not itself a `[more]`
+     continuation): one Jev round over enabled, available seats that are **not speaking**. The
+     author is included with a `self_reply_penalty` (default 1.5). Adjusted score as v0.3
+     (eagerness, optional cooldown). Start every seat whose adjusted score >= threshold, highest
+     first, until `room.max_concurrent` seats are speaking (default 2; 1 reproduces v0.3).
+     Each start raises `bid_turns_since_owner`.
+  5. Round-robin: unchanged pass, one at a time. Manual: mentions only.
+  6. If after all this nobody is speaking: schedule an afterthought (E2) and broadcast
+     `quiet` with `next_tick_in_s`.
+- A seat's prompt holds the messages it has not seen at the moment it **starts**. Replies may
+  cross; that is intended. The system prompt tells seats so, and tells them about `[more]`.
+- Owner messages no longer cancel speakers. `stop` cancels every speaking seat and the pending
+  afterthought. `wake`/`wake_all` start seats directly (mark follow_up if speaking).
+- `end` cancels everything first, then collects notes as before.
+- Seat patch that changes program while speaking cancels that seat's task.
+
+## E2. Afterthoughts
+
+When the room is quiet (nobody speaking, no pending start) and liveliness > 0 and mode is
+bidding: schedule one tick after `delay = (11 - L) * 20 s * uniform(0.7, 1.3)`, scaled per
+room by `afterthought_scale` (default 1.0). At the tick run a Jev round with the afterthought
+question ("Does @name have something worth adding that nobody has said, an afterthought
+the room would want to hear?") and start seats >= threshold as in E1.4 (woken_by
+"afterthought"). At most `afterthought_limit` (default 3) ticks per quiet spell; the spell
+resets on an owner message or wake. Each tick costs one Jev round; a seat is only paid for
+when it speaks. Eagerness scales the per-seat delay: the first tick's delay is multiplied by
+`1 - 0.05 * (max_eagerness_in_room - 5)`.
+
+## E3. Config and models
+
+`Room.max_concurrent: int` (1..4, default from `room_defaults.max_concurrent` = 2), column
+added with a guarded ALTER; PATCH/`room` frame accept it. Settings `[room_defaults]` gains
+`max_concurrent = 2`, `self_reply_penalty = 1.5`, `more_limit = 2`, `afterthought_limit = 3`,
+`afterthought_scale = 1.0`. Message.meta.woken_by adds "more" and "afterthought".
+
+## E4. Frames
+
+```
+{"type":"bids","bids":[Bid],"chosen":[<seat id>, ...],"threshold":float,"router":str,"kind":"message"|"afterthought"}
+{"type":"typing","seat":id,"state":"start"|"stop"}     # several seats may be "start" at once
+{"type":"quiet","reason":"nobody"|"paused"|"safety"|"budget","next_tick_in_s":float|null,"ticks_left":int}
+{"type":"room","room":Room}                           # Room now has max_concurrent
+```
+`chosen` is a list (was a single id). REST and WS room patches accept `max_concurrent`.
+
+## E5. UI (static/room.js, room.html, common.js, mock)
+
+- Several typing indicators at once; seat cards show "speaking" for each.
+- Room panel: "Voices at once" select 1..4 (sends `max_concurrent`).
+- Quiet notice reads "Quiet. Someone may come back in about 40 s (2 more chances)." and counts
+  down; when `next_tick_in_s` is null it reads as before.
+- Bids tooltip and meters handle a `chosen` list. Meta line shows "afterthought" and
+  "continued" (for "more").
+- Mock: emit two typing starts, crossed replies, an afterthought after a delay, a `[more]`
+  continuation.
+
+## E6. Tests
+
+Concurrent starts capped by max_concurrent; author included with penalty; `[more]` stripped
+and continued at most more_limit; follow_up after a mention during speaking; afterthought
+scheduled with the delay formula (fake clock/sleep), cap per spell, reset on owner message;
+owner message does not cancel; stop cancels all; budget and safety still hold; round-robin
+still sequential; frames shapes.
+
+## E7. Ownership
+
+- **S7 backend:** `adda/**`, `tests/**`, `README.md`.
+- **S8 frontend:** `static/**`, `scripts/mock_server.py`.
