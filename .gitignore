@@ -1,0 +1,27 @@
+# local-only / private
+CLAUDE.md
+DECISIONS.md
+docs/decisions/
+.claude/
+.taste-skill/
+.env
+*.env
+
+# runtime data
+data/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+personas/*/sessions/*
+!personas/*/sessions/.gitkeep
+
+# python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.ruff_cache/
+dist/
+build/
+*.egg-info/
