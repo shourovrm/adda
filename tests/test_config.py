@@ -40,7 +40,7 @@ def test_defaults(isolated):
     assert settings.data_dir == Path("~/.adda").expanduser()
     assert settings.router_kind == "jev"
     assert settings.jev_model == "typesafe/jev-1.13"
-    assert settings.router_threshold_floor == 3.0
+    assert settings.router_threshold_floor == 2.5
     assert settings.liveliness == 6
     assert settings.budget_usd == 1.0
     assert settings.max_auto_turns == 40

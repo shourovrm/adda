@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime
 import os
 import stat
 import tomllib
@@ -16,6 +17,7 @@ from adda.server import create_app
 from adda.store import Store
 from tests.fakes import FakeAdapterFactory, FakeClock, make_settings
 
+TODAY = datetime.date(2026, 10, 14)
 SECRET_KEY = "sk-test-secret-value-1234"
 
 
@@ -68,7 +70,7 @@ def store(tmp_path):
 
 
 @pytest.fixture
-def client(environment, static_directory, factory, store):
+def client(environment, static_directory, factory, store, tmp_path):
     app = create_app(
         load_settings(environment),
         store=store,
@@ -77,6 +79,8 @@ def client(environment, static_directory, factory, store):
         detect=fake_harnesses,
         environment=environment,
         static_directory=static_directory,
+        home=tmp_path,
+        today=lambda: TODAY,
     )
     with TestClient(app) as test_client:
         yield test_client
@@ -193,7 +197,7 @@ def test_create_room_expands_copies_and_creates_the_default_folder(client, tmp_p
     assert {seat["color"] for seat in scouts} == {"#D9480F"}  # the persona's colour
     assert [seat["position"] for seat in room["seats"]] == [0, 1, 2, 3]
 
-    expected_folder = tmp_path / "rooms" / f"design-the-queue-{room['id']}"
+    expected_folder = tmp_path / "rooms" / f"{TODAY:%Y%m%d}-design-the-queue"
     assert room["folder"] == str(expected_folder)
     assert expected_folder.is_dir()
     assert (room["mode"], room["liveliness"], room["budget_usd"]) == ("bidding", 0, 1.0)
@@ -269,6 +273,7 @@ def test_last_seats_returns_new_seat_shaped_dicts(client):
             "persona": "alpha",
             "instruction": "Be brief.",
             "color": "#D9480F",
+            "eagerness": 5,
         }
     ]
 
@@ -435,7 +440,7 @@ def test_settings_put_keeps_env_overridden_fields_out_of_the_file(client, enviro
     view["owner"]["name"] = "Riad"
     assert client.put("/api/settings", json=view).status_code == 200
     config = tomllib.loads(open(environment["ADDA_CONFIG"], encoding="utf-8").read())
-    assert config["room_defaults"]["cooldown_s"] == 20.0  # the file default, not 99 and not 0
+    assert config["room_defaults"]["cooldown_s"] == 0.0  # the file default, not the pushed 99
 
 
 @pytest.mark.parametrize(
@@ -612,3 +617,111 @@ def test_end_frame_sends_ended_with_notes_and_blocks_further_input(client):
         websocket.send_json({"type": "say", "text": "hello?"})
         error = receive_until(websocket, "error")[-1]
         assert "ended" in error["text"]
+
+
+# Folders and eagerness (SPEC v0.3 D2, D3, D4) ---------------------------------------------
+
+
+def test_folder_listing_defaults_to_rooms_dir_and_skips_hidden_folders(client, tmp_path):
+    rooms = tmp_path / "rooms"
+    (rooms / "beta").mkdir(parents=True)
+    (rooms / "Alpha").mkdir()
+    (rooms / ".hidden").mkdir()
+    (rooms / "file.txt").write_text("x", encoding="utf-8")
+    body = client.get("/api/folders").json()
+    assert body["path"] == str(rooms)
+    assert body["parent"] == str(tmp_path)
+    assert body["folders"] == [
+        {"name": "Alpha", "path": str(rooms / "Alpha")},
+        {"name": "beta", "path": str(rooms / "beta")},
+    ]
+
+
+def test_folder_listing_has_no_parent_at_home_and_refuses_paths_outside(client, tmp_path):
+    assert client.get("/api/folders", params={"path": str(tmp_path)}).json()["parent"] is None
+    outside = client.get("/api/folders", params={"path": str(tmp_path.parent)})
+    assert outside.status_code == 400
+    assert client.get("/api/folders", params={"path": "/etc"}).status_code == 400
+    assert client.get("/api/folders", params={"path": "relative"}).status_code == 400
+    missing = client.get("/api/folders", params={"path": str(tmp_path / "nope")})
+    assert missing.status_code == 400
+
+
+def test_folder_listing_refuses_a_symlink_that_leaves_home(client, tmp_path):
+    outside_target = tmp_path.parent / "outside-target"
+    outside_target.mkdir(exist_ok=True)
+    (tmp_path / "escape").symlink_to(outside_target)
+    response = client.get("/api/folders", params={"path": str(tmp_path / "escape")})
+    assert response.status_code == 400
+
+
+def test_creating_a_folder_returns_the_entry_and_409_when_it_exists(client, tmp_path):
+    response = client.post("/api/folders", json={"path": str(tmp_path), "name": "fresh"})
+    assert response.status_code == 200
+    assert response.json() == {"name": "fresh", "path": str(tmp_path / "fresh")}
+    assert (tmp_path / "fresh").is_dir()
+    again = client.post("/api/folders", json={"path": str(tmp_path), "name": "fresh"})
+    assert again.status_code == 409
+
+
+@pytest.mark.parametrize("name", ["", "  ", "..", "a/b"])
+def test_creating_a_folder_rejects_bad_names(client, tmp_path, name):
+    response = client.post("/api/folders", json={"path": str(tmp_path), "name": name})
+    assert response.status_code == 400
+
+
+def test_creating_a_folder_outside_home_is_refused(client, tmp_path):
+    response = client.post("/api/folders", json={"path": str(tmp_path.parent), "name": "x"})
+    assert response.status_code == 400
+
+
+def test_default_room_folder_has_the_date_and_gains_a_numeric_suffix(client, tmp_path):
+    first = make_room(client, "Design: the Queue!")
+    second = make_room(client, "Design: the Queue!")
+    third = make_room(client, "Design: the Queue!")
+    base = tmp_path / "rooms" / "20261014-design-the-queue"
+    assert [first["folder"], second["folder"], third["folder"]] == [
+        str(base),
+        f"{base}-2",
+        f"{base}-3",
+    ]
+
+
+def test_folder_suggestion_matches_the_folder_a_room_would_get(client, tmp_path):
+    suggestion = client.get("/api/rooms/folder-suggestion", params={"title": "Hello World"})
+    expected = tmp_path / "rooms" / "20261014-hello-world"
+    assert suggestion.json() == {"folder": str(expected)}
+    assert make_room(client, "Hello World")["folder"] == str(expected)
+    after = client.get("/api/rooms/folder-suggestion", params={"title": "Hello World"})
+    assert after.json() == {"folder": f"{expected}-2"}
+
+
+def test_seat_eagerness_defaults_to_five_and_can_be_set_and_patched(client):
+    room = make_room(
+        client,
+        seats=[
+            {"name": "Ravi", "program": "claude", "eagerness": 8},
+            {"name": "Tuli", "program": "pi"},
+        ],
+    )
+    assert [seat["eagerness"] for seat in room["seats"]] == [8, 5]
+    ravi = seat_id(room, "Ravi")
+    patched = client.patch(f"/api/rooms/{room['id']}/seats/{ravi}", json={"eagerness": 0})
+    assert patched.status_code == 200
+    assert patched.json()["seats"][0]["eagerness"] == 0
+
+
+@pytest.mark.parametrize("value", [-1, 11, 2.5, "high", True])
+def test_seat_patch_rejects_eagerness_outside_zero_to_ten(client, value):
+    room = make_room(client)
+    ravi = seat_id(room, "Ravi")
+    response = client.patch(f"/api/rooms/{room['id']}/seats/{ravi}", json={"eagerness": value})
+    assert response.status_code == 400
+
+
+def test_new_seat_rejects_eagerness_outside_zero_to_ten(client):
+    response = client.post(
+        "/api/rooms",
+        json={"title": "x", "seats": [{"name": "A", "program": "claude", "eagerness": 11}]},
+    )
+    assert response.status_code == 400

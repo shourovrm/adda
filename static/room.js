@@ -167,7 +167,7 @@ function countAutomaticTurns() {
   return turns;
 }
 
-function addLocalMessage(text, isError) {
+function addLocalMessage(text, isError, isPassed = false) {
   state.localMessageCounter += 1;
   const message = {
     id: `local-${state.localMessageCounter}`,
@@ -180,6 +180,7 @@ function addLocalMessage(text, isError) {
     meta: {},
     isLocal: true,
     isError,
+    isPassed,
   };
   state.messages.push(message);
   appendMessageElement(message);
@@ -199,7 +200,7 @@ function sendFrame(frame) {
 // ---------------------------------------------------------------------------
 
 function handleFrame(frame) {
-  if (frame.type !== 'quiet' && frame.type !== 'typing' && frame.type !== 'bids' && frame.type !== 'room') {
+  if (frame.type !== 'quiet' && frame.type !== 'typing' && frame.type !== 'bids' && frame.type !== 'room' && frame.type !== 'passed') {
     state.quietReason = null;
   }
   switch (frame.type) {
@@ -217,6 +218,9 @@ function handleFrame(frame) {
       break;
     case 'room':
       handleRoomFrame(frame.room);
+      break;
+    case 'passed':
+      handlePassedFrame(frame);
       break;
     case 'quiet':
       state.quietReason = frame.reason;
@@ -274,7 +278,8 @@ function handleHello(frame) {
 
 function handleMessageFrame(message) {
   if (state.messages.some((existing) => existing.id === message.id)) return;
-  if (message.role === 'seat' && message.seat_id) {
+  // Cooldown 0 means off: no countdown, no cooling state.
+  if (message.role === 'seat' && message.seat_id && state.cooldownSeconds > 0) {
     state.cooldownEndsAt[message.seat_id] = Date.now() + state.cooldownSeconds * 1000;
     ensureCooldownTicker();
   }
@@ -311,10 +316,16 @@ function handleTypingFrame(frame) {
   renderComposerState();
 }
 
+/** A pass is not a message: it is shown as a muted line and is not stored or counted. */
+function handlePassedFrame(frame) {
+  const seat = seatById(frame.seat);
+  addLocalMessage(`${seat ? seat.name : 'A seat'} passed`, false, true);
+}
+
 function handleBidsFrame(frame) {
   const bidsBySeat = {};
   for (const bid of frame.bids) {
-    bidsBySeat[bid.seat] = { score: bid.score, confidence: bid.confidence };
+    bidsBySeat[bid.seat] = { score: bid.score, rawScore: bid.raw_score ?? bid.score, confidence: bid.confidence };
   }
   state.lastBids = bidsBySeat;
   state.chosenSeatId = frame.chosen;
@@ -465,7 +476,8 @@ function createMessageItem(message) {
   item.id = `m-${message.id}`;
 
   if (message.role === 'system') {
-    const line = createElement('div', message.isError ? 'msg msg--system is-error' : 'msg msg--system', message.text);
+    const lineClass = message.isError ? 'msg msg--system is-error' : message.isPassed ? 'msg msg--system msg--passed' : 'msg msg--system';
+    const line = createElement('div', lineClass, message.text);
     item.append(line);
     return item;
   }
@@ -711,6 +723,9 @@ function renderSeats(forceEditorSync = false) {
     references.programText.textContent = `${seat.program} · ${seat.model || 'default model'}`;
     references.meter.setAttribute('aria-valuenow', bid ? String(bid.score) : '0');
     references.scoreText.textContent = bid ? bid.score.toFixed(1) : '–';
+    references.scoreText.title = bid ? `Jev scored ${bid.rawScore.toFixed(1)}; with eagerness ${seat.eagerness} the bid is ${bid.score.toFixed(1)}` : 'No bid yet';
+    references.eagernessText.textContent = `eagerness ${seat.eagerness}`;
+    references.eagernessText.title = describeEagerness(seat.eagerness);
     references.statusText.textContent = describeSeatState(seat, seatState);
     references.wakeButton.disabled = seatState === 'unavailable' || seatState === 'disabled' || !isConnected() || ended;
     references.editor.hidden = !state.expandedSeatIds.has(seat.id);
@@ -752,11 +767,12 @@ function buildSeatCards() {
 
     const scoreText = createElement('span', 'seat-score', '–');
     const statusText = createElement('span', 'seat-status');
+    const eagernessText = createElement('span', 'seat-eagerness small mute');
     const wakeButton = createButton('Wake', 'btn btn--ghost btn--small', () => sendFrame({ type: 'wake', seat: seat.id }));
     const editButton = createButton('Edit', 'btn btn--ghost btn--small', () => toggleSeatEditor(seat.id));
     editButton.setAttribute('aria-expanded', 'false');
     const foot = createElement('div', 'seat-foot');
-    foot.append(scoreText, statusText, wakeButton, editButton);
+    foot.append(scoreText, statusText, eagernessText, wakeButton, editButton);
 
     const { editor, fields } = buildSeatEditor(seat);
     card.append(head, meter, foot, editor);
@@ -773,7 +789,7 @@ function buildSeatCards() {
     chipElement.addEventListener('click', () => toggleDrawer());
     elements.seatStrip.append(chipElement);
 
-    seatCardReferences[seat.id] = { card, nameText, programText, meter, scoreText, statusText, wakeButton, editButton, editor, fields };
+    seatCardReferences[seat.id] = { card, nameText, programText, meter, scoreText, statusText, eagernessText, wakeButton, editButton, editor, fields };
     seatChipReferences[seat.id] = { element: chipElement, nameText: chipName, fill: chipFill };
   }
 }
@@ -787,11 +803,12 @@ function toggleSeatEditor(seatId) {
   renderSeats(true);
 }
 
-function labelledField(labelText, control) {
+/** `labelTarget` is the control the label points at when it differs from the displayed element. */
+function labelledField(labelText, control, labelTarget = control) {
   const wrapper = createElement('div');
   const label = createElement('label', '', labelText);
-  control.id = control.id || `field-${Math.random().toString(36).slice(2, 9)}`;
-  label.htmlFor = control.id;
+  labelTarget.id = labelTarget.id || `field-${Math.random().toString(36).slice(2, 9)}`;
+  label.htmlFor = labelTarget.id;
   wrapper.append(label, control);
   return wrapper;
 }
@@ -843,6 +860,12 @@ function buildSeatEditor(seat) {
     renderSeats(true);
   });
 
+  const eagerness = createEagernessControl(
+    seat.eagerness,
+    null,
+    (value) => sendSeatPatch(seat.id, { eagerness: value }),
+  );
+
   const colorInput = document.createElement('input');
   colorInput.type = 'color';
   colorInput.addEventListener('change', () => sendSeatPatch(seat.id, { color: colorInput.value }));
@@ -867,6 +890,7 @@ function buildSeatEditor(seat) {
     datalist,
     labelledField('Thinking', thinkingSelect),
     labelledField('Persona', personaSelect),
+    labelledField('Eagerness', eagerness.element, eagerness.input),
     instructionToggle,
     instruction.card,
     toggles,
@@ -875,7 +899,7 @@ function buildSeatEditor(seat) {
   );
   editor.hidden = true;
 
-  const fields = { nameInput, modelInput, thinkingSelect, personaSelect, instruction, instructionToggle, colorInput, enabledInput, programNote };
+  const fields = { eagerness, nameInput, modelInput, thinkingSelect, personaSelect, instruction, instructionToggle, colorInput, enabledInput, programNote };
   return { editor, fields };
 }
 
@@ -889,6 +913,7 @@ function syncSeatEditor(seat, fields, force) {
   setIfIdle(fields.thinkingSelect, () => (fields.thinkingSelect.value = seat.thinking));
   setIfIdle(fields.personaSelect, () => (fields.personaSelect.value = seat.persona || ''));
   setIfIdle(fields.instruction.textarea, () => (fields.instruction.textarea.value = seat.instruction || ''));
+  setIfIdle(fields.eagerness.input, () => fields.eagerness.setValue(seat.eagerness));
   setIfIdle(fields.colorInput, () => (fields.colorInput.value = safeColor(seat.color)));
   setIfIdle(fields.enabledInput, () => (fields.enabledInput.checked = seat.enabled));
 
@@ -937,11 +962,7 @@ function buildAddSeatForm() {
   const colorInput = document.createElement('input');
   colorInput.type = 'color';
   colorInput.value = colorDefault;
-  const copiesInput = document.createElement('input');
-  copiesInput.type = 'number';
-  copiesInput.min = '1';
-  copiesInput.max = '8';
-  copiesInput.value = '1';
+  const eagerness = createEagernessControl(EAGERNESS_DEFAULT);
 
   const refreshForHarness = () => {
     const harness = findHarness(state.harnesses, harnessSelect.value);
@@ -969,7 +990,7 @@ function buildAddSeatForm() {
     labelledField('Persona', personaSelect),
     labelledField('Custom instruction', instruction.card),
     labelledField('Colour', colorInput),
-    labelledField('Copies', copiesInput),
+    labelledField('Eagerness', eagerness.element, eagerness.input),
     actions,
   );
 
@@ -980,7 +1001,7 @@ function buildAddSeatForm() {
       program: harnessSelect.value,
       thinking: thinkingSelect.value,
       color: colorInput.value,
-      copies: Math.max(1, Math.min(8, parseInt(copiesInput.value, 10) || 1)),
+      eagerness: Number(eagerness.input.value),
     };
     if (modelInput.value.trim()) seat.model = modelInput.value.trim();
     if (personaSelect.value) seat.persona = personaSelect.value;

@@ -23,11 +23,13 @@ Version output: claude prints "2.1.299 (Claude Code)", opencode "1.17.7", pi "1.
 
 from __future__ import annotations
 
+import json
 import re
 import shutil
 import subprocess
 import time
 from collections.abc import Callable
+from pathlib import Path
 
 from adda.config import Settings
 from adda.models import Harness
@@ -39,10 +41,20 @@ MODEL_CACHE_SECONDS = 600.0
 PROGRAM_ORDER = ("claude", "opencode", "pi", "codex")
 
 BUILT_IN_MODEL_SUGGESTIONS = {
-    "claude": ["sonnet", "opus", "haiku"],
-    "pi": ["z-ai/glm-5.3-flash"],
+    "claude": [
+        "fable",
+        "opus",
+        "sonnet",
+        "haiku",
+        "claude-fable-5-1",
+        "claude-opus-5-5",
+        "claude-sonnet-5-5",
+        "claude-haiku-5-5",
+    ],
     "codex": ["gpt-5-codex"],
 }
+PI_FALLBACK_MODELS = ["z-ai/glm-5.3-flash"]
+PI_SETTINGS_PATH = Path("~/.pi/agent/settings.json").expanduser()
 
 LOGIN_HINTS = {
     "claude": "Run `claude` once and sign in with your Max account (/login).",
@@ -121,6 +133,26 @@ def _opencode_models(run: Runner, now: float) -> list[str]:
     return list(models)
 
 
+def pi_models(settings_path: Path) -> list[str]:
+    """`enabledModels` then `defaultModel` from pi's settings file, names kept as written.
+
+    A missing or unreadable file, or one with neither key, gives the built-in fallback so the
+    model field is never left without a suggestion.
+    """
+    try:
+        settings = json.loads(settings_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return list(PI_FALLBACK_MODELS)
+    if not isinstance(settings, dict):
+        return list(PI_FALLBACK_MODELS)
+    enabled = settings.get("enabledModels")
+    names = [name for name in enabled if isinstance(name, str)] if isinstance(enabled, list) else []
+    default_model = settings.get("defaultModel")
+    if isinstance(default_model, str):
+        names.append(default_model)
+    return names or list(PI_FALLBACK_MODELS)
+
+
 def _deduplicated(names: list[str]) -> list[str]:
     seen: set[str] = set()
     ordered: list[str] = []
@@ -136,6 +168,7 @@ def detect_harnesses(
     run: Runner = run_command,
     which: Finder = shutil.which,
     now: Callable[[], float] = time.monotonic,
+    pi_settings_path: Path = PI_SETTINGS_PATH,
 ) -> list[Harness]:
     """One Harness per program in the fixed order claude, opencode, pi, codex."""
     harnesses: list[Harness] = []
@@ -148,6 +181,8 @@ def detect_harnesses(
         version = parse_version(run([program, "--version"], VERSION_TIMEOUT_S)) if found else None
         if program == "opencode":
             base_models = _opencode_models(run, now()) if found else []
+        elif program == "pi":
+            base_models = pi_models(pi_settings_path)
         else:
             base_models = list(BUILT_IN_MODEL_SUGGESTIONS[program])
 

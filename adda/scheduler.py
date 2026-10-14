@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from adda.config import Settings
-from adda.models import MODES, THINKING_LEVELS, Message, Room, Seat
+from adda.models import MODES, THINKING_LEVELS, Bid, Message, Room, Seat
 from adda.personas import Persona, PersonaError, load_persona, load_personas, write_memory_note
 from adda.prompts import (
     END_OF_DISCUSSION_PROMPT,
@@ -40,6 +40,8 @@ AdapterBuilder = Callable[..., SeatAdapter]
 # A seat with no session yet gets at most this many earlier messages in its first prompt.
 FIRST_TURN_HISTORY_LIMIT = 50
 MEMORY_NOTE_TITLE_LENGTH = 80
+EAGERNESS_STEP = 0.4
+COOLDOWN_PENALTY = 1.5
 
 # Reasons stored in Message.meta["woken_by"] and sent in quiet frames.
 WOKEN_BY_BID = "bid"
@@ -58,6 +60,7 @@ SEAT_PATCH_FIELDS = (
     "color",
     "enabled",
     "position",
+    "eagerness",
 )
 # Text fields where the UI sends "" to mean "unset".
 EMPTY_MEANS_NONE_FIELDS = ("model", "persona", "instruction")
@@ -76,15 +79,28 @@ class BudgetReachedError(RuntimeError):
 
 
 def liveliness_threshold(liveliness: int, automatic_turns: int, floor: float) -> float:
-    """Lowest bid that may speak (SPEC section 5): base(L) + ramp(L) * k, never below `floor`.
+    """Lowest bid that may speak (SPEC v0.3 D1): base(L) + ramp(L) * k, never below `floor`.
 
-    base(L) = 9.5 - 0.65 L and ramp(L) = 0.6 - 0.05 L, where k is the number of automatic turns
-    since the last owner message or wake. A quiet room needs a strong reason to speak; a lively
-    one speaks on a weak reason, and every extra turn raises the bar a little.
+    base(L) = 7.5 - 0.5 L and ramp(L) = 0.3 - 0.025 L, where k is the number of bid-driven turns
+    since the last owner message or wake. Jev's scores in real rooms sit between 2 and 7, so the
+    curve is tuned to that range: a quiet room needs a strong reason to speak, a lively one
+    speaks on a weak reason, and every extra turn raises the bar a little.
     """
-    base = 9.5 - 0.65 * liveliness
-    ramp = 0.6 - 0.05 * liveliness
+    base = 7.5 - 0.5 * liveliness
+    ramp = 0.3 - 0.025 * liveliness
     return max(floor, base + ramp * automatic_turns)
+
+
+def adjusted_bid_score(raw_score: float, eagerness: int, cooling_down: bool) -> float:
+    """Jev's score shifted by the seat's eagerness and the cooldown penalty, kept within 0..10.
+
+    Eagerness 5 changes nothing; each step moves the score by 0.4. A seat that spoke less than
+    `cooldown_s` ago loses COOLDOWN_PENALTY, so it can still win when it is far ahead.
+    """
+    adjusted = raw_score + EAGERNESS_STEP * (eagerness - 5)
+    if cooling_down:
+        adjusted -= COOLDOWN_PENALTY
+    return min(10.0, max(0.0, adjusted))
 
 
 def budget_exhausted(room: Room) -> bool:
@@ -124,12 +140,18 @@ class Scheduler:
 
         self.driver_task: asyncio.Task | None = None
         self.speaking_seat: str | None = None
+        # All automatic turns, for the safety cap; and bid-driven turns only, which raise the
+        # threshold (k in liveliness_threshold). Both reset on an owner message or wake.
         self.auto_turns_since_owner = 0
+        self.bid_turns_since_owner = 0
         self.last_spoke_at: dict[str, float] = {}
         # Id of the newest message each seat has already been shown, so later prompts carry
         # only what is new to that seat's resumed tool session.
         self.seen_until: dict[str, str] = {}
         self.router_failure_reported = False
+        # Best bid of the latest round, for the log line when the room goes quiet.
+        self._last_top_seat: str | None = None
+        self._last_top_score: float | None = None
         # Budget value for which the "budget reached" system message was already posted.
         self._budget_notice_for: float | None = None
 
@@ -270,6 +292,10 @@ class Scheduler:
                 return seat
         raise UnknownSeatError(f"no seat {seat_id!r} in room {self.room_id}")
 
+    def _reset_turn_counters(self) -> None:
+        self.auto_turns_since_owner = 0
+        self.bid_turns_since_owner = 0
+
     # Owner actions
 
     async def say(self, text: str) -> Message:
@@ -286,7 +312,7 @@ class Scheduler:
             mentions=list(wakes),
         )
         await self._post(message)
-        self.auto_turns_since_owner = 0
+        self._reset_turn_counters()
         forced = list(wakes.items())
         if forced and budget_exhausted(room):
             forced = []
@@ -302,7 +328,7 @@ class Scheduler:
             raise ValueError(f"seat {seat.name} is disabled")
         self._refuse_when_over_budget(room)
         await self.stop()
-        self.auto_turns_since_owner = 0
+        self._reset_turn_counters()
         self._start_driver(None, [(seat_id, WOKEN_BY_WAKE)])
 
     async def wake_all(self) -> None:
@@ -314,7 +340,7 @@ class Scheduler:
         if not forced:
             raise ValueError("no enabled seat is available to wake")
         await self.stop()
-        self.auto_turns_since_owner = 0
+        self._reset_turn_counters()
         self._start_driver(None, forced)
 
     async def stop(self) -> None:
@@ -373,6 +399,8 @@ class Scheduler:
 
     async def _drive_until_quiet(self, trigger: Message | None, forced: list[tuple[str, str]]):
         pending: list[tuple[str, str]] = list(forced)
+        self._last_top_seat = None
+        self._last_top_score = None
         latest_message = trigger
         room = self.current_room()
         roundrobin_queue: list[str] = []
@@ -388,18 +416,18 @@ class Scheduler:
                 await self._stop_for_budget(room)
                 return
             if self.auto_turns_since_owner >= self.settings.max_auto_turns:
-                await self.broadcast({"type": "quiet", "reason": "safety"})
+                await self._quiet("safety", room)
                 return
 
             bid_score: float | None = None
             if pending:
                 seat_id, woken_by = pending.pop(0)
             elif room.liveliness == 0:
-                await self.broadcast({"type": "quiet", "reason": "paused"})
+                await self._quiet("paused", room)
                 return
             elif room.mode == "roundrobin":
                 if not roundrobin_queue:
-                    await self.broadcast({"type": "quiet", "reason": "nobody"})
+                    await self._quiet("nobody", room)
                     return
                 seat_id, woken_by = roundrobin_queue.pop(0), WOKEN_BY_ROUNDROBIN
             elif room.mode == "bidding" and latest_message is not None:
@@ -407,11 +435,11 @@ class Scheduler:
                     room, latest_message, passed_seats
                 )
                 if chosen_id is None:
-                    await self.broadcast({"type": "quiet", "reason": "nobody"})
+                    await self._quiet("nobody", room)
                     return
                 seat_id, woken_by = chosen_id, WOKEN_BY_BID
             else:
-                await self.broadcast({"type": "quiet", "reason": "nobody"})
+                await self._quiet("nobody", room)
                 return
 
             if seat_id in roundrobin_queue:
@@ -421,6 +449,8 @@ class Scheduler:
                 passed_seats.add(seat_id)
                 continue
             self.auto_turns_since_owner += 1
+            if woken_by == WOKEN_BY_BID:
+                self.bid_turns_since_owner += 1
             latest_message = posted
             passed_seats = set()
             fresh_room = self.current_room()
@@ -435,7 +465,22 @@ class Scheduler:
         if self._budget_notice_for != room.budget_usd:
             self._budget_notice_for = room.budget_usd
             await self._post_system(budget_message(room))
-        await self.broadcast({"type": "quiet", "reason": "budget"})
+        await self._quiet("budget", room)
+
+    async def _quiet(self, reason: str, room: Room) -> None:
+        """Tell the tabs the room went quiet and log why, with the numbers that decided it."""
+        threshold = liveliness_threshold(
+            room.liveliness, self.bid_turns_since_owner, self.settings.router_threshold_floor
+        )
+        logger.info(
+            "room %s quiet: reason=%s threshold=%.2f top_seat=%s top_adjusted_score=%s",
+            self.room_id,
+            reason,
+            threshold,
+            self._last_top_seat,
+            "none" if self._last_top_score is None else f"{self._last_top_score:.2f}",
+        )
+        await self.broadcast({"type": "quiet", "reason": reason})
 
     def _refuse_when_over_budget(self, room: Room) -> None:
         if budget_exhausted(room):
@@ -467,31 +512,51 @@ class Scheduler:
             bids = await router.bids(transcript, bidders, library)
 
         now = self.clock()
-        bidder_ids = {seat.id for seat in bidders}
-        eligible_bids = []
+        seats_by_id = {seat.id: seat for seat in bidders}
+        # `score` is what the threshold compares against; `raw_score` is the router's number.
+        adjusted_bids: list[Bid] = []
         for bid in bids:
             # A router may answer for seats it was not asked about; only bidders count.
-            if bid.seat not in bidder_ids or bid.seat == latest_message.seat_id:
-                continue
-            if bid.seat in passed_seats:
+            seat = seats_by_id.get(bid.seat)
+            if seat is None:
                 continue
             last_spoke = self.last_spoke_at.get(bid.seat)
-            if last_spoke is not None and now - last_spoke < self.settings.cooldown_s:
-                continue
-            eligible_bids.append(bid)
+            cooling_down = last_spoke is not None and now - last_spoke < self.settings.cooldown_s
+            adjusted_bids.append(
+                bid.model_copy(
+                    update={
+                        "score": adjusted_bid_score(bid.score, seat.eagerness, cooling_down),
+                        "raw_score": bid.score,
+                    }
+                )
+            )
 
+        def may_speak(bid: Bid) -> bool:
+            # The author of the latest message never answers itself; a seat that just passed
+            # stays out until someone else speaks; eagerness 0 never bids.
+            return (
+                bid.seat != latest_message.seat_id
+                and bid.seat not in passed_seats
+                and seats_by_id[bid.seat].eagerness > 0
+            )
+
+        eligible_bids = [bid for bid in adjusted_bids if may_speak(bid)]
         threshold = liveliness_threshold(
-            room.liveliness, self.auto_turns_since_owner, self.settings.router_threshold_floor
+            room.liveliness, self.bid_turns_since_owner, self.settings.router_threshold_floor
         )
         chosen = None
+        self._last_top_seat = None
+        self._last_top_score = None
         if eligible_bids:
             top_bid = max(eligible_bids, key=lambda bid: bid.score)
+            self._last_top_seat = top_bid.seat
+            self._last_top_score = top_bid.score
             if top_bid.score >= threshold:
                 chosen = top_bid
         await self.broadcast(
             {
                 "type": "bids",
-                "bids": [bid.model_dump(mode="json") for bid in bids if bid.seat in bidder_ids],
+                "bids": [bid.model_dump(mode="json") for bid in adjusted_bids],
                 "chosen": None if chosen is None else chosen.seat,
                 "threshold": threshold,
                 "router": router.name,
@@ -549,6 +614,8 @@ class Scheduler:
         if reply.session_id:
             self.store.set_session(self.room_id, seat.id, reply.session_id)
         if is_pass(reply.text):
+            logger.info("seat %s passed", seat.name)
+            await self.broadcast({"type": "passed", "seat": seat.id})
             await self._record_spend(reply.cost_usd)  # a PASS still cost money
             return None
 

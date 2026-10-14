@@ -9,6 +9,7 @@
 'use strict';
 
 const MAX_PREVIEWED_ROOMS = 30;
+const FOLDER_SUGGESTION_DEBOUNCE_MS = 300;
 const MODE_LABELS = { bidding: 'Bidding', roundrobin: 'Round-robin', manual: 'Manual' };
 
 const state = {
@@ -18,6 +19,7 @@ const state = {
   settings: null,
   draft: null,
   nextRowKey: 1,
+  folderPicker: { path: '', parent: null, folders: [], selectedPath: null },
 };
 
 const elements = {
@@ -29,6 +31,17 @@ const elements = {
   cancelButton: document.getElementById('cancel-room-button'),
   title: document.getElementById('room-title-input'),
   folder: document.getElementById('room-folder-input'),
+  browseButton: document.getElementById('browse-folder-button'),
+  folderDialog: document.getElementById('folder-dialog'),
+  folderPath: document.getElementById('folder-dialog-path'),
+  folderUpButton: document.getElementById('folder-up-button'),
+  folderList: document.getElementById('folder-list'),
+  folderOpenButton: document.getElementById('folder-open-button'),
+  folderNewButton: document.getElementById('folder-new-button'),
+  folderNewForm: document.getElementById('folder-new-form'),
+  folderNewName: document.getElementById('folder-new-name'),
+  folderChooseButton: document.getElementById('folder-choose-button'),
+  folderCancelButton: document.getElementById('folder-cancel-button'),
   budget: document.getElementById('room-budget-input'),
   mode: document.getElementById('room-mode-select'),
   liveliness: document.getElementById('room-liveliness-input'),
@@ -157,7 +170,7 @@ function createDraftRow(overrides = {}) {
     persona: '',
     instruction: '',
     instructionOpen: false,
-    copies: 1,
+    eagerness: EAGERNESS_DEFAULT,
     color: paletteColor(state.draft ? state.draft.seats.length : 0),
     nameEdited: false,
     colorEdited: false,
@@ -190,16 +203,55 @@ function createDraft() {
   draft.seats.push(createDraftRow({ instructionOpen: true }));
 }
 
-function suggestFolder() {
+/** Local date as YYYYMMDD, the prefix of a default room folder (SPEC v0.3 D4). */
+function todayStamp() {
+  const now = new Date();
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  const day = String(now.getDate()).padStart(2, '0');
+  return `${now.getFullYear()}${month}${day}`;
+}
+
+/** Used while the server's suggestion is pending and when the call fails. */
+function suggestFolderLocally() {
   const slug = slugify(state.draft.title);
   const base = state.settings.folders.rooms_dir.replace(/\/+$/, '');
-  return slug ? `${base}/${slug}` : base;
+  return slug ? `${base}/${todayStamp()}-${slug}` : base;
+}
+
+let folderSuggestionTimerId = null;
+let folderSuggestionRequestCounter = 0;
+
+/**
+ * Ask the server for a folder name that does not exist yet (it appends -2, -3). Only the newest
+ * request may write the field, and never over a folder the owner typed or picked.
+ */
+async function refreshFolderSuggestion() {
+  const requestNumber = ++folderSuggestionRequestCounter;
+  const title = state.draft.title;
+  let suggestion;
+  try {
+    const answer = await fetchJson(`/api/rooms/folder-suggestion?title=${encodeURIComponent(title)}`);
+    suggestion = answer.folder || answer.path;
+  } catch (error) {
+    console.warn('Folder suggestion failed; using the local one', error);
+  }
+  if (requestNumber !== folderSuggestionRequestCounter || state.draft.folderEdited) return;
+  elements.folder.value = suggestion || suggestFolderLocally();
+}
+
+function scheduleFolderSuggestion() {
+  elements.folder.value = suggestFolderLocally();
+  clearTimeout(folderSuggestionTimerId);
+  folderSuggestionTimerId = setTimeout(refreshFolderSuggestion, FOLDER_SUGGESTION_DEBOUNCE_MS);
 }
 
 function renderDraftFields() {
   const draft = state.draft;
   elements.title.value = draft.title;
-  elements.folder.value = draft.folderEdited ? draft.folder : suggestFolder();
+  elements.folder.value = draft.folder;
+  if (!draft.folderEdited) {
+    scheduleFolderSuggestion();
+  }
   elements.budget.value = draft.budget;
   elements.mode.value = draft.mode;
   elements.liveliness.value = draft.liveliness;
@@ -213,7 +265,7 @@ function renderDraftLiveliness() {
 }
 
 function renderSummary() {
-  const seatCount = state.draft.seats.reduce((sum, row) => sum + (Number(row.copies) || 1), 0);
+  const seatCount = state.draft.seats.length;
   const harnessCount = new Set(state.draft.seats.map((row) => row.program)).size;
   const seatWord = seatCount === 1 ? 'seat' : 'seats';
   const harnessWord = harnessCount === 1 ? 'harness' : 'harnesses';
@@ -225,7 +277,7 @@ function renderSummary() {
 // Seat table
 // ---------------------------------------------------------------------------
 
-const SEAT_TABLE_COLUMNS = ['', 'Name', 'Harness', 'Model', 'Thinking', 'Persona', 'Copies', ''];
+const SEAT_TABLE_COLUMNS = ['', 'Name', 'Harness', 'Model', 'Thinking', 'Persona', 'Eagerness', ''];
 
 function renderSeatTable() {
   elements.seatTable.replaceChildren();
@@ -309,15 +361,10 @@ function appendSeatRow(row) {
     renderSeatTable();
   });
 
-  const copiesInput = labelled(document.createElement('input'), 'Copies');
-  copiesInput.type = 'number';
-  copiesInput.min = '1';
-  copiesInput.max = '8';
-  copiesInput.value = row.copies;
-  copiesInput.addEventListener('input', () => {
-    row.copies = Math.max(1, Math.min(8, parseInt(copiesInput.value, 10) || 1));
-    renderSummary();
+  const eagerness = createEagernessControl(row.eagerness, (value) => {
+    row.eagerness = value;
   });
+  eagerness.input.setAttribute('aria-label', `Eagerness for ${row.name}`);
 
   const removeButton = createButton('×', 'btn btn--ghost btn--small', () => {
     state.draft.seats = state.draft.seats.filter((candidate) => candidate !== row);
@@ -325,7 +372,7 @@ function appendSeatRow(row) {
   });
   removeButton.setAttribute('aria-label', `Remove ${row.name}`);
 
-  rowElement.append(colorInput, nameInput, harnessSelect, modelInput, thinkingSelect, personaSelect, copiesInput, removeButton, datalist);
+  rowElement.append(colorInput, nameInput, harnessSelect, modelInput, thinkingSelect, personaSelect, eagerness.element, removeButton, datalist);
   container.append(rowElement);
 
   // The instruction control and card sit under the row, aligned with the name column.
@@ -337,9 +384,7 @@ function appendSeatRow(row) {
   const actions = createElement('div', 'seat-row seat-row--sub');
   const actionCell = createElement('div', 'seat-row-actions');
   actionCell.append(toggle);
-  if (row.copies > 1) {
-    actionCell.append(createElement('span', 'small mute', copiesDescription(row)));
-  }
+  actionCell.append(createButton('Duplicate', 'btn btn--ghost btn--small', () => duplicateRow(row)));
   actions.append(createElement('span'), actionCell);
   container.append(actions);
 
@@ -353,10 +398,25 @@ function appendSeatRow(row) {
   }
 }
 
-function copiesDescription(row) {
-  const names = [];
-  for (let index = 1; index <= row.copies; index++) names.push(`${row.name}${index}`);
-  return `Joins as ${names.join(', ')}, each with its own session.`;
+/** Scout -> Scout2 -> Scout3: the lowest number from 2 up that no other row already uses. */
+function nextFreeName(name) {
+  const stem = name.replace(/\d+$/, '') || name;
+  const takenNames = new Set(state.draft.seats.map((row) => row.name));
+  let number = 2;
+  while (takenNames.has(`${stem}${number}`)) number += 1;
+  return `${stem}${number}`;
+}
+
+function duplicateRow(row) {
+  const copy = createDraftRow({
+    ...row,
+    key: state.nextRowKey++,
+    name: nextFreeName(row.name),
+    nameEdited: true,
+  });
+  const position = state.draft.seats.indexOf(row);
+  state.draft.seats.splice(position + 1, 0, copy);
+  renderSeatTable();
 }
 
 async function fillFromLastRoom() {
@@ -376,6 +436,7 @@ async function fillFromLastRoom() {
         persona: seat.persona || '',
         instruction: seat.instruction || '',
         instructionOpen: Boolean(seat.instruction) || !seat.persona,
+        eagerness: seat.eagerness ?? EAGERNESS_DEFAULT,
         color: seat.color || paletteColor(state.draft.seats.length),
         colorEdited: true,
       }),
@@ -396,7 +457,7 @@ function buildNewSeat(row) {
     program: row.program,
     thinking: row.thinking,
     color: row.color,
-    copies: row.copies,
+    eagerness: row.eagerness,
   };
   if (row.model.trim()) seat.model = row.model.trim();
   if (row.persona) seat.persona = row.persona;
@@ -432,6 +493,99 @@ async function openRoom(event) {
 }
 
 // ---------------------------------------------------------------------------
+// Folder picker (SPEC v0.3 D3)
+// ---------------------------------------------------------------------------
+
+/** Returns true when the listing loaded. `quiet` skips the toast for a path that may not exist yet. */
+async function loadFolder(path, quiet = false) {
+  try {
+    const listing = await fetchJson(`/api/folders?path=${encodeURIComponent(path)}`);
+    state.folderPicker = { ...listing, selectedPath: null };
+    renderFolderPicker();
+    return true;
+  } catch (error) {
+    if (!quiet) reportError('Could not list that folder', error);
+    return false;
+  }
+}
+
+function selectFolderEntry(path) {
+  state.folderPicker.selectedPath = path;
+  renderFolderPicker();
+}
+
+function renderFolderPicker() {
+  const picker = state.folderPicker;
+  elements.folderPath.textContent = picker.path;
+  elements.folderUpButton.disabled = picker.parent === null;
+  elements.folderOpenButton.disabled = picker.selectedPath === null;
+  elements.folderList.replaceChildren();
+  if (picker.folders.length === 0) {
+    elements.folderList.append(createElement('li', 'small mute folder-empty', 'No folders here.'));
+  }
+  for (const folder of picker.folders) {
+    const item = createElement('li');
+    const button = createButton(folder.name, 'folder-entry', () => selectFolderEntry(folder.path));
+    button.setAttribute('aria-pressed', String(folder.path === picker.selectedPath));
+    button.addEventListener('dblclick', () => loadFolder(folder.path));
+    button.addEventListener('keydown', (event) => {
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        loadFolder(folder.path);
+      }
+    });
+    item.append(button);
+    elements.folderList.append(item);
+  }
+}
+
+async function openFolderPicker() {
+  elements.folderNewForm.hidden = true;
+  elements.folderDialog.showModal();
+  // The field usually holds a folder that does not exist yet, so start at its parent, which
+  // normally does; an empty path makes the server list the rooms folder.
+  const fieldFolder = elements.folder.value.trim();
+  const parentOfField = fieldFolder.includes('/') ? fieldFolder.slice(0, fieldFolder.lastIndexOf('/')) : '';
+  const openedFieldFolder = await loadFolder(parentOfField, true);
+  if (!openedFieldFolder) await loadFolder('');
+}
+
+async function createFolderHere(event) {
+  event.preventDefault();
+  const name = elements.folderNewName.value.trim();
+  if (!name) return;
+  try {
+    const created = await sendJson('POST', '/api/folders', { path: state.folderPicker.path, name });
+    elements.folderNewForm.hidden = true;
+    elements.folderNewName.value = '';
+    await loadFolder(created.path);
+  } catch (error) {
+    reportError('Could not create the folder', error);
+  }
+}
+
+function chooseCurrentFolder() {
+  state.draft.folderEdited = true;
+  state.draft.folder = state.folderPicker.path;
+  elements.folder.value = state.folderPicker.path;
+  elements.folderDialog.close();
+  elements.folder.focus();
+}
+
+function bindFolderPicker() {
+  elements.browseButton.addEventListener('click', openFolderPicker);
+  elements.folderUpButton.addEventListener('click', () => loadFolder(state.folderPicker.parent));
+  elements.folderOpenButton.addEventListener('click', () => loadFolder(state.folderPicker.selectedPath));
+  elements.folderNewButton.addEventListener('click', () => {
+    elements.folderNewForm.hidden = false;
+    elements.folderNewName.focus();
+  });
+  elements.folderNewForm.addEventListener('submit', createFolderHere);
+  elements.folderChooseButton.addEventListener('click', chooseCurrentFolder);
+  elements.folderCancelButton.addEventListener('click', () => elements.folderDialog.close());
+}
+
+// ---------------------------------------------------------------------------
 // Startup
 // ---------------------------------------------------------------------------
 
@@ -448,10 +602,11 @@ function bindEvents() {
     elements.form.hidden = true;
   });
   elements.form.addEventListener('submit', openRoom);
+  bindFolderPicker();
 
   elements.title.addEventListener('input', () => {
     state.draft.title = elements.title.value;
-    if (!state.draft.folderEdited) elements.folder.value = suggestFolder();
+    if (!state.draft.folderEdited) scheduleFolderSuggestion();
   });
   elements.folder.addEventListener('input', () => {
     state.draft.folderEdited = true;

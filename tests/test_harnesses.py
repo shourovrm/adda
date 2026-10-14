@@ -2,7 +2,13 @@ import pytest
 
 from adda import harnesses
 from adda.config import load_settings
-from adda.harnesses import clear_model_cache, detect_harnesses, parse_version, thinking_arguments
+from adda.harnesses import (
+    clear_model_cache,
+    detect_harnesses,
+    parse_version,
+    pi_models,
+    thinking_arguments,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -79,10 +85,25 @@ def test_defaults_come_from_settings_and_extras_are_appended(tmp_path):
     )
     settings = load_settings({"ADDA_KEYS_FILE": str(tmp_path / "k")}, config_path)
     system = FakeSystem({"claude", "pi"})
-    by_program = {h.program: h for h in detect_harnesses(settings, system.run, system.which)}
+    by_program = {
+        h.program: h
+        for h in detect_harnesses(
+            settings, system.run, system.which, pi_settings_path=tmp_path / "no-pi.json"
+        )
+    }
     claude, pi, codex = by_program["claude"], by_program["pi"], by_program["codex"]
     assert (claude.default_model, claude.default_thinking) == ("opus", "high")
-    assert claude.model_suggestions == ["sonnet", "opus", "haiku", "x"]
+    assert claude.model_suggestions == [
+        "fable",
+        "opus",
+        "sonnet",
+        "haiku",
+        "claude-fable-5-1",
+        "claude-opus-5-5",
+        "claude-sonnet-5-5",
+        "claude-haiku-5-5",
+        "x",
+    ]
     assert pi.default_model is None and pi.enabled is False
     assert pi.model_suggestions == ["z-ai/glm-5.3-flash", "my/model"]
     assert codex.model_suggestions == ["gpt-5-codex"]
@@ -146,3 +167,30 @@ def test_thinking_arguments():
 
 def test_default_runner_never_raises_for_missing_binary():
     assert harnesses.run_command(["adda-no-such-binary-xyz", "--version"], 1.0) is None
+
+
+def test_pi_models_come_from_its_settings_file_with_provider_prefixes(tmp_path):
+    settings_file = tmp_path / "settings.json"
+    settings_file.write_text(
+        '{"enabledModels": ["openrouter/a/b", "zai/glm"], "defaultModel": "openrouter/c/d"}',
+        encoding="utf-8",
+    )
+    assert pi_models(settings_file) == ["openrouter/a/b", "zai/glm", "openrouter/c/d"]
+
+
+def test_pi_models_fall_back_when_the_file_is_missing_or_unusable(tmp_path):
+    assert pi_models(tmp_path / "absent.json") == ["z-ai/glm-5.3-flash"]
+    broken = tmp_path / "broken.json"
+    broken.write_text("{not json", encoding="utf-8")
+    assert pi_models(broken) == ["z-ai/glm-5.3-flash"]
+    empty = tmp_path / "empty.json"
+    empty.write_text("{}", encoding="utf-8")
+    assert pi_models(empty) == ["z-ai/glm-5.3-flash"]
+
+
+def test_detect_harnesses_lists_pi_models_from_the_given_file(settings, tmp_path):
+    settings_file = tmp_path / "settings.json"
+    settings_file.write_text('{"defaultModel": "p/m"}', encoding="utf-8")
+    system = FakeSystem({"pi"})
+    result = detect_harnesses(settings, system.run, system.which, pi_settings_path=settings_file)
+    assert result[2].model_suggestions == ["p/m"]

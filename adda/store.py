@@ -71,7 +71,8 @@ CREATE TABLE IF NOT EXISTS room_seats (
     instruction TEXT,
     color TEXT NOT NULL,
     enabled INTEGER NOT NULL DEFAULT 1,
-    position INTEGER NOT NULL DEFAULT 0
+    position INTEGER NOT NULL DEFAULT 0,
+    eagerness INTEGER NOT NULL DEFAULT 5
 );
 CREATE INDEX IF NOT EXISTS room_seats_by_room ON room_seats(room_id, position);
 CREATE TABLE IF NOT EXISTS messages (
@@ -113,6 +114,7 @@ SEAT_UPDATABLE_FIELDS = (
     "color",
     "enabled",
     "position",
+    "eagerness",
 )
 PROGRAM_NAMES = ("claude", "opencode", "pi", "codex")
 
@@ -184,6 +186,18 @@ class Store:
                 if _table_exists(self._connection, "threads"):
                     _upgrade_from_version_one(self._connection)
             self._connection.executescript(SCHEMA)
+            self._add_missing_columns()
+
+    def _add_missing_columns(self) -> None:
+        """Columns added after v0.2 shipped; CREATE TABLE IF NOT EXISTS leaves old tables as is."""
+        seat_columns = {
+            row["name"] for row in self._connection.execute("PRAGMA table_info(room_seats)")
+        }
+        if "eagerness" not in seat_columns:
+            with self._connection:
+                self._connection.execute(
+                    "ALTER TABLE room_seats ADD COLUMN eagerness INTEGER NOT NULL DEFAULT 5"
+                )
 
     def close(self) -> None:
         with self._lock:
@@ -301,8 +315,9 @@ class Store:
         color: str = "#888888",
         enabled: bool = True,
         position: int | None = None,
+        eagerness: int = 5,
     ) -> Seat:
-        _check_seat_fields(program=program, thinking=thinking)
+        _check_seat_fields(program=program, thinking=thinking, eagerness=eagerness)
         with self._lock:
             self._load_room(room_id)
             self._check_name_free(room_id, name, ignoring_seat_id=None)
@@ -322,12 +337,13 @@ class Store:
                 color=color,
                 enabled=enabled,
                 position=position,
+                eagerness=eagerness,
             )
             with self._connection:
                 self._connection.execute(
                     "INSERT INTO room_seats (id, room_id, name, program, model, thinking, persona,"
-                    " instruction, color, enabled, position) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?,"
-                    " ?, ?)",
+                    " instruction, color, enabled, position, eagerness)"
+                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         config.id,
                         config.room_id,
@@ -340,6 +356,7 @@ class Store:
                         config.color,
                         int(config.enabled),
                         config.position,
+                        config.eagerness,
                     ),
                 )
         return Seat.from_config(config)
@@ -534,6 +551,14 @@ def _check_seat_fields(**fields: Any) -> None:
         raise ValueError(f"program must be one of {PROGRAM_NAMES}, got {fields['program']!r}")
     if "thinking" in fields and fields["thinking"] not in THINKING_LEVELS:
         raise ValueError(f"thinking must be one of {THINKING_LEVELS}, got {fields['thinking']!r}")
+    if "eagerness" in fields:
+        eagerness = fields["eagerness"]
+        if (
+            isinstance(eagerness, bool)
+            or not isinstance(eagerness, int)
+            or not 0 <= eagerness <= 10
+        ):
+            raise ValueError(f"eagerness must be a whole number 0..10, got {eagerness!r}")
 
 
 def _seat_fields(row: sqlite3.Row) -> dict[str, Any]:
@@ -549,6 +574,7 @@ def _seat_fields(row: sqlite3.Row) -> dict[str, Any]:
         "color": row["color"],
         "enabled": bool(row["enabled"]),
         "position": row["position"],
+        "eagerness": row["eagerness"],
     }
 
 

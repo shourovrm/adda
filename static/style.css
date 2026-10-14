@@ -204,6 +204,13 @@ code {
   text-transform: uppercase;
 }
 
+.brand-mark {
+  width: 28px;
+  height: 28px;
+  margin-right: 10px;
+  vertical-align: -3px;
+}
+
 .brand small {
   margin-left: 10px;
   color: var(--mute);
@@ -438,6 +445,115 @@ input[type="color"] {
   cursor: pointer;
 }
 
+.slider--small {
+  height: 6px;
+}
+
+.slider--small::-webkit-slider-thumb {
+  width: 16px;
+  height: 16px;
+  border-width: 2px;
+}
+
+.slider--small::-moz-range-thumb {
+  width: 12px;
+  height: 12px;
+  border-width: 2px;
+}
+
+.eagerness {
+  display: grid;
+  gap: 3px;
+}
+
+.eagerness .slider {
+  outline-offset: 4px;
+}
+
+.field-with-button {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.field-with-button input {
+  flex: 1;
+}
+
+.folder-dialog {
+  width: min(620px, 92vw);
+  box-shadow: var(--floating-shadow);
+}
+
+.folder-bar {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  margin: 12px 0;
+}
+
+.folder-path {
+  overflow-wrap: anywhere;
+  font-family: var(--font-code);
+  font-size: 0.85rem;
+}
+
+.folder-list {
+  max-height: 280px;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+  background: var(--ground);
+}
+
+.folder-entry {
+  display: block;
+  width: 100%;
+  padding: 8px 12px;
+  border: 0;
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.folder-entry:hover {
+  background: color-mix(in srgb, var(--ink) 8%, transparent);
+}
+
+.folder-entry[aria-pressed="true"] {
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+.folder-empty {
+  padding: 10px 12px;
+}
+
+.folder-new {
+  display: flex;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.folder-new input {
+  flex: 1;
+}
+
+.folder-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  margin-top: 16px;
+}
+
+.folder-actions .spacer {
+  flex: 1;
+}
+
 .scale {
   display: flex;
   justify-content: space-between;
@@ -530,7 +646,7 @@ th {
 
 .seat-row {
   display: grid;
-  grid-template-columns: 30px 1.1fr 1.15fr 1.3fr 1.15fr 1.3fr 70px 34px;
+  grid-template-columns: 30px 1.1fr 1.15fr 1.3fr 1.15fr 1.3fr 1.5fr 34px;
   gap: 10px;
   align-items: center;
   padding: 10px 0;
@@ -1158,6 +1274,7 @@ body.page-room {
 
 .seat-foot {
   display: flex;
+  flex-wrap: wrap;
   gap: 10px;
   align-items: center;
   margin-top: 6px;
@@ -1419,4 +1536,16 @@ dialog::backdrop {
   .jump-latest {
     bottom: 170px;
   }
+}
+
+/* ---------- v0.3 additions ---------- */
+
+.msg--passed {
+  margin: 4px 0;
+  font-size: 0.8rem;
+  font-style: italic;
+}
+
+.seat-eagerness {
+  white-space: nowrap;
 }

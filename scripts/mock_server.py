@@ -1,4 +1,4 @@
-"""Fake Adda server for UI work (SPEC section 6, v0.2).
+"""Fake Adda server for UI work (SPEC section 6 and the v0.3 delta).
 
 Run with `uv run python scripts/mock_server.py`; it listens on 127.0.0.1:8766 and keeps
 everything in memory. It serves the real static pages, so the front end can be built and
@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import random
 import re
+import tempfile
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -28,6 +29,18 @@ OWNER_NAME = "Riad"
 REPLY_DELAY_SECONDS = 1.5
 BID_DELAY_SECONDS = 0.6
 COST_PER_REPLY_USD = 0.031
+
+# The folder browser works on a throwaway directory so the mock never creates folders in the
+# owner's home. It stands in for the home directory the real server confines browsing to.
+SANDBOX_ROOT = Path(tempfile.mkdtemp(prefix="adda-mock-home-"))
+MOCK_ROOMS_DIR = SANDBOX_ROOT / "Adda-Rooms"
+for sample_folder in ("Adda-Rooms", "repos/adda", "repos/notes", "Documents", "Downloads"):
+    (SANDBOX_ROOT / sample_folder).mkdir(parents=True, exist_ok=True)
+
+EAGERNESS_BID_PER_STEP = 0.4
+NEUTRAL_EAGERNESS = 5
+PASS_PROBABILITY = 0.4
+THRESHOLD_FLOOR = 2.5
 
 SEAT_COLORS = ["#CF5A26", "#2A8F5E", "#D6409F", "#3E7FD6", "#8A6BD1", "#B08900"]
 
@@ -59,7 +72,16 @@ HARNESSES: list[dict[str, Any]] = [
         "path": "/home/riad/.local/bin/claude",
         "version": "2.1.296",
         "supports_thinking": True,
-        "model_suggestions": ["sonnet", "opus", "haiku"],
+        "model_suggestions": [
+            "fable",
+            "opus",
+            "sonnet",
+            "haiku",
+            "claude-fable-5-1",
+            "claude-opus-5-5",
+            "claude-sonnet-5-5",
+            "claude-haiku-5-5",
+        ],
         "login_hint": "Max login; never an API key",
         "default_model": "sonnet",
         "default_thinking": "medium",
@@ -75,6 +97,11 @@ HARNESSES: list[dict[str, Any]] = [
             "deepseek/deepseek-flash",
             "deepseek/deepseek-v4-pro",
             "opencode-go/glm-5.3-flash",
+            "openrouter/z-ai/glm-5.3-flash",
+            "openrouter/moonshotai/kimi-k3",
+            "deepseek/deepseek-v4-flash",
+            "opencode-go/kimi-k3",
+            "opencode-go/deepseek-v4-pro",
         ],
         "login_hint": "DeepSeek key from the shell",
         "default_model": "deepseek/deepseek-flash",
@@ -87,7 +114,12 @@ HARNESSES: list[dict[str, Any]] = [
         "path": "/home/riad/.npm-global/bin/pi",
         "version": "1.1.0",
         "supports_thinking": True,
-        "model_suggestions": ["z-ai/glm-5.3-flash"],
+        "model_suggestions": [
+            "openrouter/z-ai/glm-5.3-flash",
+            "openrouter/deepseek/deepseek-v4-flash",
+            "openrouter/moonshotai/kimi-k3",
+            "z-ai/glm-5.3-flash",
+        ],
         "login_hint": "OpenRouter key",
         "default_model": "z-ai/glm-5.3-flash",
         "default_thinking": "default",
@@ -148,7 +180,7 @@ SETTINGS: dict[str, Any] = {
         "line": "Owner of Adda. Prefers short answers and a decision at the end.",
     },
     "folders": {
-        "rooms_dir": "~/Adda-Rooms",
+        "rooms_dir": str(MOCK_ROOMS_DIR),
         "data_dir": "~/.adda",
         "personas_dir": "~/repos/adda/personas",
     },
@@ -156,14 +188,14 @@ SETTINGS: dict[str, Any] = {
         "kind": "jev",
         "provider": "openrouter",
         "model": "",
-        "threshold_floor": 3.0,
+        "threshold_floor": THRESHOLD_FLOOR,
         "window": 20,
     },
     "room_defaults": {
         "liveliness": 6,
         "budget_usd": 1.0,
         "mode": "bidding",
-        "cooldown_s": 20,
+        "cooldown_s": 0,
         "seat_timeout_s": 180,
         "max_auto_turns": 40,
     },
@@ -240,6 +272,7 @@ def build_seat(room_id: str, position: int, spec: dict[str, Any]) -> dict[str, A
         "persona": spec.get("persona") or None,
         "instruction": spec.get("instruction") or None,
         "color": spec.get("color") or SEAT_COLORS[position % len(SEAT_COLORS)],
+        "eagerness": int(spec.get("eagerness", NEUTRAL_EAGERNESS)),
         "enabled": spec.get("enabled", True),
         "position": position,
         "handle": make_handle(name),
@@ -441,9 +474,17 @@ async def broadcast(room_id: str, frame: dict[str, Any]) -> None:
 
 
 def threshold_for(liveliness: int, automatic_turns: int) -> float:
-    base = 9.5 - 0.65 * liveliness
-    ramp = 0.6 - 0.05 * liveliness
-    return base + ramp * automatic_turns
+    base = 7.5 - 0.5 * liveliness
+    ramp = 0.3 - 0.025 * liveliness
+    return max(THRESHOLD_FLOOR, base + ramp * automatic_turns)
+
+
+def adjust_for_eagerness(raw_score: float, eagerness: int) -> float:
+    """Eagerness 0 never bids; otherwise 0.4 per step away from 5, clamped to 0..10."""
+    if eagerness == 0:
+        return 0.0
+    adjusted = raw_score + EAGERNESS_BID_PER_STEP * (eagerness - NEUTRAL_EAGERNESS)
+    return round(min(10.0, max(0.0, adjusted)), 1)
 
 
 def find_mentioned_seats(
@@ -513,10 +554,17 @@ async def run_turns(room: dict[str, Any], queued: list[dict[str, Any]], woken_by
         eligible = [s for s in room["seats"] if s["enabled"] and s["available"]]
         if not eligible:
             break
-        bids = [
-            {"seat": s["id"], "score": round(random.uniform(2, 9), 1), "confidence": 0.7}
-            for s in eligible
-        ]
+        bids = []
+        for seat_candidate in eligible:
+            raw_score = round(random.uniform(2, 9), 1)
+            bids.append(
+                {
+                    "seat": seat_candidate["id"],
+                    "score": adjust_for_eagerness(raw_score, seat_candidate["eagerness"]),
+                    "raw_score": raw_score,
+                    "confidence": 0.7,
+                }
+            )
         threshold = threshold_for(room["liveliness"], automatic_turns)
         top = max(bids, key=lambda bid: bid["score"])
         chosen = top["seat"] if top["score"] >= threshold else None
@@ -535,6 +583,7 @@ async def run_turns(room: dict[str, Any], queued: list[dict[str, Any]], woken_by
             await broadcast(room_id, {"type": "quiet", "reason": "nobody"})
             return
         seat = next(s for s in eligible if s["id"] == chosen)
+        await announce_pass(room, [s for s in eligible if s["id"] != chosen])
         await seat_speaks(room, seat, "bid", top["score"])
         automatic_turns += 1
 
@@ -551,6 +600,13 @@ async def run_turns(room: dict[str, Any], queued: list[dict[str, Any]], woken_by
         await broadcast(room_id, {"type": "quiet", "reason": "paused"})
     else:
         await broadcast(room_id, {"type": "quiet", "reason": "nobody"})
+
+
+async def announce_pass(room: dict[str, Any], candidates: list[dict[str, Any]]) -> None:
+    """Sometimes a seat that was not chosen says PASS, so the UI has a passed frame to show."""
+    if candidates and random.random() < PASS_PROBABILITY:
+        passer = random.choice(candidates)
+        await broadcast(room["id"], {"type": "passed", "seat": passer["id"]})
 
 
 def start_turns(room: dict[str, Any], queued: list[dict[str, Any]], woken_by: str) -> None:
@@ -572,6 +628,7 @@ SEAT_PATCH_KEYS = {
     "persona",
     "instruction",
     "color",
+    "eagerness",
     "enabled",
     "position",
 }
@@ -600,6 +657,8 @@ def apply_seat_patch(room: dict[str, Any], seat_id: str, patch: dict[str, Any]) 
     unknown = set(patch) - SEAT_PATCH_KEYS
     if unknown:
         raise HTTPException(422, f"cannot patch {sorted(unknown)}")
+    if "eagerness" in patch and not 0 <= int(patch["eagerness"]) <= 10:
+        raise HTTPException(422, "eagerness must be 0..10")
     if "name" in patch:
         new_name = patch["name"].strip()
         if not new_name:
@@ -677,6 +736,60 @@ def list_rooms() -> list[dict[str, Any]]:
     return sorted(rooms.values(), key=lambda room: room["created_at"], reverse=True)
 
 
+def resolve_sandbox_path(path_text: str) -> Path:
+    """Empty means the rooms folder; anything outside the sandbox home is refused."""
+    path = Path(path_text) if path_text else MOCK_ROOMS_DIR
+    resolved = path.resolve()
+    if resolved != SANDBOX_ROOT and SANDBOX_ROOT not in resolved.parents:
+        raise HTTPException(400, "folder must be inside the home directory")
+    return resolved
+
+
+def describe_folder(path: Path) -> dict[str, Any]:
+    folders = sorted(
+        (child for child in path.iterdir() if child.is_dir() and not child.name.startswith(".")),
+        key=lambda child: child.name.lower(),
+    )
+    return {
+        "path": str(path),
+        "parent": None if path == SANDBOX_ROOT else str(path.parent),
+        "folders": [{"name": child.name, "path": str(child)} for child in folders],
+    }
+
+
+@app.get("/api/folders")
+def list_folders(path: str = "") -> dict[str, Any]:
+    resolved = resolve_sandbox_path(path)
+    if not resolved.is_dir():
+        raise HTTPException(404, "no such folder")
+    return describe_folder(resolved)
+
+
+@app.post("/api/folders")
+async def create_folder(request: Request) -> dict[str, str]:
+    body = await request.json()
+    name = str(body.get("name", "")).strip()
+    if not name or "/" in name or name.startswith("."):
+        raise HTTPException(422, "folder name must be a plain visible name")
+    parent = resolve_sandbox_path(str(body.get("path", "")))
+    new_folder = parent / name
+    if new_folder.exists():
+        raise HTTPException(409, "that folder already exists")
+    new_folder.mkdir()
+    return {"name": name, "path": str(new_folder)}
+
+
+@app.get("/api/rooms/folder-suggestion")
+def folder_suggestion(title: str = "") -> dict[str, str]:
+    stem = f"{datetime.now().strftime('%Y%m%d')}-{slugify(title)}"
+    candidate = MOCK_ROOMS_DIR / stem
+    suffix = 2
+    while candidate.exists():
+        candidate = MOCK_ROOMS_DIR / f"{stem}-{suffix}"
+        suffix += 1
+    return {"folder": str(candidate)}
+
+
 @app.get("/api/rooms/last-seats")
 def last_seats() -> list[dict[str, Any]]:
     newest = list_rooms()[0] if rooms else None
@@ -685,7 +798,16 @@ def last_seats() -> list[dict[str, Any]]:
     return [
         {
             key: seat[key]
-            for key in ("name", "program", "model", "thinking", "persona", "instruction", "color")
+            for key in (
+                "name",
+                "program",
+                "model",
+                "thinking",
+                "persona",
+                "instruction",
+                "color",
+                "eagerness",
+            )
         }
         for seat in newest["seats"]
     ]

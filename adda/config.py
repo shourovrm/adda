@@ -68,14 +68,14 @@ DEFAULT_VALUES: dict[str, Any] = {
         "kind": "jev",
         "provider": "openrouter",
         "model": "",
-        "threshold_floor": 3.0,
+        "threshold_floor": 2.5,
         "window": 20,
     },
     "room_defaults": {
         "liveliness": 6,
         "budget_usd": 1.0,
         "mode": "bidding",
-        "cooldown_s": 20.0,
+        "cooldown_s": 0.0,
         "seat_timeout_s": 180.0,
         "max_auto_turns": 40,
     },
@@ -144,12 +144,12 @@ class Settings:
     router_kind: str = "jev"
     router_provider: str = "openrouter"
     router_model: str = ""  # empty means the provider default; see `jev_model`
-    router_threshold_floor: float = 3.0
+    router_threshold_floor: float = 2.5
     router_window: int = 20
     liveliness: int = 6
     budget_usd: float = 1.0
     mode: str = "bidding"
-    cooldown_s: float = 20.0
+    cooldown_s: float = 0.0
     seat_timeout_s: float = 180.0
     max_auto_turns: int = 40
     harnesses: dict[str, HarnessSettings] = field(default_factory=dict)

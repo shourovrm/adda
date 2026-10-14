@@ -52,19 +52,24 @@ uv run ruff format .
 
 ## Rooms and folders
 
-Each room has a folder. It is the working directory of every seat in that room, so the sessions of `claude` and `pi` (which are stored per directory) resume correctly. If the new-room card leaves the folder empty, Adda creates `<rooms_dir>/<title-slug>-<room id>`, by default under `~/Adda-Rooms`. A folder you type is created, with parents, if it does not exist. Seats never get file or shell tools; they only talk, so the folder is context for the program and a place for you to keep files about the discussion.
+Each room has a folder. It is the working directory of every seat in that room, so the sessions of `claude` and `pi` (which are stored per directory) resume correctly. If the new-room card leaves the folder empty, Adda creates `<rooms_dir>/<YYYYMMDD>-<title-slug>` with the local date (for example `~/Adda-Rooms/20261014-design-queue`), and appends `-2`, `-3` and so on when that folder exists. `GET /api/rooms/folder-suggestion?title=` returns the same string for the UI. The "Browse" dialog behind the folder field uses `GET /api/folders?path=` (subfolders, hidden ones skipped, sorted by name; an empty path means `rooms_dir`) and `POST /api/folders` with `{"path", "name"}` (creates a subfolder, 409 if it exists); both refuse paths outside your home directory. A folder you type is created, with parents, if it does not exist. Seats never get file or shell tools; they only talk, so the folder is context for the program and a place for you to keep files about the discussion.
 
 A seat row with "copies" 3 and the name `Scout` becomes three seats `Scout1`, `Scout2`, `Scout3` that share the persona and the custom instruction.
 
+## Model suggestions
+
+The model field offers `fable, opus, sonnet, haiku` and the dated Claude names for `claude`; the `enabledModels` and `defaultModel` entries of `~/.pi/agent/settings.json` for `pi` (falling back to `z-ai/glm-5.3-flash` when the file is missing); the output of `opencode models` for `opencode`; and `gpt-5-codex` for `codex`, plus any `extra_models` from the config. Any other text is passed through unchanged.
+
 ## Turn-taking
 
-After every message Jev scores each seat's urge to speak from 0 to 10, and the top score speaks if it reaches the threshold. Three controls shape that:
+After every message Jev scores each seat's urge to speak from 0 to 10, and the top score speaks if it reaches the threshold. These controls shape that:
 
-- **Liveliness** (0 to 10, per room) sets the threshold. With `k` automatic turns since the last owner message or wake, the threshold is `max(floor, base + ramp * k)` where `base = 9.5 - 0.65 * liveliness` and `ramp = 0.6 - 0.05 * liveliness`. At liveliness 10 the first seat speaks at a score of 3.0 and each further turn raises the bar by 0.1; at liveliness 1 it needs 8.85 and the bar rises by 0.55 per turn. The floor is the router setting `threshold_floor` (3.0). Liveliness 0 pauses the room: no bidding and no round-robin, only mentions and Wake.
+- **Liveliness** (0 to 10, per room) sets the threshold. With `k` bid-driven turns since the last owner message or wake, the threshold is `max(floor, base + ramp * k)` where `base = 7.5 - 0.5 * liveliness` and `ramp = 0.3 - 0.025 * liveliness`. At liveliness 10 the first seat speaks at a score of 2.5 and each further turn raises the bar by 0.05; at liveliness 8 it needs 3.5 (+0.1 per turn); at liveliness 1 it needs 7.0 (+0.275 per turn). Mention, `@all`, wake and round-robin turns do not raise `k`. The floor is the router setting `threshold_floor` (2.5). Liveliness 0 pauses the room: no bidding and no round-robin, only mentions and Wake.
+- **Eagerness** (0 to 10, per seat, default 5) shifts that seat's bid: `adjusted = clamp(score + 0.4 * (eagerness - 5), 0, 10)`, so eagerness 10 adds 2.0 and eagerness 0 means the seat never bids (it still answers mentions and wakes). The `bids` frame carries `score` (adjusted, compared with the threshold) and `raw_score` (Jev's number). When a seat answers PASS, a `{"type":"passed","seat":id}` frame is sent and nothing is stored.
 - **Budget** (USD, per room, 0 means unlimited). Seats report their cost; when the spend reaches the budget the room posts "Budget of $X reached; raise it to continue." and goes quiet. Mentions and wakes are refused until you raise the budget.
 - **Safety stop**: at most `max_auto_turns` (40) automatic turns follow one owner message, whatever the budget.
 
-Mentions bypass bidding. `@ravi` wakes one seat (case-insensitive; a handle is the seat name without spaces, lowercased). `@all` wakes every enabled, installed seat in roster order. `@scout*` wakes every seat whose handle starts with `scout`. A seat is never woken by its own message. An owner message cancels the seat that is currently speaking. A seat that just spoke is on cooldown (`cooldown_s`, 20 s) for bidding but not for mentions.
+Mentions bypass bidding. `@ravi` wakes one seat (case-insensitive; a handle is the seat name without spaces, lowercased). `@all` wakes every enabled, installed seat in roster order. `@scout*` wakes every seat whose handle starts with `scout`. A seat is never woken by its own message. An owner message cancels the seat that is currently speaking. Cooldown is off by default (`cooldown_s = 0`); when set above 0, a seat that spoke less than that many seconds ago bids 1.5 lower, and mentions ignore it.
 
 The room mode sets who is scored: `bidding` (default), `roundrobin` (one pass over the enabled seats after an owner message, then quiet), or `manual` (mentions and the wake buttons only).
 
@@ -86,14 +91,14 @@ personas_dir = "<repo>/personas"
 kind = "jev"                    # jev | heuristic
 provider = "openrouter"         # openrouter | typesafe
 model = ""                      # empty = provider default
-threshold_floor = 3.0
+threshold_floor = 2.5
 window = 20                     # messages the router sees
 
 [room_defaults]
 liveliness = 6
 budget_usd = 1.0
 mode = "bidding"
-cooldown_s = 20
+cooldown_s = 0
 seat_timeout_s = 180
 max_auto_turns = 40
 

@@ -272,3 +272,47 @@ def test_upgrade_from_version_one_database(tmp_path):
     reopened = Store(database_path)
     assert reopened.get_room("t1").title == "Old discussion"
     reopened.close()
+
+
+def test_database_without_the_eagerness_column_is_upgraded_in_place(tmp_path):
+    import sqlite3
+
+    database_path = tmp_path / "v02.db"
+    # A v0.2 database: the room_seats table has no eagerness column.
+    connection = sqlite3.connect(database_path)
+    connection.executescript(
+        """
+        CREATE TABLE rooms (id TEXT PRIMARY KEY, title TEXT NOT NULL, created_at TEXT NOT NULL,
+            ended_at TEXT, mode TEXT NOT NULL, folder TEXT NOT NULL DEFAULT '',
+            liveliness INTEGER NOT NULL DEFAULT 6, budget_usd REAL NOT NULL DEFAULT 0,
+            spent_usd REAL NOT NULL DEFAULT 0);
+        CREATE TABLE room_seats (id TEXT PRIMARY KEY, room_id TEXT NOT NULL, name TEXT NOT NULL,
+            program TEXT NOT NULL, model TEXT, thinking TEXT NOT NULL DEFAULT 'default',
+            persona TEXT, instruction TEXT, color TEXT NOT NULL,
+            enabled INTEGER NOT NULL DEFAULT 1, position INTEGER NOT NULL DEFAULT 0);
+        INSERT INTO rooms (id, title, created_at, mode)
+            VALUES ('r1', 'old', '2026-01-01', 'bidding');
+        INSERT INTO room_seats (id, room_id, name, program, color)
+            VALUES ('s1', 'r1', 'Ravi', 'claude', '#fff');
+        """
+    )
+    connection.commit()
+    connection.close()
+
+    store = Store(database_path)
+    assert store.get_room("r1").seats[0].eagerness == 5
+    store.update_seat("s1", eagerness=9)
+    assert store.get_seat("s1").eagerness == 9
+    store.close()
+    Store(database_path).close()  # a second open must not try to add the column again
+
+
+def test_add_seat_stores_eagerness_and_rejects_values_outside_zero_to_ten():
+    store = Store(":memory:")
+    room = store.create_room("t")
+    seat = store.add_seat(room.id, name="A", program="claude", eagerness=0)
+    assert store.get_seat(seat.id).eagerness == 0
+    with pytest.raises(ValueError, match="eagerness"):
+        store.add_seat(room.id, name="B", program="claude", eagerness=11)
+    with pytest.raises(ValueError, match="eagerness"):
+        store.update_seat(seat.id, eagerness=-1)

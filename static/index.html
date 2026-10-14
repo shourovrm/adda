@@ -4,16 +4,16 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light dark">
-  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 16 16%22%3E%3Crect width=%2216%22 height=%2216%22 fill=%22%23f2c200%22/%3E%3C/svg%3E">
-  <link rel="stylesheet" href="/static/style.css">
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v=0.3">
+  <link rel="stylesheet" href="/static/style.css?v=0.3">
   <title>Rooms · Adda</title>
-  <script src="/static/common.js" defer></script>
-  <script src="/static/rooms.js" defer></script>
+  <script src="/static/common.js?v=0.3" defer></script>
+  <script src="/static/rooms.js?v=0.3" defer></script>
 </head>
 <body>
   <div class="wrap">
     <header class="top">
-    <a class="brand" href="/">Adda <small lang="bn">আড্ডা</small></a>
+    <a class="brand" href="/"><img class="brand-mark" src="/static/logo.svg?v=0.3" width="28" height="28" alt="">Adda <small lang="bn">আড্ডা</small></a>
     <nav aria-label="Pages">
       <a href="/" aria-current="page">Rooms</a>
       <a href="/settings">Settings</a>
@@ -31,8 +31,11 @@
       <input type="text" id="room-title-input" required maxlength="200" autocomplete="off" placeholder="What should they discuss?">
 
       <label for="room-folder-input">Room folder</label>
-      <input type="text" id="room-folder-input" autocomplete="off">
-      <div class="field-hint">Created if missing. Starts as the rooms folder plus the name; edit it to point at a project.</div>
+      <div class="field-with-button">
+        <input type="text" id="room-folder-input" autocomplete="off">
+        <button class="btn btn--ghost btn--small" id="browse-folder-button" type="button">Browse</button>
+      </div>
+      <div class="field-hint">Created if missing. Starts as the rooms folder plus today's date and the name; edit it or browse to a project.</div>
 
       <div class="row" style="align-items:flex-start">
         <div>
@@ -88,5 +91,26 @@
       </aside>
     </div>
   </div>
+
+  <dialog class="folder-dialog" id="folder-dialog" aria-labelledby="folder-dialog-title">
+    <h2 id="folder-dialog-title">Choose a folder</h2>
+    <div class="folder-bar">
+      <button class="btn btn--ghost btn--small" id="folder-up-button" type="button">Up</button>
+      <code class="folder-path" id="folder-dialog-path"></code>
+    </div>
+    <ul class="folder-list" id="folder-list" aria-label="Folders"></ul>
+    <form class="folder-new" id="folder-new-form" hidden>
+      <label class="visually-hidden" for="folder-new-name">New folder name</label>
+      <input type="text" id="folder-new-name" placeholder="New folder name" autocomplete="off" maxlength="120">
+      <button class="btn btn--small" type="submit">Create</button>
+    </form>
+    <div class="folder-actions">
+      <button class="btn btn--ghost btn--small" id="folder-open-button" type="button">Open</button>
+      <button class="btn btn--ghost btn--small" id="folder-new-button" type="button">New folder here</button>
+      <span class="spacer"></span>
+      <button class="btn btn--ghost btn--small" id="folder-cancel-button" type="button">Cancel</button>
+      <button class="btn btn--accent btn--small" id="folder-choose-button" type="button">Choose this folder</button>
+    </div>
+  </dialog>
 </body>
 </html>

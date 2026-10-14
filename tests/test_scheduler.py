@@ -17,6 +17,7 @@ from adda.scheduler import (
     RoomEndedError,
     Scheduler,
     UnknownSeatError,
+    adjusted_bid_score,
     liveliness_threshold,
 )
 from adda.seats.base import SeatError
@@ -96,6 +97,7 @@ def build_harness(
             instruction=spec.get("instruction"),
             model=spec.get("model"),
             enabled=spec.get("enabled", True),
+            eagerness=spec.get("eagerness", 5),
         )
     harness = Harness(None, store, room.id, clock, router, factory)
 
@@ -126,30 +128,49 @@ def harness(tmp_path) -> Harness:
 @pytest.mark.parametrize(
     ("liveliness", "turns", "floor", "expected"),
     [
-        (10, 0, 3.0, 3.0),
-        (10, 3, 3.0, 3.3),
-        (6, 0, 3.0, 5.6),
-        (6, 2, 3.0, 6.2),
-        (1, 0, 3.0, 8.85),
-        (1, 10, 3.0, 14.35),
+        (10, 0, 2.5, 2.5),
+        (10, 3, 2.5, 2.65),
+        (8, 0, 2.5, 3.5),
+        (8, 5, 2.5, 4.0),
+        (6, 0, 2.5, 4.5),
+        (6, 2, 2.5, 4.8),
+        (1, 0, 2.5, 7.0),
+        (1, 10, 2.5, 9.75),
         (10, 0, 4.5, 4.5),  # the floor wins over a low computed value
-        (0, 0, 3.0, 9.5),
+        (0, 0, 2.5, 7.5),
     ],
 )
 def test_liveliness_threshold_table(liveliness, turns, floor, expected):
     assert liveliness_threshold(liveliness, turns, floor) == pytest.approx(expected)
 
 
+@pytest.mark.parametrize(
+    ("raw_score", "eagerness", "cooling_down", "expected"),
+    [
+        (5.0, 5, False, 5.0),
+        (5.0, 10, False, 7.0),
+        (5.0, 0, False, 3.0),
+        (5.0, 6, False, 5.4),
+        (9.5, 10, False, 10.0),  # clamped at the top
+        (1.0, 0, False, 0.0),  # clamped at the bottom
+        (5.0, 5, True, 3.5),
+        (5.0, 10, True, 5.5),
+    ],
+)
+def test_adjusted_bid_score_table(raw_score, eagerness, cooling_down, expected):
+    assert adjusted_bid_score(raw_score, eagerness, cooling_down) == pytest.approx(expected)
+
+
 async def test_bid_below_threshold_stays_quiet_and_above_speaks(tmp_path):
-    quiet_room = build_harness(tmp_path / "a", liveliness=1)  # threshold 8.85
+    quiet_room = build_harness(tmp_path / "a", liveliness=1)  # threshold 7.0
     quiet_room.router.script({"Ravi": 5.0})
     await quiet_room.scheduler.say("anyone?")
     await quiet_room.settle()
     assert quiet_room.spoken() == []
     assert quiet_room.quiet_reasons() == ["nobody"]
-    assert quiet_room.frames_of("bids")[0]["threshold"] == pytest.approx(8.85)
+    assert quiet_room.frames_of("bids")[0]["threshold"] == pytest.approx(7.0)
 
-    lively_room = build_harness(tmp_path / "b", liveliness=10)  # threshold 3.0
+    lively_room = build_harness(tmp_path / "b", liveliness=10)  # threshold 2.5
     lively_room.router.script({"Ravi": 5.0})
     await lively_room.scheduler.say("anyone?")
     await lively_room.settle()
@@ -162,15 +183,50 @@ async def test_bid_below_threshold_stays_quiet_and_above_speaks(tmp_path):
     }
 
 
-async def test_threshold_ramps_with_automatic_turns(tmp_path):
-    # L=10: threshold is 3.0, 3.1, 3.2, 3.3 for k = 0..3. A constant bid of 3.25 speaks three times.
+async def test_threshold_ramps_with_bid_turns(tmp_path):
+    # L=10: threshold is 2.5, 2.55, 2.6, 2.65 for k = 0..3. A constant bid of 2.62 speaks three
+    # times and is refused on the fourth round.
     room = build_harness(tmp_path, liveliness=10)
-    room.router.script(*({"Ravi": 3.25, "Tuli": 3.25, "Pi": 3.25} for _ in range(6)))
+    room.router.script(*({"Ravi": 2.62, "Tuli": 2.62, "Pi": 2.62} for _ in range(6)))
     await room.scheduler.say("go")
     await room.settle()
     assert len(room.spoken()) == 3
     thresholds = [frame["threshold"] for frame in room.frames_of("bids")]
-    assert thresholds == pytest.approx([3.0, 3.1, 3.2, 3.3])
+    assert thresholds == pytest.approx([2.5, 2.55, 2.6, 2.65])
+
+
+async def test_mention_turns_do_not_raise_the_threshold(tmp_path):
+    room = build_harness(tmp_path, liveliness=10)
+    room.router.script({"Ravi": 0.0, "Tuli": 0.0, "Pi": 0.0})
+    await room.scheduler.say("@ravi and @tuli, thoughts?")
+    await room.settle()
+    # Two mention turns happened, yet the first bidding round still sees k = 0.
+    assert [author for author, _ in room.spoken()] == ["Ravi", "Tuli"]
+    assert room.scheduler.auto_turns_since_owner == 2
+    assert room.scheduler.bid_turns_since_owner == 0
+    assert room.frames_of("bids")[0]["threshold"] == pytest.approx(2.5)
+
+
+async def test_wake_and_roundrobin_turns_do_not_raise_the_threshold(tmp_path):
+    room = build_harness(tmp_path, mode="roundrobin")
+    await room.scheduler.say("go round")
+    await room.settle()
+    assert len(room.spoken()) == 3
+    assert room.scheduler.bid_turns_since_owner == 0
+    await room.scheduler.wake(room.seat_id("Ravi"))
+    await room.settle()
+    assert room.scheduler.bid_turns_since_owner == 0
+
+
+async def test_bid_turns_raise_k_and_an_owner_message_resets_it(tmp_path):
+    room = build_harness(tmp_path, liveliness=10)
+    room.router.script({"Ravi": 9.0}, {"Tuli": 0.0})
+    await room.scheduler.say("go")
+    await room.settle()
+    assert room.scheduler.bid_turns_since_owner == 1
+    await room.scheduler.say("again")
+    assert room.scheduler.bid_turns_since_owner == 0
+    await room.settle()
 
 
 async def test_bidding_never_picks_the_author_of_the_last_message(tmp_path):
@@ -182,13 +238,53 @@ async def test_bidding_never_picks_the_author_of_the_last_message(tmp_path):
     assert [author for author, _ in room.spoken()] == ["Ravi"]
 
 
-async def test_cooldown_blocks_a_seat_that_just_spoke(tmp_path):
+async def test_cooldown_is_a_penalty_not_an_exclusion(tmp_path):
+    room = build_harness(tmp_path, liveliness=10, cooldown_s=20.0)
+    # Round 3: Ravi spoke 0 s ago on the fake clock, so his raw 3.5 becomes 2.0, under the
+    # threshold of 2.6. Round 4: raw 9.0 becomes 7.5 and still wins.
+    room.router.script({"Ravi": 9.0}, {"Tuli": 9.0}, {"Ravi": 3.5}, {"Ravi": 9.0})
+    await room.scheduler.say("go")
+    await room.settle()
+    assert [author for author, _ in room.spoken()] == ["Ravi", "Tuli"]
+    cooling_bid = next(
+        bid for bid in room.frames_of("bids")[2]["bids"] if bid["seat"] == room.seat_id("Ravi")
+    )
+    assert cooling_bid["score"] == pytest.approx(2.0)
+    assert cooling_bid["raw_score"] == pytest.approx(3.5)
+
+
+async def test_cooling_seat_still_wins_with_a_strong_bid(tmp_path):
     room = build_harness(tmp_path, liveliness=10, cooldown_s=20.0)
     room.router.script({"Ravi": 9.0}, {"Tuli": 9.0}, {"Ravi": 9.0})
     await room.scheduler.say("go")
     await room.settle()
-    # Ravi, then Tuli, then Ravi again is refused: Ravi spoke 0 s ago on the fake clock.
-    assert [author for author, _ in room.spoken()] == ["Ravi", "Tuli"]
+    assert [author for author, _ in room.spoken()][:3] == ["Ravi", "Tuli", "Ravi"]
+
+
+async def test_eagerness_shifts_scores_and_zero_never_bids(tmp_path):
+    seats = (
+        {"name": "Ravi", "eagerness": 0},
+        {"name": "Tuli", "eagerness": 10},
+        {"name": "Pi"},
+    )
+    room = build_harness(tmp_path, seats=seats, liveliness=10)
+    room.router.script({"Ravi": 10.0, "Tuli": 4.0, "Pi": 4.0})
+    await room.scheduler.say("go")
+    await room.settle()
+    bids = {bid["seat"]: bid for bid in room.frames_of("bids")[0]["bids"]}
+    assert bids[room.seat_id("Tuli")]["score"] == pytest.approx(6.0)
+    assert bids[room.seat_id("Tuli")]["raw_score"] == pytest.approx(4.0)
+    assert bids[room.seat_id("Pi")]["score"] == pytest.approx(4.0)
+    # Ravi's raw 10.0 is the best, but eagerness 0 keeps him out; Tuli is chosen.
+    assert room.frames_of("bids")[0]["chosen"] == room.seat_id("Tuli")
+    assert "Ravi" not in [author for author, _ in room.spoken()]
+
+
+async def test_eagerness_zero_seat_still_answers_a_mention(tmp_path):
+    room = build_harness(tmp_path, seats=({"name": "Ravi", "eagerness": 0},), liveliness=10)
+    await room.scheduler.say("@ravi hello")
+    await room.settle()
+    assert [author for author, _ in room.spoken()] == ["Ravi"]
 
 
 # Mentions ---------------------------------------------------------------------------------
@@ -339,6 +435,7 @@ async def test_pass_costs_money_but_posts_nothing(harness):
     await harness.settle()
     assert harness.spoken() == []
     assert harness.store.get_room(harness.room_id).spent_usd == pytest.approx(0.5)
+    assert harness.frames_of("passed") == [{"type": "passed", "seat": harness.seat_id("Ravi")}]
 
 
 # Seats and patches ------------------------------------------------------------------------
@@ -620,3 +717,36 @@ async def test_ended_room_takes_no_more_input(harness):
         await harness.scheduler.end()
     with pytest.raises(RoomEndedError):
         await harness.scheduler.wake(harness.seat_id("Ravi"))
+
+
+async def test_cooldown_is_off_by_default(tmp_path):
+    room = build_harness(tmp_path, liveliness=10)  # cooldown_s = 0 in make_settings
+    room.router.script({"Ravi": 9.0}, {"Tuli": 9.0}, {"Ravi": 3.5})
+    await room.scheduler.say("go")
+    await room.settle()
+    third_bids = room.frames_of("bids")[2]["bids"]
+    ravi_bid = next(bid for bid in third_bids if bid["seat"] == room.seat_id("Ravi"))
+    assert ravi_bid["score"] == pytest.approx(3.5)
+
+
+async def test_quiet_decision_is_logged_with_reason_threshold_and_top_bid(tmp_path, caplog):
+    room = build_harness(tmp_path, liveliness=1)
+    room.router.script({"Ravi": 5.0})
+    with caplog.at_level("INFO", logger="adda.scheduler"):
+        await room.scheduler.say("anyone?")
+        await room.settle()
+    quiet_lines = [
+        record.getMessage() for record in caplog.records if "quiet" in record.getMessage()
+    ]
+    assert len(quiet_lines) == 1
+    assert "reason=nobody" in quiet_lines[0]
+    assert "threshold=7.00" in quiet_lines[0]
+    assert "top_adjusted_score=5.00" in quiet_lines[0]
+
+
+async def test_pass_is_logged_at_info(harness, caplog):
+    harness.adapter("Ravi").script(SeatReply(text="PASS"))
+    with caplog.at_level("INFO", logger="adda.scheduler"):
+        await harness.scheduler.say("@ravi anything?")
+        await harness.settle()
+    assert any("seat Ravi passed" in record.getMessage() for record in caplog.records)

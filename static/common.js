@@ -211,7 +211,14 @@ function slugify(text) {
 function formatMoney(amount) {
   const value = Number(amount) || 0;
   // Replies cost fractions of a cent; show enough digits that they do not read as $0.00.
-  return '$' + value.toFixed(value !== 0 && Math.abs(value) < 0.1 ? 3 : 2);
+  const magnitude = Math.abs(value);
+  if (value !== 0 && magnitude < 0.001) {
+    return '<$0.001';
+  }
+  if (value !== 0 && magnitude < 0.1) {
+    return '$' + value.toFixed(magnitude < 0.01 ? 4 : 3);
+  }
+  return '$' + value.toFixed(2);
 }
 
 function formatDuration(milliseconds) {
@@ -241,14 +248,16 @@ function formatDay(isoText) {
 }
 
 /**
- * Threshold rule of SPEC section 5: a seat speaks when its bid reaches
- * base + ramp * k, base = 9.5 - 0.65 L, ramp = 0.6 - 0.05 L, k = automatic turns since the
- * last owner message or wake.
+ * Threshold rule of SPEC v0.3 D1: a seat speaks when its bid reaches
+ * base + ramp * k, base = 7.5 - 0.5 L, ramp = 0.3 - 0.025 L, k = automatic turns since the
+ * last owner message or wake. The server never lets the threshold fall below the floor.
  */
+const THRESHOLD_FLOOR = 2.5;
+
 function computeLivelinessThreshold(liveliness, automaticTurns) {
-  const base = 9.5 - 0.65 * liveliness;
-  const ramp = 0.6 - 0.05 * liveliness;
-  return { base, ramp, current: base + ramp * automaticTurns };
+  const base = Math.max(THRESHOLD_FLOOR, 7.5 - 0.5 * liveliness);
+  const ramp = 0.3 - 0.025 * liveliness;
+  return { base, ramp, current: Math.max(THRESHOLD_FLOOR, base + ramp * automaticTurns) };
 }
 
 function describeLiveliness(liveliness, automaticTurns) {
@@ -265,6 +274,52 @@ function describeLiveliness(liveliness, automaticTurns) {
     return `${rule} After ${automaticTurns} it is ${current.toFixed(1)}.`;
   }
   return rule;
+}
+
+// ---------------------------------------------------------------------------
+// Eagerness (SPEC v0.3 D2)
+// ---------------------------------------------------------------------------
+
+const EAGERNESS_NEUTRAL = 5;
+const EAGERNESS_DEFAULT = 5;
+const EAGERNESS_BID_PER_STEP = 0.4;
+
+/** "bids +0.8", "bids -2.0", "never bids": what a slider position does to every bid of the seat. */
+function describeEagerness(eagerness) {
+  if (eagerness === 0) return 'never bids';
+  const shift = EAGERNESS_BID_PER_STEP * (eagerness - EAGERNESS_NEUTRAL);
+  if (shift === 0) return 'bids unchanged';
+  return `bids ${shift > 0 ? '+' : '-'}${Math.abs(shift).toFixed(1)}`;
+}
+
+/**
+ * A labelled 0..10 slider with its live sentence. `onInput` gets the number on every move;
+ * `onChange` fires when the owner lets go (one patch per drag, not one per step).
+ * Returns {element, input, setValue}.
+ */
+function createEagernessControl(initialValue, onInput, onChange) {
+  const element = createElement('div', 'eagerness');
+  const input = document.createElement('input');
+  input.type = 'range';
+  input.className = 'slider slider--small';
+  input.min = '0';
+  input.max = '10';
+  input.step = '1';
+  input.setAttribute('aria-label', 'Eagerness');
+  const sentence = createElement('span', 'eagerness-sentence small mute');
+
+  function setValue(value) {
+    input.value = String(value);
+    sentence.textContent = `${value} · ${describeEagerness(Number(value))}`;
+  }
+  input.addEventListener('input', () => {
+    setValue(input.value);
+    if (onInput) onInput(Number(input.value));
+  });
+  if (onChange) input.addEventListener('change', () => onChange(Number(input.value)));
+  setValue(initialValue);
+  element.append(input, sentence);
+  return { element, input, setValue };
 }
 
 // ---------------------------------------------------------------------------

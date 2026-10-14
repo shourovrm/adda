@@ -47,6 +47,8 @@ class SeatConfig(BaseModel):
     color: str = "#888888"
     enabled: bool = True
     position: int = 0
+    # 0..10; shifts every bid by 0.4 * (eagerness - 5); 0 means the seat never bids.
+    eagerness: int = Field(default=5, ge=0, le=10)
 
 
 class Seat(SeatConfig):
@@ -108,6 +110,9 @@ class Bid(BaseModel):
     seat: str  # seat id
     score: float = Field(ge=0, le=10)
     confidence: float = Field(default=1.0, ge=0, le=1)
+    # The router's own number, before eagerness and cooldown change `score`. None until the
+    # scheduler adjusts the bid.
+    raw_score: float | None = Field(default=None, ge=0, le=10)
 
 
 class SeatReply(BaseModel):

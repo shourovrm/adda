@@ -6,9 +6,9 @@ import asyncio
 import json
 import logging
 import os
-import re
 from collections.abc import Callable
 from contextlib import asynccontextmanager
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -29,6 +29,7 @@ from adda.config import (
     save_settings,
     settings_view,
 )
+from adda.folders import FolderExistsError, create_folder, default_room_folder, list_folders
 from adda.harnesses import clear_model_cache, detect_harnesses
 from adda.models import Harness, Mode, Program, Room, Seat, Thinking, seat_handle
 from adda.personas import list_personas, load_persona
@@ -70,6 +71,7 @@ class NewSeat(BaseModel):
     persona: str | None = None
     instruction: str | None = None
     color: str | None = None
+    eagerness: int = Field(default=5, ge=0, le=10)
     copies: int = Field(default=1, ge=1, le=MAX_COPIES)
 
     @field_validator("name")
@@ -78,6 +80,11 @@ class NewSeat(BaseModel):
         if not name.strip():
             raise ValueError("seat name must not be empty")
         return name.strip()
+
+
+class NewFolder(BaseModel):
+    path: str
+    name: str
 
 
 class NewRoom(BaseModel):
@@ -104,11 +111,6 @@ def build_router(settings: Settings) -> Router:
     )
 
 
-def slugify_title(title: str) -> str:
-    slug = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")[:40].strip("-")
-    return slug or "room"
-
-
 def expand_copies(new_seat: NewSeat) -> list[str]:
     """Names for one NewSeat: the name itself, or "Scout1".."ScoutN" for N copies."""
     if new_seat.copies == 1:
@@ -127,6 +129,8 @@ class Hub:
         adapter_builder: AdapterBuilder,
         detect: Callable[[Settings], list[Harness]],
         environment: dict[str, str],
+        home: Path,
+        today: Callable[[], date],
     ) -> None:
         self.settings = settings
         self.store = store
@@ -136,6 +140,8 @@ class Hub:
         self.adapter_builder = adapter_builder
         self.detect = detect
         self.environment = environment
+        self.home = home
+        self.today = today
         self.schedulers: dict[str, Scheduler] = {}
         self.connections: dict[str, set[WebSocket]] = {}
         self.background_tasks: set[asyncio.Task] = set()
@@ -195,19 +201,15 @@ class Hub:
             folder = self._make_folder(Path(body.folder.strip()).expanduser())
             room = self.store.create_room(title, str(folder), mode, liveliness, budget_usd)
         else:
-            room = self.store.create_room(title, "", mode, liveliness, budget_usd)
-            try:
-                folder = self._make_folder(
-                    self.settings.rooms_dir / f"{slugify_title(title)}-{room.id}"
-                )
-            except ValueError:
-                # The room exists already; mark it ended so it cannot be used half-made.
-                self.store.end_room(room.id)
-                raise
-            self.store.update_room(room.id, folder=str(folder))
+            folder = self._make_folder(self.suggest_folder(title))
+            room = self.store.create_room(title, str(folder), mode, liveliness, budget_usd)
         for new_seat in body.seats:
             self._add_seats(room.id, new_seat)
         return self.store.get_room(room.id)
+
+    def suggest_folder(self, title: str) -> Path:
+        """The folder a room with this title gets when the owner leaves the field empty."""
+        return default_room_folder(self.settings.rooms_dir, title, self.today())
 
     @staticmethod
     def _make_folder(folder: Path) -> Path:
@@ -250,6 +252,7 @@ class Hub:
                     persona=new_seat.persona or None,
                     instruction=(new_seat.instruction or "").strip() or None,
                     color=color,
+                    eagerness=new_seat.eagerness,
                 )
             )
         return added
@@ -335,9 +338,12 @@ def create_app(
     detect: Callable[[Settings], list[Harness]] = detect_harnesses,
     environment: dict[str, str] | None = None,
     static_directory: Path = STATIC_DIRECTORY,
+    home: Path | None = None,
+    today: Callable[[], date] = date.today,
 ) -> FastAPI:
     """Build the app. Tests inject fakes; `adda serve` passes nothing and loads from config.
 
+    `home` limits the folder browser and `today` dates default room folders; tests inject both.
     `environment` is where ADDA_CONFIG and ADDA_KEYS_FILE are read when settings are saved and
     reloaded; it defaults to the process environment.
     """
@@ -347,7 +353,16 @@ def create_app(
         settings = load_settings(environment)
     if store is None:
         store = Store(settings.database_path)
-    hub = Hub(settings, store, router, adapter_builder, detect, environment)
+    hub = Hub(
+        settings,
+        store,
+        router,
+        adapter_builder,
+        detect,
+        environment,
+        home if home is not None else Path.home(),
+        today,
+    )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):
@@ -373,6 +388,7 @@ def create_app(
     async def not_found(request: Request, error: Exception) -> JSONResponse:
         return JSONResponse({"detail": str(error.args[0] if error.args else error)}, 404)
 
+    @app.exception_handler(FolderExistsError)
     @app.exception_handler(RoomEndedError)
     @app.exception_handler(BudgetReachedError)
     async def conflict(request: Request, error: Exception) -> JSONResponse:
@@ -423,6 +439,16 @@ def create_app(
     async def put_settings(body: dict[str, Any]) -> dict:
         return hub.update_settings(body)
 
+    # Folders
+
+    @app.get("/api/folders")
+    async def get_folders(path: str = "") -> dict:
+        return list_folders(path, hub.home, hub.settings.rooms_dir)
+
+    @app.post("/api/folders")
+    async def post_folder(body: NewFolder) -> dict:
+        return create_folder(body.path, body.name, hub.home)
+
     # Rooms
 
     @app.get("/api/rooms")
@@ -445,9 +471,14 @@ def create_app(
                 "persona": seat.persona,
                 "instruction": seat.instruction,
                 "color": seat.color,
+                "eagerness": seat.eagerness,
             }
             for seat in store.last_room_seats()
         ]
+
+    @app.get("/api/rooms/folder-suggestion")
+    async def folder_suggestion(title: str = "") -> dict:
+        return {"folder": str(hub.suggest_folder(title))}
 
     @app.get("/api/rooms/{room_id}")
     async def get_room(room_id: str) -> dict:

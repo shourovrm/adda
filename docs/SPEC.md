@@ -327,3 +327,88 @@ Wave 2 (after S1 lands):
 - **S2 backend behaviour:** `adda/scheduler.py`, `adda/server.py`, `adda/prompts.py`,
   `adda/seats/*`, `adda/cli.py`, `README.md`, and their tests.
 Main session: integrates, runs the real server, Playwright, live seats, commits.
+
+---
+
+# v0.3 delta (2026-10-14)
+
+Everything above stays unless this section says otherwise.
+
+## D1. Turn-taking calibration (scheduler.py, config.py)
+
+Observed Jev scores in real rooms sit between 2 and 7; the v0.2 curve (base 9.5 - 0.65 L) was
+tuned for a 1..10 spread and stopped rooms at liveliness 8 after a few turns. New rules:
+
+- base(L) = 7.5 - 0.5 L, ramp(L) = 0.3 - 0.025 L. L=10: 2.5 + 0.05k. L=8: 3.5 + 0.1k.
+  L=6: 4.5 + 0.15k. L=1: 7.0 + 0.275k. Floor default 2.5 (`router.threshold_floor`).
+- k counts **bid-driven turns only** since the last owner message or wake. Mention, @all,
+  wake and round-robin turns do not raise k.
+- Cooldown is a penalty, not an exclusion: a seat still cooling bids at `score - 1.5`. The
+  author of the latest message is still excluded from the next round.
+- Per-seat **eagerness** (D2) adjusts every bid: `adjusted = score + 0.4 * (eagerness - 5)`,
+  clamped to 0..10. Eagerness 0 means the seat never bids (mentions and wake only).
+- `bids` frame: each bid carries `score` (adjusted, what the threshold compares against) and
+  `raw_score` (Jev's number).
+- A PASS reply is broadcast as `{"type":"passed","seat":<id>}` and logged at INFO
+  ("seat %s passed"); every quiet decision is logged at INFO with reason, threshold, top seat
+  and top adjusted score. Nothing is stored for a pass.
+
+## D2. Eagerness per seat
+
+`SeatConfig.eagerness: int` (0..10, default 5), column `room_seats.eagerness` added with
+`ALTER TABLE` guarded by `PRAGMA table_info`. Accepted in NewSeat and seat PATCH. Shown as a
+slider labelled "Eagerness" on every seat row of the new-room card and in the room's seat
+editor, with the live sentence "bids +0.8" / "-2.0" / "never bids" next to it.
+
+## D3. Folder browser
+
+`GET /api/folders?path=<absolute path or empty>` -> `{"path": str, "parent": str | null,
+"folders": [{"name": str, "path": str}]}`. Empty path means `rooms_dir`. Only paths inside the
+owner's home directory are allowed (400 otherwise); hidden folders are skipped; sorted by name.
+`POST /api/folders` body `{"path": str, "name": str}` creates a subfolder (same restriction;
+409 if it exists) and returns the new entry. UI: a "Browse" button next to the room folder
+field opens a dialog listing folders with Up, Open (double-click or button), "New folder here"
+and "Choose this folder". The dialog is a real overlay (shadow allowed).
+
+## D4. Default room folder name
+
+`<rooms_dir>/<YYYYMMDD>-<slug-of-title>` using the local date. No id suffix. If the folder
+exists, append `-2`, `-3`, … The rooms page prefills the field the same way.
+
+## D5. Model suggestions (harnesses.py)
+
+- claude: `fable, opus, sonnet, haiku, claude-fable-5-1, claude-opus-5-5, claude-sonnet-5-5,
+  claude-haiku-5-5` + extras.
+- pi: `enabledModels` plus `defaultModel` from `~/.pi/agent/settings.json` (JSON; path
+  injectable; missing file -> fall back to `z-ai/glm-5.3-flash`) + extras. Keep the
+  `provider/` prefix exactly as the file has it.
+- opencode: unchanged (`opencode models`). codex: `gpt-5-codex` + extras.
+The datalist on every model field lists all suggestions; typing anything else still passes
+through.
+
+## D6. Named copies
+
+The new-room card drops the Copies field. Each seat row gets a "Duplicate" button that clones
+the row (harness, model, thinking, persona, instruction, eagerness, colour) with the name
+suffixed by the next free number (Scout -> Scout2 -> Scout3), and every row's name stays
+editable. The API keeps `copies` for compatibility; the UI no longer sends it.
+
+## D7. Mode switch and cache
+
+The room panel's "Who speaks next" radios must send `{"type":"room","patch":{"mode":…}}` and
+reflect `room` frames. All three pages load `style.css` and every script with `?v=0.3`
+(bump on each release) so a plain reload never shows a stale page.
+
+## D8. Logo
+
+Option 5 ("Circle and owner") from `.taste-skill/mockups/logos/index.html` (symbols `full5`
+and `fav5` in that file) becomes `static/logo.svg` (full mark, square viewBox) and
+`static/favicon.svg` (the 16 px form). All pages: `<link rel="icon" type="image/svg+xml"
+href="/static/favicon.svg?v=0.3">`, and the header wordmark shows the mark at 28 px before
+"ADDA". README shows it.
+
+## D9. Ownership
+
+- **S5 backend:** `adda/**`, `tests/**`, `README.md` (D1, D2, D3 API, D4, D5, tests).
+- **S6 frontend:** `static/**`, `scripts/mock_server.py` (D2 UI, D3 UI, D4 prefill, D5
+  datalists, D6, D7, D8, `passed` line, bids `raw_score` tooltip).
