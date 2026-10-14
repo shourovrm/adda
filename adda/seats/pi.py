@@ -37,6 +37,7 @@ class PiSeat(CommandSeat):
         ]
         if self.model:
             command += ["--model", self.model]
+        command += self.thinking_arguments  # `--thinking <level>`, before the "--" separator
         if session_id:
             command += ["--session-id", session_id]
         return command + ["--", prompt]

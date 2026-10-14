@@ -168,10 +168,18 @@ class CommandSeat(ABC):
     program: str
     binary: str
 
-    def __init__(self, name: str, model: str | None = None, working_directory: Path | None = None):
+    def __init__(
+        self,
+        name: str,
+        model: str | None = None,
+        working_directory: Path | None = None,
+        thinking_arguments: list[str] | None = None,
+    ):
         self.name = name
         self.model = model
         self.working_directory = working_directory
+        # Ready-made flags from harnesses.thinking_arguments(); empty means "send nothing".
+        self.thinking_arguments = list(thinking_arguments or [])
 
     def available(self) -> bool:
         return shutil.which(self.binary) is not None

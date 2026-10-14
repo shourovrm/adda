@@ -26,6 +26,7 @@ class OpenCodeSeat(CommandSeat):
         command = [self.binary, "run", "--format", "json"]
         if self.model:
             command += ["--model", self.model]
+        command += self.thinking_arguments  # `--variant <level>`, before the "--" separator
         if session_id:
             command += ["--session", session_id]
             message = prompt

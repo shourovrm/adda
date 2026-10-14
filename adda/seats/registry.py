@@ -1,10 +1,12 @@
-"""Map a persona's `program` to its adapter class."""
+"""Build the adapter for one seat from its room configuration (SPEC section 4)."""
 
 from __future__ import annotations
 
 from pathlib import Path
 
-from adda.personas import Persona
+from adda.config import HarnessSettings
+from adda.harnesses import thinking_arguments
+from adda.models import SeatConfig
 from adda.seats.base import CommandSeat, SeatAdapter
 from adda.seats.claude import ClaudeSeat
 from adda.seats.codex import CodexSeat
@@ -19,17 +21,27 @@ ADAPTER_CLASSES: dict[str, type[CommandSeat]] = {
 }
 
 
-def build_adapter(persona: Persona, working_directory: Path) -> SeatAdapter:
-    adapter_class = ADAPTER_CLASSES.get(persona.program)
+def build_adapter(
+    config: SeatConfig, harness_settings: HarnessSettings | None, working_directory: Path
+) -> SeatAdapter:
+    """Adapter for `config`. A seat that leaves model or thinking unset gets the harness default.
+
+    "default" thinking on the seat means "use the harness default" (which itself may be
+    "default", meaning no flag at all).
+    """
+    adapter_class = ADAPTER_CLASSES.get(config.program)
     if adapter_class is None:
         raise ValueError(
-            f"persona {persona.name!r} has unknown program {persona.program!r}; "
+            f"seat {config.name!r} has unknown program {config.program!r}; "
             f"expected one of {sorted(ADAPTER_CLASSES)}"
         )
+    model = config.model or (harness_settings.model if harness_settings else "") or None
+    thinking = config.thinking
+    if thinking == "default" and harness_settings is not None:
+        thinking = harness_settings.thinking
     return adapter_class(
-        name=persona.name, model=persona.model, working_directory=working_directory
+        name=config.name,
+        model=model,
+        working_directory=working_directory,
+        thinking_arguments=thinking_arguments(config.program, thinking),
     )
-
-
-def build_adapters(personas: dict[str, Persona], working_directory: Path) -> dict[str, SeatAdapter]:
-    return {name: build_adapter(persona, working_directory) for name, persona in personas.items()}

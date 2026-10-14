@@ -1,10 +1,14 @@
-"""Text sent to a seat: its system prompt, its turn prompt and the end-of-discussion prompt."""
+"""Text sent to a seat: its system prompt, its turn prompt and the end-of-discussion prompt.
+
+Also the mention parser, because mentions decide who is woken and the prompt tells seats how
+to write them.
+"""
 
 from __future__ import annotations
 
 import re
 
-from adda.models import Message, Thread
+from adda.models import Message, Room, Seat
 from adda.personas import Persona, memory_index
 
 END_OF_DISCUSSION_PROMPT = (
@@ -14,39 +18,116 @@ END_OF_DISCUSSION_PROMPT = (
 MAX_MEMORY_BULLETS = 3
 BULLET_PREFIX = re.compile(r"^\s*(?:[-*•]|\d+[.)])\s+")
 
+# `@name`, `@all` or `@prefix*`, not preceded by a word character (so e-mail addresses do not
+# count). \w is Unicode-aware, so handles in other scripts work.
+MENTION_PATTERN = re.compile(r"(?<!\w)@([\w-]+)(\*)?")
+ALL_HANDLE = "all"
+MENTION_REASON = "mention"
+ALL_REASON = "all"
 
-def render_transcript(messages: list[Message]) -> str:
-    """One `author: text` line per message, as the router and the seats read it."""
-    return "\n".join(f"{message.author}: {message.text}" for message in messages)
+
+def render_transcript(messages: list[Message], owner_name: str = "owner") -> str:
+    """One `author: text` line per message, as the router and the seats read it.
+
+    Owner messages are stored with the author "owner"; the reader sees the owner's real name.
+    """
+    lines = []
+    for message in messages:
+        author = owner_name if message.role == "owner" else message.author
+        lines.append(f"{author}: {message.text}")
+    return "\n".join(lines)
 
 
-def system_prompt(persona: Persona, seat_names: list[str]) -> str:
-    other_seats = [name for name in seat_names if name != persona.name]
-    room_rules = (
-        f"You are the seat @{persona.name} in Adda, a chat room where AI agents and one human, "
-        "the owner, discuss one issue in one shared thread.\n"
-        f"Other seats: {', '.join('@' + name for name in other_seats) or 'none'}.\n"
-        "You only talk: no files, no shell, no tools. Address a seat with @name. "
-        "Keep messages short and conversational. "
-        "If you have nothing worth adding when asked to speak, reply with exactly PASS."
-    )
-    sections = [persona.body, room_rules]
-    if persona.role:
-        sections.append(f"Your role: {persona.role}")
-    if persona.stance:
-        sections.append(f"Your stance: {persona.stance}")
-    memory = memory_index(persona)
-    if memory:
-        sections.append(f"What you remember from earlier discussions:\n{memory}")
+def resolve_mentions(text: str, seats: list[Seat], author_seat_id: str | None) -> dict[str, str]:
+    """Seat ids woken by `text`, in order, each with the reason "mention" or "all".
+
+    Only enabled seats can be woken. `@all` means every enabled seat whose program is installed,
+    in position order; `@prefix*` means every enabled seat whose handle starts with the prefix.
+    The author is never woken by its own message. A seat named explicitly keeps the reason
+    "mention" even when `@all` also covers it.
+    """
+    wakeable = sorted((seat for seat in seats if seat.enabled), key=lambda seat: seat.position)
+    resolved: dict[str, str] = {}
+
+    def add(seat: Seat, reason: str) -> None:
+        if seat.id == author_seat_id:
+            return
+        if seat.id not in resolved or (
+            reason == MENTION_REASON and resolved[seat.id] == ALL_REASON
+        ):
+            resolved[seat.id] = reason
+
+    for match in MENTION_PATTERN.finditer(text):
+        token = match.group(1).rstrip("-").lower()
+        is_prefix = match.group(2) is not None
+        if not token:
+            continue
+        if is_prefix:
+            for seat in wakeable:
+                if seat.handle.startswith(token):
+                    add(seat, MENTION_REASON)
+        elif token == ALL_HANDLE:
+            for seat in wakeable:
+                if seat.available:
+                    add(seat, ALL_REASON)
+        else:
+            for seat in wakeable:
+                if seat.handle == token:
+                    add(seat, MENTION_REASON)
+    return resolved
+
+
+def find_mentions(text: str, seats: list[Seat], author_seat_id: str | None = None) -> list[str]:
+    """Seat ids woken by `text`, in order, without duplicates (see resolve_mentions)."""
+    return list(resolve_mentions(text, seats, author_seat_id))
+
+
+def system_prompt(
+    seat: Seat,
+    persona: Persona | None,
+    other_seats: list[Seat],
+    owner_name: str,
+    owner_line: str,
+) -> str:
+    """Owner line, persona, custom instruction, memory index, then the room rules."""
+    sections: list[str] = []
+    if owner_line.strip():
+        sections.append(f"About the owner, {owner_name}: {owner_line.strip()}")
+    if persona is not None:
+        sections.append(persona.body)
+        if persona.role:
+            sections.append(f"Your role: {persona.role}")
+        if persona.stance:
+            sections.append(f"Your stance: {persona.stance}")
+    if seat.instruction and seat.instruction.strip():
+        sections.append(seat.instruction.strip())
+    if persona is not None:
+        memory = memory_index(persona)
+        if memory:
+            sections.append(f"What you remember from earlier discussions:\n{memory}")
+    sections.append(_room_rules(seat, other_seats, owner_name))
     return "\n\n".join(section for section in sections if section)
 
 
-def turn_prompt(thread: Thread, unseen_messages: list[Message], seat_name: str) -> str:
-    transcript = render_transcript(unseen_messages) or "(no new messages)"
+def _room_rules(seat: Seat, other_seats: list[Seat], owner_name: str) -> str:
+    other_handles = ", ".join(f"@{other.handle} ({other.name})" for other in other_seats)
     return (
-        f"Adda thread: {thread.title}\n"
+        f"You are the seat {seat.name} (@{seat.handle}) in Adda, a chat room where AI agents and "
+        f"one human, the owner {owner_name}, discuss one issue in one shared thread.\n"
+        f"Other seats: {other_handles or 'none'}.\n"
+        "You only talk: no files, no shell, no tools. Address a seat with @handle, everyone with "
+        "@all, or a group with @prefix*. "
+        "Keep messages short and conversational. "
+        "If you have nothing worth adding when asked to speak, reply with exactly PASS."
+    )
+
+
+def turn_prompt(room: Room, unseen_messages: list[Message], seat: Seat, owner_name: str) -> str:
+    transcript = render_transcript(unseen_messages, owner_name) or "(no new messages)"
+    return (
+        f"Adda room: {room.title}\n"
         f"New messages since your last turn:\n\n{transcript}\n\n"
-        f"It is your turn to speak as @{seat_name}. Reply with your message text only. "
+        f"It is your turn to speak as @{seat.handle}. Reply with your message text only. "
         "If you have nothing to add, reply with exactly PASS."
     )
 
@@ -66,16 +147,3 @@ def parse_memory_bullets(reply_text: str) -> list[str]:
     if not bullets:
         bullets = [stripped]
     return [bullet for bullet in bullets if bullet][:MAX_MEMORY_BULLETS]
-
-
-MENTION_PATTERN = re.compile(r"(?<![A-Za-z0-9_])@([A-Za-z0-9_-]+)")
-
-
-def find_mentions(text: str, seat_names: list[str]) -> list[str]:
-    """Seat names mentioned as @name, in order of first appearance, without duplicates."""
-    mentioned: list[str] = []
-    for match in MENTION_PATTERN.finditer(text):
-        name = match.group(1)
-        if name in seat_names and name not in mentioned:
-            mentioned.append(name)
-    return mentioned

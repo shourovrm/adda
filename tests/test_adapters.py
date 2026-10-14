@@ -6,13 +6,14 @@ from pathlib import Path
 
 import pytest
 
-from adda.personas import Persona
+from adda.config import HarnessSettings
+from adda.models import SeatConfig
 from adda.seats.base import SeatError
 from adda.seats.claude import ClaudeSeat
 from adda.seats.codex import CodexSeat
 from adda.seats.opencode import OpenCodeSeat
 from adda.seats.pi import PiSeat
-from adda.seats.registry import build_adapter, build_adapters
+from adda.seats.registry import build_adapter
 
 FIXTURES = Path(__file__).parent / "fixtures" / "seat_outputs"
 SYSTEM = "You are Ada."
@@ -22,17 +23,8 @@ def fixture_text(name: str) -> str:
     return (FIXTURES / name).read_text(encoding="utf-8")
 
 
-def make_persona(name: str, program: str, model: str | None = None) -> Persona:
-    return Persona(
-        name=name,
-        program=program,
-        model=model,
-        color="#000000",
-        role="",
-        stance="",
-        body="",
-        directory=Path("/nonexistent"),
-    )
+def make_config(name: str, program: str, **fields) -> SeatConfig:
+    return SeatConfig(room_id="room1", name=name, program=program, **fields)
 
 
 # --- claude ---------------------------------------------------------------------------------
@@ -184,29 +176,90 @@ def test_codex_garbage():
         CodexSeat("di").parse_output("garbage", None)
 
 
+# --- thinking flags -------------------------------------------------------------------------
+
+
+def test_claude_thinking_flag_comes_before_resume():
+    seat = ClaudeSeat("ada", thinking_arguments=["--effort", "high"])
+    command = seat.build_command("hi", SYSTEM, "sess-1")
+    assert command[command.index("--effort") + 1] == "high"
+
+
+def test_opencode_and_pi_thinking_flags_stay_before_the_prompt_separator():
+    opencode = OpenCodeSeat("bo", thinking_arguments=["--variant", "low"])
+    command = opencode.build_command("hi", SYSTEM, None)
+    assert command.index("--variant") < command.index("--")
+    assert command[command.index("--variant") + 1] == "low"
+
+    pi = PiSeat("cy", thinking_arguments=["--thinking", "medium"])
+    command = pi.build_command("hi", SYSTEM, None)
+    assert command.index("--thinking") < command.index("--")
+    assert command[command.index("--thinking") + 1] == "medium"
+
+
+def test_codex_thinking_flag_precedes_the_message():
+    command = CodexSeat(
+        "di", thinking_arguments=["-c", "model_reasoning_effort=high"]
+    ).build_command("hi", SYSTEM, None)
+    assert command[-3:-1] == ["-c", "model_reasoning_effort=high"]
+
+
+def test_no_thinking_arguments_means_no_flag():
+    for seat_class in (ClaudeSeat, OpenCodeSeat, PiSeat, CodexSeat):
+        command = seat_class("x").build_command("hi", SYSTEM, None)
+        assert not {"--effort", "--variant", "--thinking"} & set(command)
+
+
 # --- registry -------------------------------------------------------------------------------
 
 
-def test_registry_builds_classes_in_order(tmp_path):
-    personas = {
-        "ada": make_persona("ada", "claude", "haiku"),
-        "bo": make_persona("bo", "opencode"),
-        "cy": make_persona("cy", "pi"),
-        "di": make_persona("di", "codex"),
+def test_registry_builds_each_program(tmp_path):
+    programs = {
+        "claude": ClaudeSeat,
+        "opencode": OpenCodeSeat,
+        "pi": PiSeat,
+        "codex": CodexSeat,
     }
-    adapters = build_adapters(personas, tmp_path)
-    assert list(adapters) == ["ada", "bo", "cy", "di"]
-    assert [type(adapter) for adapter in adapters.values()] == [
-        ClaudeSeat,
-        OpenCodeSeat,
-        PiSeat,
-        CodexSeat,
-    ]
-    assert adapters["ada"].name == "ada"
-    assert adapters["ada"].model == "haiku"
-    assert adapters["ada"].working_directory == tmp_path
+    for program, expected_class in programs.items():
+        adapter = build_adapter(make_config("Ada", program, model="m"), None, tmp_path)
+        assert type(adapter) is expected_class
+        assert adapter.name == "Ada"
+        assert adapter.model == "m"
+        assert adapter.working_directory == tmp_path
+
+
+def test_registry_uses_harness_default_model_when_seat_has_none(tmp_path):
+    defaults = HarnessSettings(model="sonnet", thinking="default")
+    inherited = build_adapter(make_config("Ada", "claude"), defaults, tmp_path)
+    assert inherited.model == "sonnet"
+    explicit = build_adapter(make_config("Ada", "claude", model="haiku"), defaults, tmp_path)
+    assert explicit.model == "haiku"
+    blank_default = build_adapter(
+        make_config("Ada", "pi"), HarnessSettings(model="", thinking="default"), tmp_path
+    )
+    assert blank_default.model is None
+
+
+@pytest.mark.parametrize(
+    ("program", "seat_thinking", "default_thinking", "expected"),
+    [
+        ("claude", "high", "medium", ["--effort", "high"]),
+        ("claude", "default", "medium", ["--effort", "medium"]),  # harness default applies
+        ("claude", "default", "default", []),
+        ("pi", "low", "default", ["--thinking", "low"]),
+        ("opencode", "medium", "default", ["--variant", "medium"]),
+        ("codex", "high", "default", ["-c", "model_reasoning_effort=high"]),
+    ],
+)
+def test_registry_maps_thinking_to_flags(
+    tmp_path, program, seat_thinking, default_thinking, expected
+):
+    defaults = HarnessSettings(thinking=default_thinking)
+    config = make_config("Ada", program, thinking=seat_thinking)
+    assert build_adapter(config, defaults, tmp_path).thinking_arguments == expected
 
 
 def test_registry_unknown_program(tmp_path):
+    config = make_config("x", "claude").model_copy(update={"program": "emacs"})
     with pytest.raises(ValueError, match="unknown program"):
-        build_adapter(make_persona("x", "emacs"), tmp_path)
+        build_adapter(config, None, tmp_path)

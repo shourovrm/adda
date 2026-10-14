@@ -29,6 +29,7 @@ class CodexSeat(CommandSeat):
             message = f"{system_prompt}\n\n{prompt}"
         if self.model:
             command += ["--model", self.model]
+        command += self.thinking_arguments  # `-c model_reasoning_effort=<level>` (unverified)
         return command + [message]
 
     def parse_output(self, stdout: str, session_id: str | None) -> SeatReply:

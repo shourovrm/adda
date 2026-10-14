@@ -1,0 +1,115 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Adda markdown tests</title>
+<body style="font-family: monospace; white-space: pre-wrap">
+<script src="../static/markdown.js"></script>
+<script>
+  var seats = { ravi: { color: "#CF5A26", name: "Ravi" } };
+  var results = [];
+
+  function render(text) {
+    var host = document.createElement("div");
+    host.appendChild(AddaMarkdown.renderMarkdown(text, seats));
+    return host;
+  }
+  function check(name, condition) {
+    results.push({ name: name, ok: Boolean(condition) });
+  }
+
+  var host = render("plain words");
+  check("paragraph", host.querySelector("p") && host.textContent === "plain words");
+
+  host = render("###### six");
+  check("heading level", host.querySelector("h3.md-h.md-h6") && host.textContent === "six");
+
+  host = render("```js\nlet a = 1;\n```");
+  check("fenced code with language",
+    host.querySelector("pre.md-code[data-language=js] > code.language-js") &&
+    host.querySelector("code").textContent === "let a = 1;" &&
+    host.querySelector("pre > button.md-copy"));
+
+  host = render("~~~\nx\ny");
+  check("unterminated tilde fence runs to end", host.querySelector("code").textContent === "x\ny");
+
+  host = render("- a\n* b\n+ c");
+  check("bullet list", host.querySelectorAll("ul > li").length === 3);
+
+  host = render("3. a\n4. b");
+  check("ordered list keeps start", host.querySelector("ol").getAttribute("start") === "3" &&
+    host.querySelectorAll("li").length === 2);
+
+  host = render("***");
+  check("thematic break", host.querySelector("hr"));
+
+  host = render("some text\n---");
+  check("dashes under text are a rule", host.querySelector("p") && host.querySelector("hr") &&
+    !host.querySelector("h1,h2"));
+
+  host = render("| a | b | c |\n|:--|:-:|--:|\n| 1 |\n| 1 | 2 | 3 | 4 |");
+  var cells = host.querySelectorAll("tbody tr");
+  check("table ragged rows padded and trimmed",
+    cells.length === 2 && cells[0].children.length === 3 && cells[1].children.length === 3);
+  check("table alignment and source",
+    host.querySelector("th:nth-child(2)").style.textAlign === "center" &&
+    host.querySelector("th:nth-child(3)").style.textAlign === "right" &&
+    host.querySelector("table").getAttribute("data-source").startsWith("| a | b | c |"));
+
+  host = render("| a | b |\n| 1 | 2 |");
+  check("table needs separator row", !host.querySelector("table"));
+
+  host = render("**s** *e* _u_ `c` snake_case_name");
+  check("strong emphasis code", host.querySelector("strong").textContent === "s" &&
+    host.querySelectorAll("em").length === 2 && host.querySelector("code").textContent === "c" &&
+    host.textContent.indexOf("snake_case_name") !== -1);
+
+  host = render("[ok](https://example.com) and [bad](javascript:alert(1))");
+  check("http link opens safely", host.querySelector("a").getAttribute("href") === "https://example.com" &&
+    host.querySelector("a").getAttribute("rel").indexOf("noopener") !== -1);
+  check("javascript link neutralised", host.querySelectorAll("a").length === 1);
+
+  host = render("see https://example.com now");
+  check("bare url not linked", !host.querySelector("a"));
+
+  host = render("<script>alert(1)<\/script> <img src=x onerror=alert(1)>");
+  check("html escaped", !host.querySelector("script") && !host.querySelector("img") &&
+    host.textContent.indexOf("<script>") !== -1);
+
+  host = render("hi @Ravi and @all");
+  var mentions = host.querySelectorAll("span.mention");
+  check("mentions", mentions.length === 2 && mentions[0].textContent === "@Ravi" &&
+    mentions[0].getAttribute("data-handle") === "ravi" &&
+    mentions[0].style.getPropertyValue("--m") === "#CF5A26");
+
+  host = render("mail mail@alpha.com or @nobody");
+  check("email and unknown handle are not mentions", !host.querySelector(".mention"));
+
+  var threw = false;
+  try {
+    ["```\n|\n**", "|\n|-", "[](", "**", "_", "@", null, undefined, "\u0000"].forEach(function (garbage) {
+      AddaMarkdown.renderMarkdown(garbage, seats);
+    });
+  } catch (error) {
+    threw = true;
+  }
+  check("never throws on garbage", !threw);
+
+  var transcript = AddaMarkdown.toMarkdown(
+    [{ author: "Ravi", role: "seat", text: "hello", created_at: "2026-01-01T09:05:00" },
+     { author: "x", role: "owner", text: "yo", created_at: "2026-01-01T09:06:00" }], "Rms");
+  check("toMarkdown shape", transcript === "**Ravi** · 09:05\nhello\n\n**Rms** · 09:06\nyo");
+
+  AddaMarkdown.copyText("x").then(function (value) {
+    check("copyText resolves to a boolean", typeof value === "boolean");
+    finish();
+  });
+
+  function finish() {
+    var failed = results.filter(function (r) { return !r.ok; });
+    var summary = failed.length === 0
+      ? "PASS " + results.length + "/" + results.length
+      : "FAIL " + failed.map(function (r) { return r.name; }).join(", ") +
+        " (" + (results.length - failed.length) + "/" + results.length + ")";
+    document.body.textContent = summary;
+    console.log(summary);
+  }
+</script>

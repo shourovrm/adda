@@ -1,24 +1,22 @@
-"""`adda threads|search|seats|serve` through adda.cli.main, with no server started."""
+"""`adda serve|rooms|search|harnesses` through adda.cli.main, with no server started."""
 
 from __future__ import annotations
-
-from pathlib import Path
 
 import pytest
 
 from adda.cli import build_parser, main
-from adda.models import Message
+from adda.models import Harness, Message
 from adda.store import Store
-
-FIXTURE_PERSONAS = Path(__file__).parent / "fixtures" / "personas"
 
 
 @pytest.fixture
 def cli_environment(tmp_path, monkeypatch):
-    """Point every path the CLI reads at tmp_path so no real data or key file is touched."""
+    """Point every path the CLI reads at tmp_path so no real data, config or key is touched."""
     data_dir = tmp_path / "data"
     monkeypatch.setenv("ADDA_DATA_DIR", str(data_dir))
     monkeypatch.setenv("ADDA_PERSONAS_DIR", str(tmp_path / "personas"))
+    monkeypatch.setenv("ADDA_CONFIG", str(tmp_path / "no-such-config.toml"))
+    monkeypatch.setenv("ADDA_KEYS_FILE", str(tmp_path / "no-such-keys.env"))
     monkeypatch.setenv("ADDA_JEV_KEY_FILE", str(tmp_path / "no-such-key-file.env"))
     monkeypatch.setenv("ADDA_ROUTER", "heuristic")
     for variable in ("ADDA_HOST", "ADDA_PORT", "OPENROUTER_API_KEY", "TYPESAFE_API_KEY"):
@@ -29,33 +27,38 @@ def cli_environment(tmp_path, monkeypatch):
 @pytest.fixture
 def populated_store(cli_environment):
     store = Store(cli_environment / "adda.db")
-    thread = store.create_thread("storage choices", "roundrobin")
+    room = store.create_room("storage choices", "/tmp/rooms/storage", "roundrobin", 4, 2.5)
+    store.add_seat(room.id, name="Ravi", program="claude")
+    store.add_seat(room.id, name="Tuli", program="pi")
     store.add_message(
-        Message(thread_id=thread.id, author="owner", role="owner", text="prefer sqlite always")
+        Message(room_id=room.id, author="owner", role="owner", text="prefer sqlite always")
     )
     store.close()
-    return thread
+    return room
 
 
-def test_threads_with_none(cli_environment, capsys):
-    main(["threads"])
-    assert capsys.readouterr().out.strip() == "no threads"
+def test_rooms_with_none(cli_environment, capsys):
+    main(["rooms"])
+    assert capsys.readouterr().out.strip() == "no rooms"
 
 
-def test_threads_lists_one_thread(populated_store, capsys):
-    main(["threads"])
+def test_rooms_lists_one_room(populated_store, capsys):
+    main(["rooms"])
     line = capsys.readouterr().out.strip()
     assert populated_store.id in line
     assert "storage choices" in line
     assert "open" in line
     assert "roundrobin" in line
+    assert "L4" in line
+    assert "$0.00/$2.50" in line
+    assert "[Ravi, Tuli]" in line
 
 
-def test_threads_shows_ended_status(populated_store, cli_environment, capsys):
+def test_rooms_shows_ended_status(populated_store, cli_environment, capsys):
     store = Store(cli_environment / "adda.db")
-    store.end_thread(populated_store.id)
+    store.end_room(populated_store.id)
     store.close()
-    main(["threads"])
+    main(["rooms"])
     assert "ended" in capsys.readouterr().out
 
 
@@ -75,35 +78,37 @@ def test_search_no_hit(populated_store, capsys):
 
 def test_search_limit_option(cli_environment, capsys):
     store = Store(cli_environment / "adda.db")
-    thread = store.create_thread("many")
+    room = store.create_room("many")
     for number in range(3):
         store.add_message(
-            Message(thread_id=thread.id, author="owner", role="owner", text=f"needle {number}")
+            Message(room_id=room.id, author="owner", role="owner", text=f"needle {number}")
         )
     store.close()
     main(["search", "needle", "--limit", "2"])
     assert len(capsys.readouterr().out.strip().splitlines()) == 2
 
 
-def test_seats_with_no_personas(cli_environment, capsys):
-    main(["seats"])
-    assert capsys.readouterr().out.startswith("no personas in")
-
-
-def test_seats_lists_fixture_personas(cli_environment, monkeypatch, capsys):
-    monkeypatch.setenv("ADDA_PERSONAS_DIR", str(FIXTURE_PERSONAS))
-    main(["seats"])
+def test_harnesses_prints_the_detection_table(cli_environment, monkeypatch, capsys):
+    detected = [
+        Harness(
+            program="claude",
+            found=True,
+            path="/usr/bin/claude",
+            version="2.1.299",
+            default_model="sonnet",
+            login_hint="Run claude.",
+        ),
+        Harness(program="codex", found=False, login_hint="Run `codex login`.", enabled=False),
+    ]
+    monkeypatch.setattr("adda.cli.detect_harnesses", lambda settings: detected)
+    main(["harnesses"])
     lines = capsys.readouterr().out.strip().splitlines()
-    assert len(lines) == 2
-    alpha_columns = lines[0].split()
-    beta_columns = lines[1].split()
-    assert alpha_columns[:3] == ["alpha", "claude", "haiku"]
-    assert beta_columns[:2] == ["beta", "pi"]
-    assert "default model" in lines[1]
-    assert "Architecture and trade-offs" in lines[0]
-    assert "Testing and edge cases" in lines[1]
-    for line in lines:
-        assert "available" in line or "NOT FOUND" in line
+    assert lines[0].split()[:3] == ["program", "found", "version"]
+    assert lines[1].split()[:4] == ["claude", "yes", "2.1.299", "sonnet"]
+    assert "/usr/bin/claude" in lines[1]
+    assert lines[2].split()[:2] == ["codex", "NO"]
+    assert "codex login" in lines[2]
+    assert "disabled in settings" in lines[2]
 
 
 def test_serve_passes_port_option_to_uvicorn(cli_environment, monkeypatch):

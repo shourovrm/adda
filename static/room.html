@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 16 16%22%3E%3Crect width=%2216%22 height=%2216%22 fill=%22%23f2c200%22/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="/static/style.css">
+  <title>Room · Adda</title>
+  <script src="/static/common.js" defer></script>
+  <script src="/static/markdown.js" defer></script>
+  <script src="/static/room.js" defer></script>
+</head>
+<body class="page-room">
+  <header class="top">
+    <a class="brand" href="/">Adda <small lang="bn">আড্ডা</small></a>
+    <nav aria-label="Pages">
+      <a href="/">Rooms</a>
+      <a href="/settings">Settings</a>
+      <span class="owner-name" id="owner-name"></span>
+    </nav>
+  </header>
+
+  <div class="room-heading">
+    <h1 id="room-title">Room</h1>
+    <div class="room-heading-actions">
+      <span class="connection" id="connection" data-state="connecting" role="status">Connecting</span>
+      <form class="search" id="search-form" role="search">
+        <label class="visually-hidden" for="search-input">Search every room</label>
+        <input type="search" id="search-input" placeholder="Search every room" autocomplete="off">
+        <kbd>Ctrl K</kbd>
+        <div class="search-results" id="search-results" hidden></div>
+      </form>
+      <button class="btn btn--ghost btn--small" id="copy-thread-button" type="button">Copy thread as Markdown</button>
+      <button class="btn btn--ghost btn--small panel-toggle" id="panel-toggle" type="button" aria-controls="side" aria-expanded="false">Room panel</button>
+    </div>
+  </div>
+  <p class="room-meta" id="room-meta"></p>
+
+  <div class="room">
+    <main class="chat">
+      <div class="message-scroller" id="message-scroller">
+        <ol class="message-list" id="message-list" aria-label="Discussion" aria-live="polite"></ol>
+      </div>
+      <button class="jump-latest" id="jump-latest" type="button" hidden>New messages below</button>
+
+      <div class="chat-footer">
+        <ul class="seat-strip" id="seat-strip" aria-label="Seats"></ul>
+        <div class="status-line" id="status-line" aria-live="polite"></div>
+        <form class="composer" id="composer">
+          <ul class="mention-menu menu" id="mention-menu" role="listbox" aria-label="Mention a seat" hidden></ul>
+          <label class="visually-hidden" for="composer-input">Message</label>
+          <textarea id="composer-input" rows="2" placeholder="Say something. @all wakes every seat; @name wakes one." autocomplete="off"
+            role="combobox" aria-autocomplete="list" aria-controls="mention-menu" aria-expanded="false"></textarea>
+          <div class="composer-actions">
+            <p class="composer-hint" id="composer-hint">Enter sends · Shift+Enter new line · Esc stops · Markdown is rendered</p>
+            <button class="btn btn--ghost btn--small" id="end-button" type="button">End discussion</button>
+            <button class="btn btn--stop btn--small" id="stop-button" type="button" disabled>Stop</button>
+            <button class="btn btn--accent btn--small" id="send-button" type="submit">Send</button>
+          </div>
+        </form>
+      </div>
+    </main>
+
+    <aside class="side" id="side" aria-label="Room panel">
+      <section class="panel">
+        <h3>This room</h3>
+        <label for="liveliness-input">Liveliness <span id="liveliness-value"></span></label>
+        <input class="slider" type="range" id="liveliness-input" min="0" max="10" step="1">
+        <div class="scale"><span>Quiet</span><span>Lively</span></div>
+        <div class="small mute" id="liveliness-sentence" style="margin-top:6px"></div>
+        <label for="budget-input">Budget</label>
+        <div class="row">
+          <input type="number" id="budget-input" min="0" step="0.25">
+          <span class="small mute" id="spend-text"></span>
+        </div>
+        <div class="field-hint">USD. 0 means unlimited.</div>
+        <fieldset class="mode-options" id="mode-options" style="border:0;padding:0;margin:8px 0 0">
+          <label><input type="radio" name="mode" value="bidding"> Bidding</label>
+          <label><input type="radio" name="mode" value="roundrobin"> Round-robin</label>
+          <label><input type="radio" name="mode" value="manual"> Manual</label>
+        </fieldset>
+        <div class="side-actions">
+          <button class="btn btn--ghost btn--small" id="pause-button" type="button">Pause</button>
+          <button class="btn btn--small" id="wake-all-button" type="button">Wake all</button>
+        </div>
+      </section>
+
+      <section class="panel">
+        <h3>Seats</h3>
+        <p class="small mute" id="router-name"></p>
+        <div id="seat-list"></div>
+        <div class="side-actions"><button class="btn btn--ghost btn--small" id="add-seat-button" type="button">Add a seat</button></div>
+        <form id="add-seat-form" class="seat-editor" hidden></form>
+      </section>
+    </aside>
+  </div>
+
+  <div class="drawer-scrim" id="drawer-scrim" hidden></div>
+
+  <dialog id="ended-dialog" aria-labelledby="ended-title">
+    <h2 id="ended-title">Discussion ended</h2>
+    <div id="ended-notes"></div>
+    <form method="dialog"><button class="btn btn--accent" type="submit">Close</button></form>
+  </dialog>
+</body>
+</html>

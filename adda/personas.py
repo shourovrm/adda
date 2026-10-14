@@ -1,4 +1,6 @@
-"""Persona folders: personas/<name>/persona.md plus a memory/ folder of one-fact notes."""
+"""Persona library: personas/<slug>/persona.md plus a memory/ folder of one-fact notes.
+
+Memory belongs to the persona, so two seats on the same persona share it."""
 
 from __future__ import annotations
 
@@ -8,8 +10,11 @@ from pathlib import Path
 
 import yaml
 
-PROGRAMS = ("claude", "opencode", "pi", "codex")
+from adda.models import PersonaSummary
+
 NOTE_FILE_PATTERN = re.compile(r"^(\d{3})-.*\.md$")
+# A slug becomes a folder name and arrives from API payloads, so it must not be a path.
+SLUG_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*$")
 
 
 class PersonaError(ValueError):
@@ -18,12 +23,14 @@ class PersonaError(ValueError):
 
 @dataclass(frozen=True)
 class Persona:
+    """A library entry (SPEC section 3). `slug` is the folder name seats refer to; `name` is the
+    display name from the frontmatter. `program` and `model` in old files are ignored."""
+
+    slug: str
     name: str
-    program: str
-    model: str | None
-    color: str
     role: str
     stance: str
+    color: str
     body: str
     directory: Path
 
@@ -50,40 +57,66 @@ def _split_frontmatter(text: str, source: Path) -> tuple[dict, str]:
     raise PersonaError(f"{source}: frontmatter is not closed with ---")
 
 
-def load_persona(directory: Path) -> Persona:
+def load_persona(personas_directory: Path, slug: str) -> Persona:
+    """Load `<personas_directory>/<slug>/persona.md`. Raises PersonaError if it is missing."""
+    if not SLUG_PATTERN.match(slug):
+        raise PersonaError(f"invalid persona slug {slug!r}")
+    directory = personas_directory / slug
     persona_file = directory / "persona.md"
+    if not persona_file.is_file():
+        raise PersonaError(f"persona {slug!r} not found in {personas_directory}")
     frontmatter, body = _split_frontmatter(persona_file.read_text(encoding="utf-8"), persona_file)
-    name = str(frontmatter.get("name") or "")
-    if name != directory.name:
-        raise PersonaError(
-            f"{persona_file}: name {name!r} must equal the folder name {directory.name!r}"
-        )
-    program = frontmatter.get("program")
-    if program not in PROGRAMS:
-        raise PersonaError(f"{persona_file}: program must be one of {PROGRAMS}, got {program!r}")
-    model = frontmatter.get("model")
     return Persona(
-        name=name,
-        program=program,
-        model=None if model is None else str(model),
-        color=str(frontmatter.get("color") or "#888888"),
+        slug=slug,
+        name=str(frontmatter.get("name") or slug),
         role=str(frontmatter.get("role") or ""),
         stance=str(frontmatter.get("stance") or ""),
+        color=str(frontmatter.get("color") or "#888888"),
         body=body,
         directory=directory,
     )
 
 
-def load_personas(personas_directory: Path) -> dict[str, Persona]:
-    """Load every `<name>/persona.md`, in folder-name order. A missing directory means none."""
+def _persona_slugs(personas_directory: Path) -> list[str]:
     if not personas_directory.is_dir():
-        return {}
-    personas: dict[str, Persona] = {}
-    for directory in sorted(personas_directory.iterdir()):
-        if directory.is_dir() and (directory / "persona.md").is_file():
-            persona = load_persona(directory)
-            personas[persona.name] = persona
-    return personas
+        return []
+    return sorted(
+        directory.name
+        for directory in personas_directory.iterdir()
+        if directory.is_dir() and (directory / "persona.md").is_file()
+    )
+
+
+def load_personas(personas_directory: Path) -> dict[str, Persona]:
+    """Every persona by slug, in slug order. A missing directory means none."""
+    return {
+        slug: load_persona(personas_directory, slug) for slug in _persona_slugs(personas_directory)
+    }
+
+
+def count_notes(persona: Persona) -> int:
+    if not persona.memory_directory.is_dir():
+        return 0
+    return sum(
+        1 for path in persona.memory_directory.iterdir() if NOTE_FILE_PATTERN.match(path.name)
+    )
+
+
+def list_personas(personas_directory: Path) -> list[PersonaSummary]:
+    """Summaries for the library API, in slug order."""
+    summaries: list[PersonaSummary] = []
+    for persona in load_personas(personas_directory).values():
+        summaries.append(
+            PersonaSummary(
+                slug=persona.slug,
+                name=persona.name,
+                role=persona.role,
+                stance=persona.stance,
+                color=persona.color,
+                note_count=count_notes(persona),
+            )
+        )
+    return summaries
 
 
 def memory_index(persona: Persona) -> str:

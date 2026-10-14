@@ -41,16 +41,19 @@ SCORE_CRITERIA = [
 
 
 def _question_for_seat(seat: Seat, personas: dict[str, Persona]) -> dict:
-    persona = personas.get(seat.name)
-    role = persona.role if persona and persona.role else seat.role
+    """`personas` is the library by slug; the seat points at one with `seat.persona`."""
+    persona = personas.get(seat.persona) if seat.persona else None
+    role = persona.role if persona and persona.role else "a participant"
     stance = persona.stance if persona else ""
     instructions = (
-        f"The state is a chat transcript. Rate how strongly the participant @{seat.name} "
+        f"The state is a chat transcript. Rate how strongly the participant @{seat.handle} "
         "should speak next, given the last message.\n"
-        f"Role of @{seat.name}: {role}"
+        f"Role of @{seat.handle}: {role}"
     )
     if stance:
-        instructions += f"\nStance of @{seat.name}: {stance}"
+        instructions += f"\nStance of @{seat.handle}: {stance}"
+    if seat.instruction and seat.instruction.strip():
+        instructions += f"\nInstruction given to @{seat.handle}: {seat.instruction.strip()[:300]}"
     return {"type": "score", "instructions": instructions, "criteria": SCORE_CRITERIA}
 
 
@@ -86,7 +89,7 @@ class JevRouter:
         body: dict = {
             "model": self.model,
             "state": transcript,
-            "questions": {seat.name: _question_for_seat(seat, personas) for seat in seats},
+            "questions": {seat.id: _question_for_seat(seat, personas) for seat in seats},
         }
         if self.provider == "openrouter":
             body["provider"] = {"data_collection": "deny", "zdr": True}
@@ -131,22 +134,22 @@ class JevRouter:
         usage = payload.get("usage") if isinstance(payload, dict) else None
         self.last_usage = usage if isinstance(usage, dict) else {}
 
-        return [self._bid_from_answer(seat.name, answers) for seat in seats]
+        return [self._bid_from_answer(seat.id, answers) for seat in seats]
 
-    def _bid_from_answer(self, seat_name: str, answers: object) -> Bid:
+    def _bid_from_answer(self, seat_id: str, answers: object) -> Bid:
         try:
-            answer = answers[seat_name]
+            answer = answers[seat_id]
             score = float(answer["score"])
             confidence = float(answer["confidence"])
         except (KeyError, TypeError, ValueError) as error:
             raise RouterError(
-                f"jev ({self.provider}) answer for seat {seat_name!r} is missing or malformed:"
+                f"jev ({self.provider}) answer for seat {seat_id!r} is missing or malformed:"
                 f" {error!r}"
             ) from error
         if confidence < LOW_CONFIDENCE:
-            logger.warning("jev low confidence %.2f for seat %s", confidence, seat_name)
+            logger.warning("jev low confidence %.2f for seat %s", confidence, seat_id)
         return Bid(
-            seat=seat_name,
+            seat=seat_id,
             score=_clamp(score, 0.0, 10.0),
             confidence=_clamp(confidence, 0.0, 1.0),
         )

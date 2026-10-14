@@ -1,120 +1,274 @@
+import sqlite3
+
 import pytest
 
 from adda.models import Message
 from adda.store import NotFoundError, Store
 
+# The v0.1 schema exactly as shipped, to test the in-place upgrade.
+VERSION_ONE_SCHEMA = """
+CREATE TABLE threads (
+    id TEXT PRIMARY KEY, title TEXT NOT NULL, created_at TEXT NOT NULL,
+    ended_at TEXT, mode TEXT NOT NULL
+);
+CREATE TABLE messages (
+    rowid INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE,
+    thread_id TEXT NOT NULL REFERENCES threads(id), author TEXT NOT NULL, role TEXT NOT NULL,
+    text TEXT NOT NULL, created_at TEXT NOT NULL, mentions TEXT NOT NULL, cost_usd REAL,
+    meta TEXT NOT NULL
+);
+CREATE INDEX messages_by_thread ON messages(thread_id, rowid);
+CREATE VIRTUAL TABLE messages_fts USING fts5(
+    text, author, content='messages', content_rowid='rowid'
+);
+CREATE TRIGGER messages_after_insert AFTER INSERT ON messages BEGIN
+    INSERT INTO messages_fts(rowid, text, author) VALUES (new.rowid, new.text, new.author);
+END;
+CREATE TABLE seat_sessions (
+    thread_id TEXT NOT NULL REFERENCES threads(id), seat TEXT NOT NULL,
+    session_id TEXT NOT NULL, PRIMARY KEY (thread_id, seat)
+);
+INSERT INTO threads VALUES ('t1', 'Old discussion', '2026-01-01T00:00:00+00:00', NULL, 'bidding');
+INSERT INTO messages (id, thread_id, author, role, text, created_at, mentions, cost_usd, meta)
+VALUES ('m1', 't1', 'claude', 'seat', 'zebra crossing design', '2026-01-01T00:00:01+00:00',
+        '[]', 0.01, '{}');
+INSERT INTO seat_sessions VALUES ('t1', 'claude', 'session-abc');
+"""
+
 
 @pytest.fixture
-def store(tmp_path):
-    return Store(tmp_path / "adda.db")
+def store():
+    store = Store(":memory:")
+    yield store
+    store.close()
 
 
-def make_message(thread_id: str, text: str, author: str = "owner", **extra) -> Message:
-    role = "owner" if author == "owner" else "seat"
-    return Message(thread_id=thread_id, author=author, role=role, text=text, **extra)
-
-
-def test_create_and_get_thread(store):
-    thread = store.create_thread("Design review", mode="manual")
-    fetched = store.get_thread(thread.id)
-    assert fetched.title == "Design review"
-    assert fetched.mode == "manual"
-    assert fetched.ended_at is None
-    assert fetched.created_at.tzinfo is not None
-
-
-def test_list_threads_newest_first(store):
-    first = store.create_thread("first")
-    second = store.create_thread("second")
-    assert [thread.id for thread in store.list_threads()] == [second.id, first.id]
-
-
-def test_set_mode_and_invalid_mode(store):
-    thread = store.create_thread("t")
-    assert store.set_mode(thread.id, "roundrobin").mode == "roundrobin"
-    assert store.get_thread(thread.id).mode == "roundrobin"
-    with pytest.raises(ValueError, match="mode"):
-        store.set_mode(thread.id, "chaos")
-    with pytest.raises(ValueError, match="mode"):
-        store.create_thread("bad", mode="chaos")
-
-
-def test_end_thread_sets_timezone_aware_ended_at(store):
-    thread = store.create_thread("t")
-    ended = store.end_thread(thread.id)
-    assert ended.ended_at is not None
-    assert ended.ended_at.tzinfo is not None
-    assert store.get_thread(thread.id).ended_at == ended.ended_at
-
-
-def test_unknown_thread_raises_not_found(store):
-    with pytest.raises(NotFoundError):
-        store.get_thread("missing")
-    with pytest.raises(NotFoundError):
-        store.set_mode("missing", "manual")
-    with pytest.raises(NotFoundError):
-        store.end_thread("missing")
-
-
-def test_messages_list_in_order_and_last_n(store):
-    thread = store.create_thread("t")
-    for number in range(5):
-        store.add_message(make_message(thread.id, f"message {number}"))
-    assert [m.text for m in store.list_messages(thread.id)] == [f"message {n}" for n in range(5)]
-    assert [m.text for m in store.list_messages(thread.id, last=2)] == ["message 3", "message 4"]
-    assert store.list_messages(thread.id, last=0) == []
-
-
-def test_messages_are_scoped_to_their_thread(store):
-    first = store.create_thread("a")
-    second = store.create_thread("b")
-    store.add_message(make_message(first.id, "in first"))
-    assert store.list_messages(second.id) == []
-
-
-def test_mentions_cost_and_meta_round_trip(store):
-    thread = store.create_thread("t")
-    sent = make_message(
-        thread.id,
-        "hello @beta",
-        author="alpha",
-        mentions=["beta"],
-        cost_usd=0.0123,
-        meta={"bid": 7.5, "model": "haiku", "latency_ms": 420},
+def seat_message(room_id, seat, text="hello", **fields):
+    return Message(
+        room_id=room_id, seat_id=seat.id, author=seat.name, role="seat", text=text, **fields
     )
-    store.add_message(sent)
-    (loaded,) = store.list_messages(thread.id)
-    assert loaded == sent
 
 
-def test_seat_sessions_get_set_overwrite(store):
-    thread = store.create_thread("t")
-    assert store.get_session(thread.id, "alpha") is None
-    store.set_session(thread.id, "alpha", "session-1")
-    assert store.get_session(thread.id, "alpha") == "session-1"
-    store.set_session(thread.id, "alpha", "session-2")
-    assert store.get_session(thread.id, "alpha") == "session-2"
-    assert store.get_session(thread.id, "beta") is None
+def test_create_and_get_room_round_trip(store):
+    room = store.create_room("Title", folder="/tmp/x", mode="manual", liveliness=3, budget_usd=2.5)
+    loaded = store.get_room(room.id)
+    assert loaded.title == "Title"
+    assert (loaded.folder, loaded.mode, loaded.liveliness) == ("/tmp/x", "manual", 3)
+    assert (loaded.budget_usd, loaded.spent_usd, loaded.seats) == (2.5, 0.0, [])
+    assert loaded.ended_at is None
 
 
-def test_search_finds_by_word_with_title_and_snippet(store):
-    thread = store.create_thread("Cache discussion")
-    store.add_message(make_message(thread.id, "We should use a write-through cache here"))
-    store.add_message(make_message(thread.id, "Unrelated remark"))
-    hits = store.search("cache")
+def test_list_rooms_newest_first_with_seats(store):
+    older = store.create_room("older")
+    newer = store.create_room("newer")
+    store.add_seat(newer.id, name="Ravi", program="claude")
+    rooms = store.list_rooms()
+    assert [room.title for room in rooms] == ["newer", "older"]
+    assert [seat.name for seat in rooms[0].seats] == ["Ravi"]
+    assert older.id == rooms[1].id
+
+
+def test_invalid_room_values_are_rejected(store):
+    with pytest.raises(ValueError):
+        store.create_room("x", mode="chaos")
+    room = store.create_room("x")
+    with pytest.raises(ValueError):
+        store.update_room(room.id, liveliness=11)
+    with pytest.raises(ValueError):
+        store.update_room(room.id, spent_usd=5)
+    with pytest.raises(NotFoundError):
+        store.get_room("missing")
+
+
+def test_update_room_end_room_and_add_spend(store):
+    room = store.create_room("x")
+    updated = store.update_room(room.id, title="y", liveliness=0, budget_usd=4, mode="roundrobin")
+    assert (updated.title, updated.liveliness, updated.budget_usd) == ("y", 0, 4)
+    store.add_spend(room.id, 0.25)
+    assert store.add_spend(room.id, 0.5).spent_usd == pytest.approx(0.75)
+    assert store.end_room(room.id).ended_at is not None
+
+
+def test_seats_get_positions_handles_and_order(store):
+    room = store.create_room("x")
+    first = store.add_seat(room.id, name="Scout 2", program="pi", model="m", thinking="high")
+    second = store.add_seat(room.id, name="Ravi", program="claude", persona="architecture")
+    assert (first.position, second.position) == (0, 1)
+    assert first.handle == "scout2"
+    assert first.available is False
+    assert [seat.name for seat in store.list_seats(room.id)] == ["Scout 2", "Ravi"]
+    store.update_seat(second.id, position=-1)
+    assert [seat.name for seat in store.list_seats(room.id)] == ["Ravi", "Scout 2"]
+
+
+def test_duplicate_handles_and_bad_programs_are_rejected(store):
+    room = store.create_room("x")
+    store.add_seat(room.id, name="Scout 2", program="pi")
+    with pytest.raises(ValueError):
+        store.add_seat(room.id, name="scout2", program="pi")
+    with pytest.raises(ValueError):
+        store.add_seat(room.id, name="Other", program="vim")
+    with pytest.raises(ValueError):
+        store.add_seat(room.id, name="  ", program="pi")
+    # The same name in another room is fine.
+    other_room = store.create_room("y")
+    store.add_seat(other_room.id, name="Scout 2", program="pi")
+
+
+def test_update_seat_fields_and_clearing_with_none(store):
+    room = store.create_room("x")
+    seat = store.add_seat(room.id, name="A", program="claude", model="opus", instruction="be brief")
+    updated = store.update_seat(
+        seat.id, model=None, thinking="low", enabled=False, color="#111111", instruction=None
+    )
+    assert updated.model is None
+    assert updated.instruction is None
+    assert (updated.thinking, updated.enabled, updated.color) == ("low", False, "#111111")
+    with pytest.raises(ValueError):
+        store.update_seat(seat.id, room_id="other")
+    with pytest.raises(NotFoundError):
+        store.update_seat("missing", color="#000000")
+
+
+def test_rename_seat_rewrites_its_authors_in_its_room_only(store):
+    room = store.create_room("x")
+    other_room = store.create_room("y")
+    seat = store.add_seat(room.id, name="Scout1", program="pi")
+    other_seat = store.add_seat(other_room.id, name="Scout1", program="pi")
+    store.add_message(seat_message(room.id, seat))
+    store.add_message(seat_message(other_room.id, other_seat))
+    store.add_message(Message(room_id=room.id, author="owner", role="owner", text="hi"))
+
+    renamed = store.rename_seat(seat.id, "Zed")
+
+    assert renamed.name == "Zed"
+    assert [message.author for message in store.list_messages(room.id)] == ["Zed", "owner"]
+    assert store.list_messages(other_room.id)[0].author == "Scout1"
+    assert store.list_seats(room.id)[0].handle == "zed"
+
+
+def test_rename_to_an_existing_handle_changes_nothing(store):
+    room = store.create_room("x")
+    taken = store.add_seat(room.id, name="Taken", program="pi")
+    seat = store.add_seat(room.id, name="Mine", program="pi")
+    store.add_message(seat_message(room.id, seat))
+    with pytest.raises(ValueError):
+        store.rename_seat(seat.id, "taken")
+    assert store.get_seat(seat.id).name == "Mine"
+    assert store.list_messages(room.id)[0].author == "Mine"
+    assert taken.name == "Taken"
+
+
+def test_sessions_survive_rename_and_are_deleted_on_remove(store):
+    room = store.create_room("x")
+    seat = store.add_seat(room.id, name="A", program="claude")
+    store.set_session(room.id, seat.id, "s1")
+    store.set_session(room.id, seat.id, "s2")
+    store.rename_seat(seat.id, "B")
+    assert store.get_session(room.id, seat.id) == "s2"
+
+    store.add_message(seat_message(room.id, seat))
+    store.remove_seat(seat.id)
+    assert store.get_session(room.id, seat.id) is None
+    assert store.list_seats(room.id) == []
+    assert len(store.list_messages(room.id)) == 1
+    with pytest.raises(NotFoundError):
+        store.remove_seat(seat.id)
+
+
+def test_changing_program_drops_the_session_but_changing_model_keeps_it(store):
+    room = store.create_room("x")
+    seat = store.add_seat(room.id, name="A", program="claude")
+    store.set_session(room.id, seat.id, "s1")
+    store.update_seat(seat.id, model="opus")
+    assert store.get_session(room.id, seat.id) == "s1"
+    store.update_seat(seat.id, program="pi")
+    assert store.get_session(room.id, seat.id) is None
+
+
+def test_last_room_seats_uses_newest_room_with_seats(store):
+    assert store.last_room_seats() == []
+    older = store.create_room("older")
+    store.add_seat(older.id, name="Old", program="claude", persona="architecture")
+    store.create_room("newest but empty")
+    seats = store.last_room_seats()
+    assert [seat.name for seat in seats] == ["Old"]
+    assert seats[0].persona == "architecture"
+    newest = store.create_room("newest")
+    store.add_seat(newest.id, name="B", program="pi", position=1)
+    store.add_seat(newest.id, name="A", program="pi", position=0)
+    assert [seat.name for seat in store.last_room_seats()] == ["A", "B"]
+
+
+def test_messages_round_trip_and_last_n(store):
+    room = store.create_room("x")
+    seat = store.add_seat(room.id, name="A", program="claude")
+    for number in range(5):
+        store.add_message(
+            seat_message(
+                room.id,
+                seat,
+                text=f"m{number}",
+                mentions=[seat.id],
+                cost_usd=0.1,
+                meta={"woken_by": "bid"},
+            )
+        )
+    messages = store.list_messages(room.id)
+    assert [message.text for message in messages] == [f"m{n}" for n in range(5)]
+    assert messages[0].seat_id == seat.id
+    assert messages[0].mentions == [seat.id]
+    assert messages[0].meta == {"woken_by": "bid"}
+    assert [message.text for message in store.list_messages(room.id, last=2)] == ["m3", "m4"]
+
+
+def test_search_returns_room_title_and_markerless_snippet(store):
+    room = store.create_room("Zebra room")
+    seat = store.add_seat(room.id, name="A", program="claude")
+    store.add_message(seat_message(room.id, seat, text="the zebra crossing needs a redesign"))
+    hits = store.search("zebra")
     assert len(hits) == 1
-    assert hits[0].thread_title == "Cache discussion"
-    assert "cache" in hits[0].snippet.lower()
-    assert hits[0].message.text.startswith("We should")
+    assert hits[0].room_title == "Zebra room"
+    assert "zebra" in hits[0].snippet
+    assert "<" not in hits[0].snippet and "[" not in hits[0].snippet
 
 
-@pytest.mark.parametrize("query", ['"quoted', "key:value", "star*", "NEAR(a b)", "a OR", "'"])
-def test_search_special_characters_do_not_raise(store, query):
-    thread = store.create_thread("t")
-    store.add_message(make_message(thread.id, "plain text"))
-    assert isinstance(store.search(query), list)
-
-
-def test_search_empty_query_returns_empty_list(store):
-    assert store.search("") == []
+def test_search_treats_syntax_characters_literally(store):
+    room = store.create_room("x")
+    seat = store.add_seat(room.id, name="A", program="claude")
+    store.add_message(seat_message(room.id, seat, text="plain words"))
+    assert store.search('"unbalanced NEAR( col:on') == []
     assert store.search("   ") == []
+
+
+def test_upgrade_from_version_one_database(tmp_path):
+    database_path = tmp_path / "adda.db"
+    old_connection = sqlite3.connect(database_path)
+    old_connection.executescript(VERSION_ONE_SCHEMA)
+    old_connection.commit()
+    old_connection.close()
+
+    store = Store(database_path)
+    room = store.get_room("t1")
+    assert (room.title, room.folder, room.liveliness) == ("Old discussion", "", 6)
+    assert (room.budget_usd, room.spent_usd, room.seats) == (0.0, 0.0, [])
+
+    messages = store.list_messages("t1")
+    assert messages[0].text == "zebra crossing design"
+    assert messages[0].seat_id is None
+    assert messages[0].author == "claude"
+    # The existing FTS index still finds old messages and the join uses rooms.
+    assert store.search("zebra")[0].room_title == "Old discussion"
+
+    # The upgraded database is fully usable: new messages are indexed, seats work.
+    seat = store.add_seat("t1", name="Ravi", program="claude")
+    store.add_message(seat_message("t1", seat, text="quokka"))
+    assert store.search("quokka")[0].message.seat_id == seat.id
+    store.set_session("t1", seat.id, "s")
+    assert store.get_session("t1", seat.id) == "s"
+    store.close()
+
+    # Opening it again is a no-op, not a second upgrade.
+    reopened = Store(database_path)
+    assert reopened.get_room("t1").title == "Old discussion"
+    reopened.close()

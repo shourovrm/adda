@@ -2,6 +2,7 @@
 
 Verified 2026-10-14 from `claude --help` (not by running a prompt): -p/--print,
 --output-format json, --model, -r/--resume, --append-system-prompt, --tools, --strict-mcp-config.
+`--effort <low|medium|high|xhigh|max>` selects thinking (see harnesses.py).
 `--tools` is variadic, so the prompt positional must come right after -p and before --tools;
 `--tools ""` disables every tool. Output is one JSON object with type "result", is_error,
 result, session_id and total_cost_usd. Sample: tests/fixtures/seat_outputs/claude_*.json.
@@ -35,6 +36,7 @@ class ClaudeSeat(CommandSeat):
         ]
         if self.model:
             command += ["--model", self.model]
+        command += self.thinking_arguments
         if session_id:
             command += ["--resume", session_id]
         return command

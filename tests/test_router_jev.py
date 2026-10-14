@@ -13,15 +13,23 @@ from adda.routers.jev import OPENROUTER_URL, TYPESAFE_URL, JevRouter
 TEST_KEY = "test-key-123"
 
 
-def make_seat(name: str, role: str = "seat role") -> Seat:
-    return Seat(name=name, program="claude", color="#000000", role=role, available=True)
-
-
-def make_persona(name: str, role: str, stance: str) -> Persona:
-    return Persona(
+def make_seat(name: str, persona: str | None = None, instruction: str | None = None) -> Seat:
+    return Seat(
+        id=f"id-{name}",
+        room_id="room1",
         name=name,
         program="claude",
-        model=None,
+        persona=persona,
+        instruction=instruction,
+        handle=name,
+        available=True,
+    )
+
+
+def make_persona(slug: str, role: str, stance: str) -> Persona:
+    return Persona(
+        slug=slug,
+        name=slug,
         color="#000000",
         role=role,
         stance=stance,
@@ -31,9 +39,10 @@ def make_persona(name: str, role: str, stance: str) -> Persona:
 
 
 def answers_payload(**scores: tuple[float, float]) -> dict:
+    """Answers are keyed by seat id, which the tests build as "id-<name>"."""
     return {
         "answers": {
-            name: {"score": score, "confidence": confidence}
+            f"id-{name}": {"score": score, "confidence": confidence}
             for name, (score, confidence) in scores.items()
         },
         "usage": {"cost": 0.00002},
@@ -45,8 +54,8 @@ def make_router(provider: str, handler, api_key: str | None = TEST_KEY) -> JevRo
     return JevRouter(provider, "some-model", api_key, client=client)
 
 
-SEATS = [make_seat("alpha", "fallback role"), make_seat("beta")]
-PERSONAS = {"alpha": make_persona("alpha", "Architecture", "Keep it small.")}
+SEATS = [make_seat("alpha", persona="arch"), make_seat("beta", instruction="Play the sceptic.")]
+PERSONAS = {"arch": make_persona("arch", "Architecture", "Keep it small.")}
 
 
 async def test_openrouter_request_shape():
@@ -68,10 +77,10 @@ async def test_openrouter_request_shape():
     assert body["model"] == "some-model"
     assert body["state"] == "owner: hello"
     assert body["provider"] == {"data_collection": "deny", "zdr": True}
-    assert set(body["questions"]) == {"alpha", "beta"}
+    assert set(body["questions"]) == {"id-alpha", "id-beta"}
     assert [(bid.seat, bid.score, bid.confidence) for bid in bids] == [
-        ("alpha", 7.0, 0.9),
-        ("beta", 2.0, 0.8),
+        ("id-alpha", 7.0, 0.9),
+        ("id-beta", 2.0, 0.8),
     ]
     assert router.last_usage == {"cost": 0.00002}
 
@@ -107,10 +116,11 @@ async def test_questions_are_score_questions_with_ten_criteria_and_persona_text(
         assert len(question["criteria"]) == 10
         assert "nothing to add" in question["criteria"][0]
         assert "must answer now" in question["criteria"][-1]
-    assert "Architecture" in questions["alpha"]["instructions"]
-    assert "Keep it small." in questions["alpha"]["instructions"]
-    # beta has no persona, so the Seat.role is used.
-    assert "seat role" in questions["beta"]["instructions"]
+    assert "Architecture" in questions["id-alpha"]["instructions"]
+    assert "Keep it small." in questions["id-alpha"]["instructions"]
+    # beta has no persona: the question says "a participant" and carries the custom instruction.
+    assert "a participant" in questions["id-beta"]["instructions"]
+    assert "Play the sceptic." in questions["id-beta"]["instructions"]
 
 
 async def test_scores_and_confidence_are_clamped():
@@ -131,8 +141,8 @@ async def test_low_confidence_is_logged_but_still_used(caplog):
         bids = await make_router("openrouter", handler).bids("t", SEATS, PERSONAS)
 
     assert bids[0].score == 6.0
-    assert "alpha" in caplog.text
-    assert "beta" not in caplog.text
+    assert "id-alpha" in caplog.text
+    assert "id-beta" not in caplog.text
     assert TEST_KEY not in caplog.text
 
 
@@ -165,7 +175,7 @@ async def test_missing_answer_for_a_seat_raises_router_error():
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json=answers_payload(alpha=(5.0, 1.0)))
 
-    with pytest.raises(RouterError, match="beta"):
+    with pytest.raises(RouterError, match="id-beta"):
         await make_router("openrouter", handler).bids("t", SEATS, PERSONAS)
 
 

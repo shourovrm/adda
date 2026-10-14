@@ -1,798 +1,622 @@
-"""Tests for the turn-taking scheduler (SPEC section 5), using fake seats and routers only."""
+"""Turn-taking (SPEC section 5) with fake seats and routers only."""
+
+from __future__ import annotations
 
 import asyncio
-from collections import deque
 from dataclasses import dataclass, field
 
 import pytest
 
-from adda.config import Settings
-from adda.models import Bid, Seat, SeatReply
-from adda.personas import Persona
+from adda.models import Room, SeatReply
+from adda.personas import PersonaError
 from adda.prompts import END_OF_DISCUSSION_PROMPT
 from adda.routers.base import RouterError
 from adda.routers.heuristic import HeuristicRouter
-from adda.scheduler import Scheduler, ThreadEndedError, UnknownSeatError
-from adda.seats.base import SeatError, SeatTimeoutError
+from adda.scheduler import (
+    BudgetReachedError,
+    RoomEndedError,
+    Scheduler,
+    UnknownSeatError,
+    liveliness_threshold,
+)
+from adda.seats.base import SeatError
 from adda.store import Store
-
-START_OF_CLOCK = 1000.0
-
-
-class FakeClock:
-    """A clock the test advances by hand, so cooldowns and latencies are exact."""
-
-    def __init__(self) -> None:
-        self.now = START_OF_CLOCK
-
-    def __call__(self) -> float:
-        return self.now
-
-    def advance(self, seconds: float) -> None:
-        self.now += seconds
-
-
-class FakeAdapter:
-    """Returns scripted replies (SeatReply or an exception to raise) and records every call."""
-
-    def __init__(self, name: str, clock: FakeClock, available: bool = True) -> None:
-        self.name = name
-        self.program = "claude"
-        self.is_available = available
-        self.clock = clock
-        self.scripted: deque[SeatReply | Exception] = deque()
-        self.calls: list[dict] = []
-        self.seconds_per_run = 0.0
-        # When set, run() waits on this event so a test can interrupt a seat mid-turn.
-        self.block_until: asyncio.Event | None = None
-        self.started = asyncio.Event()
-        self.was_cancelled = False
-
-    def available(self) -> bool:
-        return self.is_available
-
-    def script(self, *replies: SeatReply | Exception | str) -> None:
-        for reply in replies:
-            self.scripted.append(SeatReply(text=reply) if isinstance(reply, str) else reply)
-
-    async def run(
-        self, prompt: str, system_prompt: str, session_id: str | None, timeout_s: float
-    ) -> SeatReply:
-        self.calls.append(
-            {
-                "prompt": prompt,
-                "system_prompt": system_prompt,
-                "session_id": session_id,
-                "timeout_s": timeout_s,
-            }
-        )
-        self.started.set()
-        if self.block_until is not None:
-            try:
-                await self.block_until.wait()
-            except asyncio.CancelledError:
-                self.was_cancelled = True
-                raise
-        self.clock.advance(self.seconds_per_run)
-        if not self.scripted:
-            return SeatReply(text=f"default reply from {self.name}")
-        reply = self.scripted.popleft()
-        if isinstance(reply, Exception):
-            raise reply
-        return reply
-
-
-class FakeRouter:
-    """Returns one scripted bid list per call; when the script runs out nobody wants to speak."""
-
-    def __init__(self, seat_names: list[str], name: str = "jev") -> None:
-        self.name = name
-        self.seat_names = seat_names
-        self.scripted: deque[dict[str, float] | Exception] = deque()
-        self.transcripts: list[str] = []
-
-    def script(self, *entries: dict[str, float] | Exception) -> None:
-        self.scripted.extend(entries)
-
-    @property
-    def call_count(self) -> int:
-        return len(self.transcripts)
-
-    async def bids(self, transcript, seats, personas):
-        self.transcripts.append(transcript)
-        if not self.scripted:
-            return [Bid(seat=name, score=0.0) for name in self.seat_names]
-        entry = self.scripted.popleft()
-        if isinstance(entry, Exception):
-            raise entry
-        return [Bid(seat=name, score=score) for name, score in entry.items()]
+from tests.fakes import FakeAdapterFactory, FakeClock, FakeRouter, make_settings
 
 
 @dataclass
-class Room:
+class Harness:
     scheduler: Scheduler
     store: Store
-    thread_id: str
+    room_id: str
     clock: FakeClock
     router: FakeRouter
-    adapters: dict[str, FakeAdapter]
-    personas: dict[str, Persona]
+    factory: FakeAdapterFactory
     frames: list[dict] = field(default_factory=list)
 
-    def frames_of_type(self, frame_type: str) -> list[dict]:
+    def adapter(self, name: str):
+        self.current_room()  # builds adapters for seats added since the last look
+        return self.factory.by_name[name]
+
+    def current_room(self) -> Room:
+        return self.scheduler.current_room()
+
+    def seat_id(self, name: str) -> str:
+        return next(seat.id for seat in self.current_room().seats if seat.name == name)
+
+    def messages(self):
+        return self.store.list_messages(self.room_id)
+
+    def spoken(self) -> list[tuple[str, str]]:
+        return [(m.author, m.text) for m in self.messages() if m.role == "seat"]
+
+    def system_texts(self) -> list[str]:
+        return [m.text for m in self.messages() if m.role == "system"]
+
+    def frames_of(self, frame_type: str) -> list[dict]:
         return [frame for frame in self.frames if frame["type"] == frame_type]
 
-    def messages(self, role: str | None = None):
-        messages = self.store.list_messages(self.thread_id)
-        return [message for message in messages if role is None or message.role == role]
+    def quiet_reasons(self) -> list[str]:
+        return [frame["reason"] for frame in self.frames_of("quiet")]
 
-    def seat_texts(self) -> list[str]:
-        return [message.text for message in self.messages("seat")]
+    async def settle(self) -> None:
+        task = self.scheduler.driver_task
+        if task is not None:
+            await task
 
-    async def say(self, text: str) -> None:
-        await self.scheduler.say(text)
-        await self.scheduler.driver_task
+
+DEFAULT_SEATS = (
+    {"name": "Ravi", "persona": "alpha"},
+    {"name": "Tuli", "persona": "beta"},
+    {"name": "Pi", "persona": None},
+)
+
+
+def build_harness(
+    tmp_path,
+    seats=DEFAULT_SEATS,
+    mode="bidding",
+    liveliness=6,
+    budget_usd=0.0,
+    **setting_overrides,
+) -> Harness:
+    clock = FakeClock()
+    factory = FakeAdapterFactory(clock)
+    router = FakeRouter()
+    store = Store(":memory:")
+    room = store.create_room(
+        "design talk", str(tmp_path / "room"), mode, liveliness=liveliness, budget_usd=budget_usd
+    )
+    for spec in seats:
+        store.add_seat(
+            room.id,
+            name=spec["name"],
+            program=spec.get("program", "claude"),
+            persona=spec.get("persona"),
+            instruction=spec.get("instruction"),
+            model=spec.get("model"),
+            enabled=spec.get("enabled", True),
+        )
+    harness = Harness(None, store, room.id, clock, router, factory)
+
+    async def record(frame: dict) -> None:
+        harness.frames.append(frame)
+
+    harness.scheduler = Scheduler(
+        room.id,
+        store,
+        make_settings(tmp_path, **setting_overrides),
+        router,
+        HeuristicRouter(),
+        record,
+        adapter_builder=factory,
+        clock=clock,
+    )
+    return harness
 
 
 @pytest.fixture
-def make_room(tmp_path):
-    stores: list[Store] = []
+def harness(tmp_path) -> Harness:
+    return build_harness(tmp_path)
 
-    def build(seat_names=("alpha", "beta", "gamma"), mode="bidding", **settings_overrides) -> Room:
-        settings_values = {"cooldown_s": 0.0, "max_auto_turns": 6, "bid_threshold": 5.0}
-        settings_values.update(settings_overrides)
-        settings = Settings(data_dir=tmp_path, **settings_values)
-        store = Store(tmp_path / "adda.db")
-        stores.append(store)
-        thread = store.create_thread("Test thread", mode=mode)
-        clock = FakeClock()
-        seats = [
-            Seat(
-                name=name,
-                program="claude",
-                model=f"model-{name}",
-                color="#123456",
-                role="tester",
-                available=True,
-            )
-            for name in seat_names
-        ]
-        personas = {
-            name: Persona(
-                name=name,
-                program="claude",
-                model=f"model-{name}",
-                color="#123456",
-                role="tester",
-                stance="",
-                body=f"You are {name}.",
-                directory=tmp_path / "personas" / name,
-            )
-            for name in seat_names
-        }
-        adapters = {name: FakeAdapter(name, clock) for name in seat_names}
-        router = FakeRouter(list(seat_names))
-        frames: list[dict] = []
 
-        async def collect_frame(frame: dict) -> None:
-            frames.append(frame)
-
-        scheduler = Scheduler(
-            thread_id=thread.id,
-            store=store,
-            settings=settings,
-            seats=seats,
-            adapters=adapters,
-            personas=personas,
-            router=router,
-            fallback_router=HeuristicRouter(),
-            broadcast=collect_frame,
-            clock=clock,
-        )
-        return Room(scheduler, store, thread.id, clock, router, adapters, personas, frames)
-
-    yield build
-    for store in stores:
-        store.close()
-
-
-# Bidding
-
-
-async def test_top_bid_above_threshold_speaks_with_metadata(make_room):
-    room = make_room()
-    room.adapters["beta"].script(SeatReply(text="  beta answers  ", cost_usd=0.02))
-    room.adapters["beta"].seconds_per_run = 0.25
-    room.router.script({"alpha": 3.0, "beta": 8.0, "gamma": 6.0})
-
-    await room.say("what do you think?")
-
-    seat_message = room.messages("seat")[0]
-    assert seat_message.author == "beta"
-    assert seat_message.text == "beta answers"
-    assert seat_message.cost_usd == 0.02
-    assert seat_message.meta == {"model": "model-beta", "latency_ms": 250, "bid_score": 8.0}
-    assert room.adapters["alpha"].calls == []
-    assert room.adapters["gamma"].calls == []
-
-
-async def test_all_bids_below_threshold_goes_quiet_without_running_a_seat(make_room):
-    room = make_room()
-    room.router.script({"alpha": 4.9, "beta": 2.0, "gamma": 0.0})
-
-    await room.say("anyone?")
-
-    assert room.messages("seat") == []
-    assert all(adapter.calls == [] for adapter in room.adapters.values())
-    assert room.frames_of_type("bids")[0]["chosen"] is None
-    assert room.frames[-1] == {"type": "quiet"}
-
-
-async def test_bid_exactly_at_threshold_speaks(make_room):
-    room = make_room()
-    room.router.script({"alpha": 5.0, "beta": 0.0, "gamma": 0.0})
-
-    await room.say("hello")
-
-    assert room.messages("seat")[0].author == "alpha"
-
-
-async def test_author_of_latest_message_cannot_win_the_next_bid(make_room):
-    room = make_room(seat_names=("alpha", "beta"), mode="manual")
-    await room.scheduler.set_mode("bidding")
-    room.router.script({"alpha": 9.0, "beta": 2.0})
-
-    await room.scheduler.wake("alpha")
-    await room.scheduler.driver_task
-
-    # alpha spoke, so its own 9.0 is ignored and beta's 2.0 is below the threshold.
-    assert [message.author for message in room.messages("seat")] == ["alpha"]
-    assert room.adapters["alpha"].calls[0]["session_id"] is None
-    assert len(room.adapters["alpha"].calls) == 1
-    assert room.frames_of_type("bids")[0]["chosen"] is None
-
-
-async def test_cooldown_excludes_recent_speaker_until_clock_advances(make_room):
-    room = make_room(cooldown_s=20.0)
-    room.router.script(
-        {"alpha": 9.0, "beta": 0.0, "gamma": 0.0},
-        {"alpha": 0.0, "beta": 0.0, "gamma": 0.0},
-        {"alpha": 9.0, "beta": 6.0, "gamma": 0.0},
-        {"alpha": 0.0, "beta": 0.0, "gamma": 0.0},
-        {"alpha": 9.0, "beta": 6.0, "gamma": 0.0},
-    )
-
-    await room.say("first")
-    room.clock.advance(5)
-    await room.say("second")
-    room.clock.advance(30)
-    await room.say("third")
-
-    # Second round: alpha spoke 5 s ago, so beta wins. Third round: 35 s later alpha is free.
-    assert [message.author for message in room.messages("seat")] == ["alpha", "beta", "alpha"]
-
-
-async def test_bids_frame_lists_bids_chosen_seat_and_router_name(make_room):
-    room = make_room()
-    room.router.script({"alpha": 3.0, "beta": 8.0, "gamma": 6.0})
-
-    await room.say("hello")
-
-    assert room.frames_of_type("bids")[0] == {
-        "type": "bids",
-        "bids": [
-            {"seat": "alpha", "score": 3.0, "confidence": 1.0},
-            {"seat": "beta", "score": 8.0, "confidence": 1.0},
-            {"seat": "gamma", "score": 6.0, "confidence": 1.0},
-        ],
-        "chosen": "beta",
-        "router": "jev",
-    }
-
-
-async def test_frames_arrive_in_turn_order(make_room):
-    room = make_room()
-    room.router.script({"alpha": 9.0, "beta": 0.0, "gamma": 0.0})
-
-    await room.say("hello")
-
-    frame_summaries = [
-        (frame["type"], frame.get("state") or frame.get("message", {}).get("author"))
-        for frame in room.frames
-    ]
-    assert frame_summaries == [
-        ("message", "owner"),
-        ("bids", None),
-        ("typing", "start"),
-        ("typing", "stop"),
-        ("message", "alpha"),
-        ("bids", None),
-        ("quiet", None),
-    ]
-
-
-async def test_pass_reply_posts_nothing_and_next_bidder_gets_a_chance(make_room):
-    room = make_room()
-    room.adapters["alpha"].script("PASS")
-    room.adapters["beta"].script("beta speaks")
-    two_bidders = {"alpha": 9.0, "beta": 8.0, "gamma": 0.0}
-    room.router.script(two_bidders, two_bidders)
-
-    await room.say("hello")
-
-    assert room.seat_texts() == ["beta speaks"]
-    assert len(room.adapters["alpha"].calls) == 1
-
-
-# Router failure
-
-
-async def test_router_error_uses_fallback_and_reports_once_per_thread(make_room):
-    room = make_room(seat_names=("alpha", "beta"), max_auto_turns=1)
-    room.router.script(RouterError("http 500"), RouterError("http 500"))
-
-    await room.say("first")
-    await room.say("second")
-
-    system_messages = room.messages("system")
-    assert len(system_messages) == 1
-    assert "jev" in system_messages[0].text
-    assert "http 500" in system_messages[0].text
-    assert "heuristic" in system_messages[0].text
-    bids_frames = room.frames_of_type("bids")
-    assert [frame["router"] for frame in bids_frames] == ["heuristic", "heuristic"]
-    # The heuristic gives 6.0 to the longest-silent seat, which is above the 5.0 threshold.
-    assert len(room.messages("seat")) == 2
-
-
-async def test_router_error_notice_is_posted_even_when_fallback_picks_nobody(make_room):
-    room = make_room(seat_names=("alpha",), mode="manual")
-    await room.scheduler.set_mode("bidding")
-    room.router.script(RouterError("no key"))
-
-    await room.scheduler.wake("alpha")
-    await room.scheduler.driver_task
-
-    assert [message.author for message in room.messages("system")] == ["system"]
-
-
-# Mentions
-
-
-async def test_owner_mention_wakes_seat_without_consulting_router_for_it(make_room):
-    room = make_room()
-
-    await room.say("@beta what do you think?")
-
-    seat_message = room.messages("seat")[0]
-    assert seat_message.author == "beta"
-    assert "bid_score" not in seat_message.meta
-    # The router is only asked afterwards, about the reply, and the default script says quiet.
-    assert room.router.call_count == 1
-    assert "beta: default reply from beta" in room.router.transcripts[0]
-
-
-async def test_mention_in_seat_reply_chain_wakes_the_mentioned_seat(make_room):
-    room = make_room(mode="manual")
-    room.adapters["alpha"].script("over to you @gamma")
-    room.adapters["gamma"].script("thanks")
-
-    await room.say("@alpha start")
-
-    assert [message.author for message in room.messages("seat")] == ["alpha", "gamma"]
-    assert room.messages("seat")[0].mentions == ["gamma"]
-    assert room.router.call_count == 0
-    assert room.adapters["beta"].calls == []
-
-
-async def test_seat_mentioning_itself_does_not_wake_itself_again(make_room):
-    room = make_room(mode="manual")
-    room.adapters["alpha"].script("I, @alpha, say so")
-
-    await room.say("@alpha go")
-
-    assert len(room.adapters["alpha"].calls) == 1
-
-
-async def test_multiple_mentions_wake_seats_in_order_of_appearance(make_room):
-    room = make_room(mode="manual")
-
-    await room.say("@gamma then @alpha please")
-
-    assert [message.author for message in room.messages("seat")] == ["gamma", "alpha"]
-
-
-# Modes
-
-
-async def test_manual_mode_without_mention_stays_quiet(make_room):
-    room = make_room(mode="manual")
-
-    await room.say("nobody is addressed")
-
-    assert room.messages("seat") == []
-    assert room.router.call_count == 0
-    assert room.frames[-1] == {"type": "quiet"}
-
-
-async def test_roundrobin_each_seat_speaks_once_in_persona_order_then_quiet(make_room):
-    room = make_room(mode="roundrobin")
-
-    await room.say("discuss")
-
-    assert [message.author for message in room.messages("seat")] == ["alpha", "beta", "gamma"]
-    assert room.router.call_count == 0
-    assert room.frames[-1] == {"type": "quiet"}
-    assert all(len(adapter.calls) == 1 for adapter in room.adapters.values())
-
-
-async def test_roundrobin_mentioned_seat_speaks_first_and_not_twice(make_room):
-    room = make_room(mode="roundrobin")
-
-    await room.say("@gamma start")
-
-    assert [message.author for message in room.messages("seat")] == ["gamma", "alpha", "beta"]
-
-
-async def test_roundrobin_starts_again_after_the_next_owner_message(make_room):
-    room = make_room(seat_names=("alpha", "beta"), mode="roundrobin")
-
-    await room.say("one")
-    await room.say("two")
-
-    assert [message.author for message in room.messages("seat")] == [
-        "alpha",
-        "beta",
-        "alpha",
-        "beta",
-    ]
-
-
-# Auto-turn cap
-
-
-async def test_max_auto_turns_stops_the_chatter_and_owner_message_resets_it(make_room):
-    room = make_room(seat_names=("alpha", "beta"), max_auto_turns=2)
-    room.router.script(
-        {"alpha": 9.0, "beta": 0.0},
-        {"alpha": 0.0, "beta": 9.0},
-        {"alpha": 9.0, "beta": 0.0},
-        {"alpha": 0.0, "beta": 9.0},
-    )
-
-    await room.say("start")
-
-    assert [message.author for message in room.messages("seat")] == ["alpha", "beta"]
-    assert room.router.call_count == 2
-    assert room.frames[-1] == {"type": "quiet"}
-
-    await room.say("keep going")
-
-    assert len(room.messages("seat")) == 4
-    assert room.router.call_count == 4
-
-
-async def test_cap_counts_mention_chains_too(make_room):
-    room = make_room(mode="manual", max_auto_turns=1)
-    room.adapters["alpha"].script("handing over to @beta")
-
-    await room.say("@alpha go")
-
-    assert [message.author for message in room.messages("seat")] == ["alpha"]
-    assert room.adapters["beta"].calls == []
-    assert room.frames[-1] == {"type": "quiet"}
-
-
-# Seat failures
+# Threshold --------------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
-    "error",
+    ("liveliness", "turns", "floor", "expected"),
     [
-        SeatError("alpha", "exit code 1: boom"),
-        SeatTimeoutError("alpha", "no reply within 180 s, process killed"),
+        (10, 0, 3.0, 3.0),
+        (10, 3, 3.0, 3.3),
+        (6, 0, 3.0, 5.6),
+        (6, 2, 3.0, 6.2),
+        (1, 0, 3.0, 8.85),
+        (1, 10, 3.0, 14.35),
+        (10, 0, 4.5, 4.5),  # the floor wins over a low computed value
+        (0, 0, 3.0, 9.5),
     ],
 )
-async def test_seat_error_becomes_a_system_message(make_room, error):
-    room = make_room()
-    room.adapters["alpha"].script(error)
-    room.router.script({"alpha": 9.0, "beta": 0.0, "gamma": 0.0})
-
-    await room.say("hello")
-
-    system_messages = room.messages("system")
-    assert [message.text for message in system_messages] == [str(error)]
-    assert room.messages("seat") == []
-    # The typing indicator is cleared even though the run failed.
-    assert room.frames_of_type("typing")[-1] == {"type": "typing", "seat": "alpha", "state": "stop"}
-    assert room.scheduler.speaking_seat is None
-
-
-async def test_unavailable_adapter_posts_system_message_and_is_not_run(make_room):
-    room = make_room(mode="manual")
-    room.adapters["alpha"].is_available = False
-
-    await room.say("@alpha hello")
-
-    assert [message.text for message in room.messages("system")] == [
-        "Seat alpha: program claude not found."
-    ]
-    assert room.adapters["alpha"].calls == []
-
-
-async def test_seat_without_adapter_posts_system_message(make_room):
-    room = make_room(mode="manual")
-    del room.scheduler.adapters["alpha"]
-
-    await room.say("@alpha hello")
-
-    assert "no persona or adapter" in room.messages("system")[0].text
-
-
-# Sessions and prompts
-
-
-async def test_session_id_is_stored_per_thread_and_seat_and_sent_on_next_turn(make_room):
-    room = make_room(mode="manual")
-    room.adapters["alpha"].script(
-        SeatReply(text="one", session_id="session-1"),
-        SeatReply(text="two", session_id="session-2"),
-    )
-
-    await room.say("@alpha first")
-    assert room.store.get_session(room.thread_id, "alpha") == "session-1"
-    assert room.store.get_session(room.thread_id, "beta") is None
-
-    await room.say("@alpha second")
-
-    session_ids_sent = [call["session_id"] for call in room.adapters["alpha"].calls]
-    assert session_ids_sent == [None, "session-1"]
-    assert room.store.get_session(room.thread_id, "alpha") == "session-2"
-
-
-async def test_second_turn_prompt_has_only_messages_the_seat_has_not_seen(make_room):
-    room = make_room(mode="manual")
-    room.adapters["alpha"].script("alpha one")
-    room.adapters["beta"].script("beta one")
-
-    await room.say("@alpha first")
-    await room.say("@beta second")
-    await room.say("@alpha third")
-
-    first_prompt = room.adapters["alpha"].calls[0]["prompt"]
-    third_prompt = room.adapters["alpha"].calls[1]["prompt"]
-    assert "owner: @alpha first" in first_prompt
-    assert "owner: @beta second" in third_prompt
-    assert "beta: beta one" in third_prompt
-    assert "owner: @alpha third" in third_prompt
-    assert "owner: @alpha first" not in third_prompt
-    assert "alpha: alpha one" not in third_prompt
-
-
-async def test_prompts_carry_persona_system_prompt_and_timeout(make_room):
-    room = make_room(mode="manual")
-
-    await room.say("@alpha hello")
-
-    call = room.adapters["alpha"].calls[0]
-    assert "You are alpha." in call["system_prompt"]
-    assert "@beta" in call["system_prompt"]
-    assert call["timeout_s"] == room.scheduler.settings.seat_timeout_s
-
-
-# Interrupt and stop
-
-
-async def test_owner_message_interrupts_a_running_seat(make_room):
-    room = make_room(mode="manual")
-    alpha = room.adapters["alpha"]
-    alpha.block_until = asyncio.Event()
-
-    await room.scheduler.say("@alpha think hard")
-    await asyncio.wait_for(alpha.started.wait(), timeout=2)
-    assert room.scheduler.speaking_seat == "alpha"
-
-    await room.scheduler.say("never mind")
-    await room.scheduler.driver_task
-
-    assert alpha.was_cancelled
-    assert room.scheduler.speaking_seat is None
-    assert room.messages("seat") == []
-    assert [message.text for message in room.messages("owner")] == [
-        "@alpha think hard",
-        "never mind",
-    ]
-    typing_states = [frame["state"] for frame in room.frames_of_type("typing")]
-    assert typing_states == ["start", "stop"]
-    stop_index = room.frames.index({"type": "typing", "seat": "alpha", "state": "stop"})
-    interrupting_index = next(
-        index
-        for index, frame in enumerate(room.frames)
-        if frame["type"] == "message" and frame["message"]["text"] == "never mind"
-    )
-    assert stop_index < interrupting_index
-
-
-async def test_stop_cancels_the_running_seat_and_is_safe_to_repeat(make_room):
-    room = make_room(mode="manual")
-    alpha = room.adapters["alpha"]
-    alpha.block_until = asyncio.Event()
-    await room.scheduler.say("@alpha go")
-    await asyncio.wait_for(alpha.started.wait(), timeout=2)
-
-    await room.scheduler.stop()
-    await room.scheduler.stop()
-
-    assert alpha.was_cancelled
-    assert room.scheduler.driver_task.done()
-    assert room.scheduler.speaking_seat is None
-    assert room.messages("seat") == []
-
-
-async def test_stop_without_a_driver_does_nothing(make_room):
-    room = make_room()
-
-    await room.scheduler.stop()
-
-    assert room.frames == []
-
-
-# Wake, errors, modes
-
-
-async def test_wake_runs_the_seat_without_posting_an_owner_message(make_room):
-    room = make_room(mode="manual")
-
-    await room.scheduler.wake("beta")
-    await room.scheduler.driver_task
-
-    assert room.messages("owner") == []
-    assert [message.author for message in room.messages("seat")] == ["beta"]
-    assert "(no new messages)" in room.adapters["beta"].calls[0]["prompt"]
-
-
-async def test_wake_unknown_seat_raises(make_room):
-    room = make_room()
-
-    with pytest.raises(UnknownSeatError):
-        await room.scheduler.wake("nobody")
-
-
-async def test_say_on_ended_thread_raises(make_room):
-    room = make_room()
-    room.store.end_thread(room.thread_id)
-
-    with pytest.raises(ThreadEndedError):
-        await room.scheduler.say("too late")
-    with pytest.raises(ThreadEndedError):
-        await room.scheduler.wake("alpha")
-    with pytest.raises(ThreadEndedError):
-        await room.scheduler.end()
-    assert room.messages() == []
-
-
-async def test_set_mode_broadcasts_a_mode_frame_and_saves_it(make_room):
-    room = make_room()
-
-    thread = await room.scheduler.set_mode("roundrobin")
-
-    assert thread.mode == "roundrobin"
-    assert room.store.get_thread(room.thread_id).mode == "roundrobin"
-    assert room.frames == [{"type": "mode", "mode": "roundrobin"}]
-
-
-async def test_unexpected_error_in_driver_is_reported_as_an_error_frame(make_room):
-    room = make_room(mode="manual")
-    room.adapters["alpha"].script(RuntimeError("adapter bug"))
-
-    await room.say("@alpha go")
-
-    assert room.frames_of_type("error") == [
-        {"type": "error", "text": "turn-taking failed: adapter bug"}
-    ]
-
-
-# End of discussion
-
-
-async def test_end_collects_memory_notes_from_seats_that_spoke(make_room):
-    room = make_room(mode="manual")
-    await room.say("@alpha hi")
-    await room.say("@beta hi")
-    room.adapters["alpha"].script("- Owner likes short answers\n- Check the cap first")
-    room.adapters["beta"].script("NONE")
-
-    notes = await room.scheduler.end()
-
-    assert notes == {
-        "alpha": ["Owner likes short answers", "Check the cap first"],
-        "beta": [],
+def test_liveliness_threshold_table(liveliness, turns, floor, expected):
+    assert liveliness_threshold(liveliness, turns, floor) == pytest.approx(expected)
+
+
+async def test_bid_below_threshold_stays_quiet_and_above_speaks(tmp_path):
+    quiet_room = build_harness(tmp_path / "a", liveliness=1)  # threshold 8.85
+    quiet_room.router.script({"Ravi": 5.0})
+    await quiet_room.scheduler.say("anyone?")
+    await quiet_room.settle()
+    assert quiet_room.spoken() == []
+    assert quiet_room.quiet_reasons() == ["nobody"]
+    assert quiet_room.frames_of("bids")[0]["threshold"] == pytest.approx(8.85)
+
+    lively_room = build_harness(tmp_path / "b", liveliness=10)  # threshold 3.0
+    lively_room.router.script({"Ravi": 5.0})
+    await lively_room.scheduler.say("anyone?")
+    await lively_room.settle()
+    assert [author for author, _ in lively_room.spoken()] == ["Ravi"]
+    bids_frame = lively_room.frames_of("bids")[0]
+    assert bids_frame["chosen"] == lively_room.seat_id("Ravi")
+    assert bids_frame["router"] == "jev"
+    assert {bid["seat"] for bid in bids_frame["bids"]} == {
+        lively_room.seat_id(name) for name in ("Ravi", "Tuli", "Pi")
     }
-    # gamma never spoke, so it is not asked.
-    assert room.adapters["gamma"].calls == []
-    assert END_OF_DISCUSSION_PROMPT in room.adapters["alpha"].calls[-1]["prompt"]
-    assert END_OF_DISCUSSION_PROMPT in room.adapters["beta"].calls[-1]["prompt"]
 
-    alpha_index = (room.personas["alpha"].memory_directory / "index.md").read_text()
-    assert "Owner likes short answers" in alpha_index
-    assert "Check the cap first" in alpha_index
-    alpha_note_files = sorted(
-        path.name for path in room.personas["alpha"].memory_directory.glob("0*.md")
+
+async def test_threshold_ramps_with_automatic_turns(tmp_path):
+    # L=10: threshold is 3.0, 3.1, 3.2, 3.3 for k = 0..3. A constant bid of 3.25 speaks three times.
+    room = build_harness(tmp_path, liveliness=10)
+    room.router.script(*({"Ravi": 3.25, "Tuli": 3.25, "Pi": 3.25} for _ in range(6)))
+    await room.scheduler.say("go")
+    await room.settle()
+    assert len(room.spoken()) == 3
+    thresholds = [frame["threshold"] for frame in room.frames_of("bids")]
+    assert thresholds == pytest.approx([3.0, 3.1, 3.2, 3.3])
+
+
+async def test_bidding_never_picks_the_author_of_the_last_message(tmp_path):
+    room = build_harness(tmp_path, liveliness=10)
+    room.router.script({"Ravi": 9.0, "Tuli": 8.0}, {"Ravi": 9.0, "Tuli": 1.0})
+    await room.scheduler.say("go")
+    await room.settle()
+    # Ravi speaks first; in the second round his own bid is ignored and Tuli's 1.0 is too low.
+    assert [author for author, _ in room.spoken()] == ["Ravi"]
+
+
+async def test_cooldown_blocks_a_seat_that_just_spoke(tmp_path):
+    room = build_harness(tmp_path, liveliness=10, cooldown_s=20.0)
+    room.router.script({"Ravi": 9.0}, {"Tuli": 9.0}, {"Ravi": 9.0})
+    await room.scheduler.say("go")
+    await room.settle()
+    # Ravi, then Tuli, then Ravi again is refused: Ravi spoke 0 s ago on the fake clock.
+    assert [author for author, _ in room.spoken()] == ["Ravi", "Tuli"]
+
+
+# Mentions ---------------------------------------------------------------------------------
+
+
+async def test_mention_bypasses_bidding_and_records_woken_by(harness):
+    await harness.scheduler.say("what do you think, @ravi?")
+    await harness.settle()
+    assert harness.router.call_count == 1  # only after the mention turn, for a follow-up
+    first = next(m for m in harness.messages() if m.role == "seat")
+    assert first.author == "Ravi"
+    assert first.meta["woken_by"] == "mention"
+    owner_message = harness.messages()[0]
+    assert owner_message.mentions == [harness.seat_id("Ravi")]
+
+
+@pytest.mark.parametrize("text", ["@RAVI hello", "hey @Ravi,", "(@ravi)"])
+async def test_mentions_are_case_insensitive(harness, text):
+    await harness.scheduler.say(text)
+    await harness.settle()
+    assert harness.spoken()[0][0] == "Ravi"
+
+
+async def test_email_address_is_not_a_mention(harness):
+    await harness.scheduler.say("write to me@ravi.example")
+    await harness.settle()
+    assert harness.spoken() == []
+
+
+async def test_at_all_wakes_every_enabled_available_seat_in_position_order(tmp_path):
+    seats = (
+        {"name": "Ravi"},
+        {"name": "Tuli", "enabled": False},
+        {"name": "Pi"},
+        {"name": "Ghost"},
     )
-    assert len(alpha_note_files) == 2
-    assert not room.personas["beta"].memory_directory.exists()
-
-    ended_frame = room.frames_of_type("ended")[0]
-    assert ended_frame == {"type": "ended", "notes": notes}
-    assert room.store.get_thread(room.thread_id).ended_at is not None
-
-
-async def test_end_resumes_the_seat_session(make_room):
-    room = make_room(mode="manual")
-    room.adapters["alpha"].script(SeatReply(text="hello", session_id="session-9"))
-    await room.say("@alpha hi")
-
-    await room.scheduler.end()
-
-    assert room.adapters["alpha"].calls[-1]["session_id"] == "session-9"
+    room = build_harness(tmp_path, seats=seats, liveliness=0)
+    room.factory.unavailable_names.add("Ghost")
+    await room.scheduler.say("@all status please")
+    await room.settle()
+    spoken = room.messages()
+    assert [m.author for m in spoken if m.role == "seat"] == ["Ravi", "Pi"]
+    assert {m.meta["woken_by"] for m in spoken if m.role == "seat"} == {"all"}
+    assert spoken[0].mentions == [room.seat_id("Ravi"), room.seat_id("Pi")]
 
 
-async def test_end_with_no_seat_messages_ends_thread_with_empty_notes(make_room):
-    room = make_room()
+async def test_prefix_mention_wakes_matching_seats(tmp_path):
+    seats = ({"name": "Scout1"}, {"name": "Scout2"}, {"name": "Ravi"})
+    room = build_harness(tmp_path, seats=seats, liveliness=0)
+    await room.scheduler.say("@scout* look around")
+    await room.settle()
+    assert [author for author, _ in room.spoken()] == ["Scout1", "Scout2"]
+
+
+async def test_seat_is_never_woken_by_its_own_mention(tmp_path):
+    room = build_harness(tmp_path, liveliness=0)
+    room.adapter("Ravi")  # build adapters first so the script lands on the right objects
+    room.adapter("Ravi").script("@ravi @tuli your turn")
+    await room.scheduler.say("@ravi start")
+    await room.settle()
+    assert [author for author, _ in room.spoken()] == ["Ravi", "Tuli"]
+    ravi_message = next(m for m in room.messages() if m.author == "Ravi")
+    assert ravi_message.mentions == [room.seat_id("Tuli")]
+
+
+async def test_at_all_in_a_seat_reply_does_not_wake_the_author(tmp_path):
+    room = build_harness(tmp_path, liveliness=0)
+    room.adapter("Ravi").script("@all weigh in")
+    await room.scheduler.say("@ravi kick off")
+    await room.settle()
+    assert [author for author, _ in room.spoken()] == ["Ravi", "Tuli", "Pi"]
+
+
+async def test_mention_of_a_missing_program_posts_a_system_message(tmp_path):
+    room = build_harness(tmp_path, liveliness=0)
+    room.factory.unavailable_names.add("Ravi")
+    await room.scheduler.say("@ravi hello")
+    await room.settle()
+    assert room.system_texts() == ["Seat Ravi: program claude not found."]
+
+
+# Liveliness, safety, budget ---------------------------------------------------------------
+
+
+async def test_paused_room_ignores_bidding_but_answers_mentions(tmp_path):
+    room = build_harness(tmp_path, liveliness=0)
+    room.router.script({"Ravi": 10.0})
+    await room.scheduler.say("anyone?")
+    await room.settle()
+    assert room.router.call_count == 0
+    assert room.spoken() == []
+    assert room.quiet_reasons() == ["paused"]
+
+    await room.scheduler.say("@tuli you then")
+    await room.settle()
+    assert [author for author, _ in room.spoken()] == ["Tuli"]
+    assert room.quiet_reasons() == ["paused", "paused"]
+
+
+async def test_safety_stop_after_max_auto_turns(tmp_path):
+    room = build_harness(tmp_path, seats=({"name": "Ravi"}, {"name": "Tuli"}), max_auto_turns=3)
+    room.adapter("Ravi").default_text = "@tuli ping"
+    room.adapter("Tuli").default_text = "@ravi pong"
+    await room.scheduler.say("@ravi start")
+    await room.settle()
+    assert len(room.spoken()) == 3
+    assert room.quiet_reasons() == ["safety"]
+
+
+async def test_budget_stop_posts_one_system_message_and_goes_quiet(tmp_path):
+    room = build_harness(tmp_path, budget_usd=0.01)
+    room.adapter("Ravi").script(SeatReply(text="costly", cost_usd=0.02))
+    await room.scheduler.say("@all status")
+    await room.settle()
+    assert [author for author, _ in room.spoken()] == ["Ravi"]
+    assert room.system_texts() == ["Budget of $0.01 reached; raise it to continue."]
+    assert room.quiet_reasons() == ["budget"]
+    assert room.store.get_room(room.room_id).spent_usd == pytest.approx(0.02)
+    spend_frames = [f for f in room.frames_of("room") if f["room"]["spent_usd"] > 0]
+    assert spend_frames, "a room frame must announce the new spend"
+
+    # The notice is not repeated for the same budget, and mentions are refused with an error.
+    await room.scheduler.say("@tuli are you there")
+    await room.settle()
+    assert len(room.system_texts()) == 1
+    assert room.frames_of("error")[-1]["text"].startswith("Budget of $0.01")
+    assert room.quiet_reasons() == ["budget", "budget"]
+    with pytest.raises(BudgetReachedError):
+        await room.scheduler.wake(room.seat_id("Tuli"))
+    with pytest.raises(BudgetReachedError):
+        await room.scheduler.wake_all()
+
+
+async def test_raising_the_budget_resumes_the_room(tmp_path):
+    room = build_harness(tmp_path, budget_usd=0.01)
+    room.adapter("Ravi").script(SeatReply(text="costly", cost_usd=0.02))
+    await room.scheduler.say("@ravi hi")
+    await room.settle()
+    await room.scheduler.apply_room_patch({"budget_usd": 1.0})
+    await room.scheduler.say("@tuli go on")
+    await room.settle()
+    assert [author for author, _ in room.spoken()] == ["Ravi", "Tuli"]
+
+
+async def test_pass_costs_money_but_posts_nothing(harness):
+    harness.adapter("Ravi").script(SeatReply(text="PASS", cost_usd=0.5))
+    await harness.scheduler.say("@ravi anything?")
+    await harness.settle()
+    assert harness.spoken() == []
+    assert harness.store.get_room(harness.room_id).spent_usd == pytest.approx(0.5)
+
+
+# Seats and patches ------------------------------------------------------------------------
+
+
+async def test_rename_mid_room_rewrites_authors_and_keeps_the_session(harness):
+    harness.adapter("Ravi").script(SeatReply(text="first", session_id="session-1"))
+    await harness.scheduler.say("@ravi hello")
+    await harness.settle()
+    ravi_id = harness.seat_id("Ravi")
+
+    room = await harness.scheduler.apply_seat_patch(ravi_id, {"name": "Rabindra"})
+    assert [seat.name for seat in room.seats][0] == "Rabindra"
+    assert [m.author for m in harness.messages() if m.role == "seat"] == ["Rabindra"]
+    assert harness.store.get_session(harness.room_id, ravi_id) == "session-1"
+    assert harness.frames_of("room")[-1]["room"]["seats"][0]["handle"] == "rabindra"
+
+    await harness.scheduler.say("@rabindra again")
+    await harness.settle()
+    call = harness.adapter("Ravi").calls[-1]
+    assert call["session_id"] == "session-1"
+    assert "Rabindra" in call["system_prompt"]
+    assert harness.factory.build_count("Ravi") == 1  # a rename does not rebuild the adapter
+
+
+async def test_program_model_and_thinking_changes_rebuild_the_adapter(harness):
+    ravi_id = harness.seat_id("Ravi")
+    harness.adapter("Ravi")
+    harness.adapter("Ravi").script(SeatReply(text="hello", session_id="session-1"))
+    await harness.scheduler.say("@ravi hi")
+    await harness.settle()
+    assert harness.factory.build_count("Ravi") == 1
+
+    await harness.scheduler.apply_seat_patch(ravi_id, {"model": "haiku"})
+    assert harness.factory.build_count("Ravi") == 2
+    await harness.scheduler.apply_seat_patch(ravi_id, {"thinking": "high"})
+    assert harness.factory.build_count("Ravi") == 3
+    assert harness.adapter("Ravi").thinking == "high"
+    await harness.scheduler.apply_seat_patch(ravi_id, {"instruction": "Be brief.", "color": "#fff"})
+    assert harness.factory.build_count("Ravi") == 3
+    assert harness.store.get_session(harness.room_id, ravi_id) == "session-1"
+
+    await harness.scheduler.apply_seat_patch(ravi_id, {"program": "pi"})
+    assert harness.factory.build_count("Ravi") == 4
+    assert harness.adapter("Ravi").program == "pi"
+    assert harness.store.get_session(harness.room_id, ravi_id) is None  # new program, new session
+
+
+async def test_empty_strings_in_a_seat_patch_clear_optional_fields(harness):
+    ravi_id = harness.seat_id("Ravi")
+    room = await harness.scheduler.apply_seat_patch(ravi_id, {"model": "haiku", "persona": ""})
+    ravi = room.seats[0]
+    assert (ravi.model, ravi.persona) == ("haiku", None)
+    room = await harness.scheduler.apply_seat_patch(ravi_id, {"model": ""})
+    assert room.seats[0].model is None
+
+
+@pytest.mark.parametrize(
+    ("patch", "error_type"),
+    [
+        ({"name": "Tuli"}, ValueError),
+        ({"name": "  "}, ValueError),
+        ({"thinking": "extreme"}, ValueError),
+        ({"enabled": "yes"}, ValueError),
+        ({"persona": "no-such-persona"}, PersonaError),
+        ({"flavour": "mint"}, ValueError),
+    ],
+)
+async def test_invalid_seat_patches_fail_loudly(harness, patch, error_type):
+    with pytest.raises(error_type):
+        await harness.scheduler.apply_seat_patch(harness.seat_id("Ravi"), patch)
+
+
+async def test_seat_patch_for_a_seat_of_another_room_is_refused(harness):
+    other_room = harness.store.create_room("other")
+    stranger = harness.store.add_seat(other_room.id, name="Zed", program="pi")
+    with pytest.raises(UnknownSeatError):
+        await harness.scheduler.apply_seat_patch(stranger.id, {"color": "#000"})
+
+
+@pytest.mark.parametrize(
+    "patch",
+    [
+        {"liveliness": 11},
+        {"liveliness": 2.5},
+        {"budget_usd": -1},
+        {"mode": "chaos"},
+        {"title": " "},
+        {"x": 1},
+    ],
+)
+async def test_invalid_room_patches_fail_loudly(harness, patch):
+    with pytest.raises(ValueError):
+        await harness.scheduler.apply_room_patch(patch)
+
+
+async def test_room_patch_updates_store_and_broadcasts_a_room_frame(harness):
+    room = await harness.scheduler.apply_room_patch(
+        {"title": "New title", "mode": "roundrobin", "liveliness": 3, "budget_usd": 2}
+    )
+    assert (room.title, room.mode, room.liveliness, room.budget_usd) == (
+        "New title",
+        "roundrobin",
+        3,
+        2.0,
+    )
+    assert harness.frames_of("room")[-1]["room"]["title"] == "New title"
+
+
+async def test_removing_the_speaking_seat_cancels_its_turn(harness):
+    adapter = harness.adapter("Ravi")
+    adapter.block_until = asyncio.Event()
+    await harness.scheduler.say("@ravi think hard")
+    await asyncio.wait_for(adapter.started.wait(), 2)
+    ravi_id = harness.seat_id("Ravi")
+
+    room = await harness.scheduler.remove_seat(ravi_id)
+
+    assert adapter.was_cancelled
+    assert [seat.name for seat in room.seats] == ["Tuli", "Pi"]
+    assert harness.spoken() == []
+    assert {"type": "typing", "seat": ravi_id, "state": "stop"} in harness.frames
+
+
+async def test_owner_message_interrupts_the_speaking_seat(harness):
+    adapter = harness.adapter("Ravi")
+    adapter.block_until = asyncio.Event()
+    await harness.scheduler.say("@ravi think hard")
+    await asyncio.wait_for(adapter.started.wait(), 2)
+
+    adapter.block_until = None
+    await harness.scheduler.say("@tuli actually you")
+    await harness.settle()
+
+    assert adapter.was_cancelled
+    assert [author for author, _ in harness.spoken()] == ["Tuli"]
+
+
+# Modes, wake, errors ----------------------------------------------------------------------
+
+
+async def test_roundrobin_runs_one_pass_in_position_order_then_stops(tmp_path):
+    room = build_harness(tmp_path, mode="roundrobin")
+    await room.scheduler.say("round the table")
+    await room.settle()
+    assert [author for author, _ in room.spoken()] == ["Ravi", "Tuli", "Pi"]
+    assert {m.meta["woken_by"] for m in room.messages() if m.role == "seat"} == {"roundrobin"}
+    assert room.router.call_count == 0
+    assert room.quiet_reasons() == ["nobody"]
+
+
+async def test_roundrobin_pass_is_disabled_when_paused(tmp_path):
+    room = build_harness(tmp_path, mode="roundrobin", liveliness=0)
+    await room.scheduler.say("round the table")
+    await room.settle()
+    assert room.spoken() == []
+    assert room.quiet_reasons() == ["paused"]
+
+
+async def test_manual_mode_only_answers_mentions(tmp_path):
+    room = build_harness(tmp_path, mode="manual")
+    await room.scheduler.say("anyone?")
+    await room.settle()
+    assert room.spoken() == []
+    await room.scheduler.say("@pi you")
+    await room.settle()
+    assert [author for author, _ in room.spoken()] == ["Pi"]
+
+
+async def test_wake_runs_one_seat_without_an_owner_message(harness):
+    await harness.scheduler.wake(harness.seat_id("Tuli"))
+    await harness.settle()
+    assert [m.role for m in harness.messages()] == ["seat"]
+    assert harness.messages()[0].meta["woken_by"] == "wake"
+
+
+async def test_wake_all_runs_every_available_seat(tmp_path):
+    room = build_harness(tmp_path, liveliness=0)
+    room.factory.unavailable_names.add("Pi")
+    await room.scheduler.wake_all()
+    await room.settle()
+    assert [author for author, _ in room.spoken()] == ["Ravi", "Tuli"]
+    assert {m.meta["woken_by"] for m in room.messages()} == {"all"}
+
+
+async def test_wake_of_unknown_or_disabled_seat_is_an_error(tmp_path):
+    room = build_harness(tmp_path, seats=({"name": "Ravi", "enabled": False},))
+    with pytest.raises(UnknownSeatError):
+        await room.scheduler.wake("nope")
+    with pytest.raises(ValueError, match="disabled"):
+        await room.scheduler.wake(room.seat_id("Ravi"))
+
+
+async def test_seat_error_becomes_a_system_message_with_the_current_name(harness):
+    harness.adapter("Ravi").script(SeatError("old-name", "exit code 1: boom"))
+    await harness.scheduler.say("@ravi hi")
+    await harness.settle()
+    assert harness.system_texts() == ["Seat Ravi failed: exit code 1: boom"]
+    assert harness.spoken() == []
+
+
+async def test_router_failure_falls_back_to_heuristic_once(tmp_path):
+    room = build_harness(tmp_path, liveliness=10)
+    room.router.script(RouterError("HTTP 500"), RouterError("HTTP 500"))
+    await room.scheduler.say("hello all")
+    await room.settle()
+    assert len([text for text in room.system_texts() if text.startswith("Router jev failed")]) == 1
+    assert room.frames_of("bids")[0]["router"] == "heuristic"
+
+
+# Prompts reaching the adapter ---------------------------------------------------------------
+
+
+async def test_adapter_receives_owner_line_persona_instruction_and_handles(tmp_path):
+    seats = (
+        {"name": "Ravi", "persona": "alpha", "instruction": "Answer in one line."},
+        {"name": "Scout 2"},
+    )
+    room = build_harness(tmp_path, seats=seats, liveliness=0)
+    await room.scheduler.say("@ravi hello")
+    await room.settle()
+    call = room.adapter("Ravi").calls[0]
+    system_prompt = call["system_prompt"]
+    assert "Prefers short answers." in system_prompt
+    assert "Argue for simple designs." in system_prompt
+    assert "Answer in one line." in system_prompt
+    assert "[First fact]" in system_prompt  # memory index
+    assert "@scout2 (Scout 2)" in system_prompt
+    assert "Riad: @ravi hello" in call["prompt"]  # the owner is shown by name
+
+
+async def test_later_prompts_carry_only_unseen_messages(harness):
+    await harness.scheduler.say("@ravi first")
+    await harness.settle()
+    await harness.scheduler.say("@ravi second")
+    await harness.settle()
+    first_prompt, second_prompt = (call["prompt"] for call in harness.adapter("Ravi").calls[:2])
+    assert "first" in first_prompt
+    assert "second" in second_prompt
+    assert "Riad: @ravi first" not in second_prompt
+
+
+async def test_missing_persona_posts_a_system_message(tmp_path):
+    room = build_harness(tmp_path, seats=({"name": "Ravi", "persona": "alpha"},), liveliness=0)
+    (tmp_path / "personas" / "alpha" / "persona.md").unlink()
+    await room.scheduler.say("@ravi hi")
+    await room.settle()
+    assert room.system_texts()[0].startswith("Seat Ravi: persona 'alpha' not found")
+
+
+# End of room --------------------------------------------------------------------------------
+
+
+async def test_end_writes_notes_only_for_seats_with_personas(tmp_path):
+    room = build_harness(tmp_path, liveliness=0)
+    room.adapter("Ravi").script("my view", "- Keep designs small")
+    room.adapter("Pi").script("pi view", "- Pi would remember this")  # Pi has no persona
+    await room.scheduler.say("@ravi @pi what do you think?")
+    await room.settle()
 
     notes = await room.scheduler.end()
 
-    assert notes == {}
-    assert room.frames_of_type("ended") == [{"type": "ended", "notes": {}}]
-    assert room.store.get_thread(room.thread_id).ended_at is not None
+    ravi_id = room.seat_id("Ravi")
+    assert notes == {ravi_id: ["Keep designs small"]}
+    assert len(room.adapter("Pi").calls) == 1  # never asked for notes
+    assert END_OF_DISCUSSION_PROMPT in room.adapter("Ravi").calls[-1]["prompt"]
+    note_files = sorted(p.name for p in (tmp_path / "personas" / "alpha" / "memory").glob("00*"))
+    assert note_files == ["001-first-fact.md", "002-keep-designs-small.md"]
+    assert room.store.get_room(room.room_id).ended_at is not None
+    assert room.frames_of("ended")[0]["notes"] == {ravi_id: ["Keep designs small"]}
+    assert room.frames_of("room")[-1]["room"]["ended_at"] is not None
 
 
-async def test_end_seat_error_reports_system_message_and_still_ends(make_room):
-    room = make_room(mode="manual")
-    await room.say("@alpha hi")
-    room.adapters["alpha"].script(SeatError("alpha", "exit code 2: crashed"))
-
-    notes = await room.scheduler.end()
-
-    assert notes == {"alpha": []}
-    assert "Memory notes for alpha not written" in room.messages("system")[-1].text
-    assert room.store.get_thread(room.thread_id).ended_at is not None
-
-
-async def test_end_cancels_a_running_seat_first(make_room):
-    room = make_room(mode="manual")
-    alpha = room.adapters["alpha"]
-    alpha.block_until = asyncio.Event()
-    await room.scheduler.say("@alpha go")
-    await asyncio.wait_for(alpha.started.wait(), timeout=2)
-
-    notes = await room.scheduler.end()
-
-    assert alpha.was_cancelled
-    assert notes == {}
-
-
-async def test_unavailable_seat_is_not_scored_or_chosen(make_room):
-    room = make_room()
-    room.scheduler.seats[2].available = False  # gamma's program is not installed
-    room.router.script({"alpha": 3.0, "beta": 4.0, "gamma": 9.0})
-    room.adapters["gamma"].script(SeatReply(text="gamma speaks"))
-
-    await room.say("who wants it?")
-
-    assert room.adapters["gamma"].calls == []
-    assert room.seat_texts() == []
-    scored_seats = {bid["seat"] for bid in room.frames_of_type("bids")[0]["bids"]}
-    assert "gamma" not in scored_seats
-
-
-async def test_roundrobin_skips_unavailable_seat(make_room):
-    room = make_room(mode="roundrobin")
-    room.scheduler.seats[1].available = False  # beta's program is not installed
-    room.adapters["alpha"].script(SeatReply(text="alpha"))
-    room.adapters["gamma"].script(SeatReply(text="gamma"))
-
-    await room.say("everyone, once")
-
-    assert room.seat_texts() == ["alpha", "gamma"]
-    assert room.adapters["beta"].calls == []
+async def test_ended_room_takes_no_more_input(harness):
+    await harness.scheduler.end()
+    with pytest.raises(RoomEndedError):
+        await harness.scheduler.say("hello?")
+    with pytest.raises(RoomEndedError):
+        await harness.scheduler.end()
+    with pytest.raises(RoomEndedError):
+        await harness.scheduler.wake(harness.seat_id("Ravi"))
