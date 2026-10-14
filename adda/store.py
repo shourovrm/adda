@@ -1,14 +1,21 @@
-"""SQLite storage: rooms, their seats, messages (with FTS5 search) and per-seat sessions.
+"""SQLite storage: rooms, their seats and threads, messages (with FTS5 search) and sessions.
 
 Public API (all methods are thread-safe; ids are 12-char hex strings):
 
     Rooms    create_room(title, folder="", mode="bidding", liveliness=6, budget_usd=0.0,
-                         max_concurrent=2) -> Room
-             get_room(room_id) -> Room            (seats included, in position order)
-             list_rooms() -> list[Room]           (newest first, seats included)
+                         max_concurrent=2) -> Room   (with a first thread titled like the room)
+             get_room(room_id) -> Room            (seats in position order, threads newest first)
+             list_rooms() -> list[Room]           (newest first, seats and threads included)
              update_room(room_id, **fields) -> Room   (title, folder, mode, liveliness, budget_usd)
-             end_room(room_id) -> Room
+             end_room(room_id) -> Room            (archives the room; threads are not touched)
              add_spend(room_id, usd) -> Room      (atomic increment of spent_usd)
+    Threads  create_thread(room_id, title) -> Thread
+             get_thread(thread_id) -> Thread
+             thread_summary(thread_id) -> ThreadSummary
+             list_threads(room_id) -> list[ThreadSummary]   (newest first)
+             newest_thread(room_id) -> Thread     (newest open thread, else the newest thread)
+             rename_thread(thread_id, title) -> Thread
+             end_thread(thread_id) -> Thread
     Seats    add_seat(room_id, name=..., program=..., model=None, thinking="default",
                       persona=None, instruction=None, color="#888888", enabled=True,
                       position=None) -> Seat
@@ -18,11 +25,12 @@ Public API (all methods are thread-safe; ids are 12-char hex strings):
              rename_seat(seat_id, new_name) -> Seat   (also rewrites messages.author)
              remove_seat(seat_id) -> None             (messages stay, session row is deleted)
              last_room_seats() -> list[SeatConfig]    (seats of the newest room that has any)
-    Messages add_message(message) -> Message
-             list_messages(room_id, last=None) -> list[Message]
-             search(raw_query, limit=50) -> list[SearchHit]   (hit.room_title, markerless snippet)
-    Sessions get_session(room_id, seat_id) -> str | None
-             set_session(room_id, seat_id, session_id) -> None
+    Messages add_message(message) -> Message   (message.thread_id must belong to message.room_id)
+             list_messages(room_id, last=None) -> list[Message]          (all threads of a room)
+             list_thread_messages(thread_id, last=None) -> list[Message]
+             search(raw_query, limit=50) -> list[SearchHit]   (room and thread titles, snippet)
+    Sessions get_session(thread_id, seat_id) -> str | None   (a tool session lasts one thread)
+             set_session(thread_id, seat_id, session_id) -> None
 
 `Seat.available` and `Seat.harness_version` are not stored; the store returns the defaults
 (False, None) and the server fills them in from harness detection.
@@ -45,6 +53,9 @@ from adda.models import (
     Room,
     Seat,
     SeatConfig,
+    Thread,
+    ThreadSummary,
+    new_id,
     seat_handle,
     utc_now,
 )
@@ -77,6 +88,14 @@ CREATE TABLE IF NOT EXISTS room_seats (
     eagerness INTEGER NOT NULL DEFAULT 5
 );
 CREATE INDEX IF NOT EXISTS room_seats_by_room ON room_seats(room_id, position);
+CREATE TABLE IF NOT EXISTS threads (
+    id TEXT PRIMARY KEY,
+    room_id TEXT NOT NULL REFERENCES rooms(id),
+    title TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    ended_at TEXT
+);
+CREATE INDEX IF NOT EXISTS threads_by_room ON threads(room_id, created_at);
 CREATE TABLE IF NOT EXISTS messages (
     rowid INTEGER PRIMARY KEY AUTOINCREMENT,
     id TEXT NOT NULL UNIQUE,
@@ -88,9 +107,11 @@ CREATE TABLE IF NOT EXISTS messages (
     created_at TEXT NOT NULL,
     mentions TEXT NOT NULL,
     cost_usd REAL,
-    meta TEXT NOT NULL
+    meta TEXT NOT NULL,
+    thread_id TEXT REFERENCES threads(id)
 );
 CREATE INDEX IF NOT EXISTS messages_by_room ON messages(room_id, rowid);
+CREATE INDEX IF NOT EXISTS messages_by_thread ON messages(thread_id, rowid);
 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
     text, author, content='messages', content_rowid='rowid'
 );
@@ -98,12 +119,25 @@ CREATE TRIGGER IF NOT EXISTS messages_after_insert AFTER INSERT ON messages BEGI
     INSERT INTO messages_fts(rowid, text, author) VALUES (new.rowid, new.text, new.author);
 END;
 CREATE TABLE IF NOT EXISTS seat_sessions (
-    room_id TEXT NOT NULL REFERENCES rooms(id),
+    thread_id TEXT NOT NULL REFERENCES threads(id),
     seat_id TEXT NOT NULL,
     session_id TEXT NOT NULL,
-    PRIMARY KEY (room_id, seat_id)
+    PRIMARY KEY (thread_id, seat_id)
 );
 """
+
+# The threads table as v0.5 created it; also used by the upgrade from v0.4.
+THREADS_TABLE = """
+CREATE TABLE IF NOT EXISTS threads (
+    id TEXT PRIMARY KEY,
+    room_id TEXT NOT NULL REFERENCES rooms(id),
+    title TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    ended_at TEXT
+)
+"""
+# The thread list shows the newest message's first line, cut to this many characters.
+LAST_LINE_LENGTH = 140
 
 ROOM_UPDATABLE_FIELDS = ("title", "folder", "mode", "liveliness", "budget_usd", "max_concurrent")
 SEAT_UPDATABLE_FIELDS = (
@@ -122,19 +156,15 @@ PROGRAM_NAMES = ("claude", "opencode", "pi", "codex")
 
 
 class NotFoundError(LookupError):
-    """A room or seat id that does not exist in the store."""
+    """A room, thread or seat id that does not exist in the store."""
 
 
 @dataclass(frozen=True)
 class SearchHit:
     message: Message
     room_title: str
+    thread_title: str
     snippet: str
-
-    @property
-    def thread_title(self) -> str:
-        """v0.1 name for `room_title`."""
-        return self.room_title
 
 
 def _fts_query(raw_query: str) -> str:
@@ -150,6 +180,10 @@ def _table_exists(connection: sqlite3.Connection, table_name: str) -> bool:
         "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?", (table_name,)
     ).fetchone()
     return row is not None
+
+
+def _column_names(connection: sqlite3.Connection, table_name: str) -> set[str]:
+    return {row[1] for row in connection.execute(f"PRAGMA table_info({table_name})")}
 
 
 def _upgrade_from_version_one(connection: sqlite3.Connection) -> None:
@@ -173,6 +207,46 @@ def _upgrade_from_version_one(connection: sqlite3.Connection) -> None:
     connection.execute("DROP TABLE seat_sessions")
 
 
+def _upgrade_to_threads(connection: sqlite3.Connection) -> None:
+    """Give a v0.4 database threads (SPEC v0.5 F2), in place.
+
+    Every room gets one thread titled after the room, and all its messages move into it. A
+    room that had ended in v0.4 had finished its one discussion, so its thread takes the end
+    time and the room itself is reopened: in v0.5 an ended room means archived, and the owner
+    should still be able to start a new thread there. Seat sessions move to the room's thread
+    so seats keep resuming the conversation their tool session already holds.
+    """
+    connection.execute("BEGIN")
+    connection.execute(THREADS_TABLE)
+    connection.execute("ALTER TABLE messages ADD COLUMN thread_id TEXT REFERENCES threads(id)")
+    rooms = connection.execute(
+        "SELECT id, title, created_at, ended_at FROM rooms ORDER BY created_at, rowid"
+    ).fetchall()
+    for room_id, title, created_at, ended_at in rooms:
+        thread_id = new_id()
+        connection.execute(
+            "INSERT INTO threads (id, room_id, title, created_at, ended_at) VALUES (?, ?, ?, ?, ?)",
+            (thread_id, room_id, title, created_at, ended_at),
+        )
+        connection.execute(
+            "UPDATE messages SET thread_id = ? WHERE room_id = ?", (thread_id, room_id)
+        )
+    connection.execute("UPDATE rooms SET ended_at = NULL")
+    if _table_exists(connection, "seat_sessions"):
+        connection.execute(
+            "CREATE TABLE seat_sessions_by_thread ("
+            " thread_id TEXT NOT NULL REFERENCES threads(id), seat_id TEXT NOT NULL,"
+            " session_id TEXT NOT NULL, PRIMARY KEY (thread_id, seat_id))"
+        )
+        connection.execute(
+            "INSERT INTO seat_sessions_by_thread (thread_id, seat_id, session_id)"
+            " SELECT threads.id, seat_sessions.seat_id, seat_sessions.session_id"
+            " FROM seat_sessions JOIN threads ON threads.room_id = seat_sessions.room_id"
+        )
+        connection.execute("DROP TABLE seat_sessions")
+        connection.execute("ALTER TABLE seat_sessions_by_thread RENAME TO seat_sessions")
+
+
 class Store:
     def __init__(self, database_path: Path | str) -> None:
         if str(database_path) != ":memory:":
@@ -184,9 +258,20 @@ class Store:
         self._lock = threading.Lock()
         with self._lock:
             self._connection.execute("PRAGMA foreign_keys = ON")
-            with self._connection:
-                if _table_exists(self._connection, "threads"):
+            # v0.1 had a `threads` table and no `rooms`; v0.5 has both.
+            is_version_one = _table_exists(self._connection, "threads") and not _table_exists(
+                self._connection, "rooms"
+            )
+            if is_version_one:
+                with self._connection:
                     _upgrade_from_version_one(self._connection)
+            # A database from before v0.5: rooms and messages exist, but not messages.thread_id.
+            # Runs before SCHEMA, whose messages_by_thread index needs that column.
+            if _table_exists(self._connection, "messages") and "thread_id" not in _column_names(
+                self._connection, "messages"
+            ):
+                with self._connection:
+                    _upgrade_to_threads(self._connection)
             self._connection.executescript(SCHEMA)
             self._add_missing_columns()
 
@@ -233,6 +318,7 @@ class Store:
             budget_usd=budget_usd,
             max_concurrent=max_concurrent,
         )
+        first_thread = Thread(room_id=room.id, title=title, created_at=room.created_at)
         with self._lock, self._connection:
             self._connection.execute(
                 "INSERT INTO rooms (id, title, created_at, ended_at, mode, folder, liveliness,"
@@ -248,7 +334,9 @@ class Store:
                     room.max_concurrent,
                 ),
             )
-        return room
+            # Every room has at least one thread, so a room page always has one to open.
+            self._insert_thread(first_thread)
+        return self.get_room(room.id)
 
     def get_room(self, room_id: str) -> Room:
         with self._lock:
@@ -316,7 +404,109 @@ class Store:
             created_at=datetime.fromisoformat(room_row["created_at"]),
             ended_at=None if ended_at is None else datetime.fromisoformat(ended_at),
             seats=[_seat_from_row(seat_row) for seat_row in seat_rows],
+            threads=self._thread_summaries(room_row["id"]),
         )
+
+    # Threads
+
+    def create_thread(self, room_id: str, title: str) -> Thread:
+        clean_title = title.strip()
+        if not clean_title:
+            raise ValueError("thread title must not be empty")
+        with self._lock, self._connection:
+            self._load_room(room_id)
+            thread = Thread(room_id=room_id, title=clean_title)
+            self._insert_thread(thread)
+        return thread
+
+    def get_thread(self, thread_id: str) -> Thread:
+        with self._lock:
+            return _thread_from_row(self._load_thread_row(thread_id))
+
+    def thread_summary(self, thread_id: str) -> ThreadSummary:
+        with self._lock:
+            self._load_thread_row(thread_id)
+            return self._summaries("threads.id = ?", (thread_id,))[0]
+
+    def list_threads(self, room_id: str) -> list[ThreadSummary]:
+        with self._lock:
+            self._load_room(room_id)
+            return self._thread_summaries(room_id)
+
+    def newest_thread(self, room_id: str) -> Thread:
+        """The thread a room page opens: the newest open one, else the newest one."""
+        with self._lock:
+            self._load_room(room_id)
+            row = self._connection.execute(
+                "SELECT * FROM threads WHERE room_id = ?"
+                " ORDER BY ended_at IS NOT NULL, created_at DESC, rowid DESC LIMIT 1",
+                (room_id,),
+            ).fetchone()
+        if row is None:
+            raise NotFoundError(f"room {room_id!r} has no thread")
+        return _thread_from_row(row)
+
+    def rename_thread(self, thread_id: str, title: str) -> Thread:
+        clean_title = title.strip()
+        if not clean_title:
+            raise ValueError("thread title must not be empty")
+        with self._lock, self._connection:
+            self._load_thread_row(thread_id)
+            self._connection.execute(
+                "UPDATE threads SET title = ? WHERE id = ?", (clean_title, thread_id)
+            )
+        return self.get_thread(thread_id)
+
+    def end_thread(self, thread_id: str) -> Thread:
+        with self._lock, self._connection:
+            self._load_thread_row(thread_id)
+            self._connection.execute(
+                "UPDATE threads SET ended_at = ? WHERE id = ?", (utc_now().isoformat(), thread_id)
+            )
+        return self.get_thread(thread_id)
+
+    def _insert_thread(self, thread: Thread) -> None:
+        """Caller holds the lock and an open transaction."""
+        self._connection.execute(
+            "INSERT INTO threads (id, room_id, title, created_at, ended_at)"
+            " VALUES (?, ?, ?, ?, NULL)",
+            (thread.id, thread.room_id, thread.title, thread.created_at.isoformat()),
+        )
+
+    def _load_thread_row(self, thread_id: str) -> sqlite3.Row:
+        row = self._connection.execute(
+            "SELECT * FROM threads WHERE id = ?", (thread_id,)
+        ).fetchone()
+        if row is None:
+            raise NotFoundError(f"thread {thread_id!r} not found")
+        return row
+
+    def _thread_summaries(self, room_id: str) -> list[ThreadSummary]:
+        return self._summaries("threads.room_id = ?", (room_id,))
+
+    def _summaries(self, condition: str, parameters: tuple) -> list[ThreadSummary]:
+        """Thread summaries, newest first. System messages are neither counted nor shown: the
+        thread list is about what the owner and the seats said."""
+        rows = self._connection.execute(
+            "SELECT threads.*,"
+            " (SELECT COUNT(*) FROM messages WHERE messages.thread_id = threads.id"
+            "   AND messages.role != 'system') AS message_count,"
+            " last.author AS last_author, last.text AS last_text"
+            " FROM threads LEFT JOIN messages AS last ON last.rowid = ("
+            "   SELECT MAX(rowid) FROM messages WHERE messages.thread_id = threads.id"
+            "   AND messages.role != 'system')"
+            f" WHERE {condition} ORDER BY threads.created_at DESC, threads.rowid DESC",
+            parameters,
+        ).fetchall()
+        return [
+            ThreadSummary(
+                **_thread_from_row(row).model_dump(),
+                message_count=row["message_count"],
+                last_author=row["last_author"],
+                last_line=_first_line(row["last_text"]),
+            )
+            for row in rows
+        ]
 
     # Seats
 
@@ -480,12 +670,19 @@ class Store:
 
     def add_message(self, message: Message) -> Message:
         with self._lock, self._connection:
+            thread_row = self._load_thread_row(message.thread_id)
+            if thread_row["room_id"] != message.room_id:
+                raise ValueError(
+                    f"thread {message.thread_id!r} belongs to room {thread_row['room_id']!r},"
+                    f" not {message.room_id!r}"
+                )
             self._connection.execute(
-                "INSERT INTO messages (id, room_id, seat_id, author, role, text, created_at,"
-                " mentions, cost_usd, meta) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO messages (id, room_id, thread_id, seat_id, author, role, text,"
+                " created_at, mentions, cost_usd, meta) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     message.id,
                     message.room_id,
+                    message.thread_id,
                     message.seat_id,
                     message.author,
                     message.role,
@@ -513,17 +710,34 @@ class Store:
                 ).fetchall()
         return [_message_from_row(row) for row in rows]
 
+    def list_thread_messages(self, thread_id: str, last: int | None = None) -> list[Message]:
+        """Messages of one thread in chronological order; `last` keeps only the newest N."""
+        with self._lock:
+            self._load_thread_row(thread_id)
+            if last is None:
+                rows = self._connection.execute(
+                    "SELECT * FROM messages WHERE thread_id = ? ORDER BY rowid", (thread_id,)
+                ).fetchall()
+            else:
+                rows = self._connection.execute(
+                    "SELECT * FROM (SELECT * FROM messages WHERE thread_id = ?"
+                    " ORDER BY rowid DESC LIMIT ?) ORDER BY rowid",
+                    (thread_id, last),
+                ).fetchall()
+        return [_message_from_row(row) for row in rows]
+
     def search(self, raw_query: str, limit: int = 50) -> list[SearchHit]:
         match_expression = _fts_query(raw_query)
         if not match_expression:
             return []
         with self._lock:
             rows = self._connection.execute(
-                "SELECT messages.*, rooms.title AS room_title,"
+                "SELECT messages.*, rooms.title AS room_title, threads.title AS thread_title,"
                 " snippet(messages_fts, 0, '', '', '…', 12) AS snippet"
                 " FROM messages_fts"
                 " JOIN messages ON messages.rowid = messages_fts.rowid"
                 " JOIN rooms ON rooms.id = messages.room_id"
+                " JOIN threads ON threads.id = messages.thread_id"
                 " WHERE messages_fts MATCH ? ORDER BY rank LIMIT ?",
                 (match_expression, limit),
             ).fetchall()
@@ -531,6 +745,7 @@ class Store:
             SearchHit(
                 message=_message_from_row(row),
                 room_title=row["room_title"],
+                thread_title=row["thread_title"],
                 snippet=row["snippet"],
             )
             for row in rows
@@ -538,20 +753,20 @@ class Store:
 
     # Seat sessions
 
-    def get_session(self, room_id: str, seat_id: str) -> str | None:
+    def get_session(self, thread_id: str, seat_id: str) -> str | None:
         with self._lock:
             row = self._connection.execute(
-                "SELECT session_id FROM seat_sessions WHERE room_id = ? AND seat_id = ?",
-                (room_id, seat_id),
+                "SELECT session_id FROM seat_sessions WHERE thread_id = ? AND seat_id = ?",
+                (thread_id, seat_id),
             ).fetchone()
         return None if row is None else row["session_id"]
 
-    def set_session(self, room_id: str, seat_id: str, session_id: str) -> None:
+    def set_session(self, thread_id: str, seat_id: str, session_id: str) -> None:
         with self._lock, self._connection:
             self._connection.execute(
-                "INSERT INTO seat_sessions (room_id, seat_id, session_id) VALUES (?, ?, ?)"
-                " ON CONFLICT (room_id, seat_id) DO UPDATE SET session_id = excluded.session_id",
-                (room_id, seat_id, session_id),
+                "INSERT INTO seat_sessions (thread_id, seat_id, session_id) VALUES (?, ?, ?)"
+                " ON CONFLICT (thread_id, seat_id) DO UPDATE SET session_id = excluded.session_id",
+                (thread_id, seat_id, session_id),
             )
 
 
@@ -608,10 +823,34 @@ def _seat_from_row(row: sqlite3.Row) -> Seat:
     return Seat.from_config(SeatConfig(**_seat_fields(row)))
 
 
+def _thread_from_row(row: sqlite3.Row) -> Thread:
+    ended_at = row["ended_at"]
+    return Thread(
+        id=row["id"],
+        room_id=row["room_id"],
+        title=row["title"],
+        created_at=datetime.fromisoformat(row["created_at"]),
+        ended_at=None if ended_at is None else datetime.fromisoformat(ended_at),
+    )
+
+
+def _first_line(text: str | None) -> str | None:
+    if text is None:
+        return None
+    for line in text.splitlines():
+        if line.strip():
+            line = line.strip()
+            if len(line) > LAST_LINE_LENGTH:
+                return line[: LAST_LINE_LENGTH - 1].rstrip() + "…"
+            return line
+    return None
+
+
 def _message_from_row(row: sqlite3.Row) -> Message:
     return Message(
         id=row["id"],
         room_id=row["room_id"],
+        thread_id=row["thread_id"],
         seat_id=row["seat_id"],
         author=row["author"],
         role=row["role"],

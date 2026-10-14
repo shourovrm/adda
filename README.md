@@ -1,6 +1,6 @@
 # Adda
 
-Adda (আড্ডা, Bengali for a relaxed group chat) is a local chat room where several AI coding agents installed on this machine, called seats, and one human, the owner, discuss one issue in one shared thread. A Python server with FastAPI and WebSockets runs the rooms, three static pages are the UI, and one subprocess adapter drives each agent program. A decision model called Jev scores who speaks next.
+Adda (আড্ডা, Bengali for a relaxed group chat) is a local chat room where several AI coding agents installed on this machine, called seats, and one human, the owner, discuss an issue in a shared thread. A room is a project: it holds the seats, a folder, a budget and any number of threads, one per issue. A Python server with FastAPI and WebSockets runs the rooms, three static pages are the UI, and one subprocess adapter drives each agent program. A decision model called Jev scores who speaks next.
 
 ![The rooms page: a list of rooms and the new-room card](static/screenshot-rooms.png)
 
@@ -41,7 +41,7 @@ uv run ruff format .
 ## Pages
 
 - `/` is the rooms page. It lists rooms newest first and holds the new-room card: title, folder, budget, mode, liveliness, and a table of seats (harness, model, thinking, persona, copies, custom instruction). "Same as last room" fills the table from the newest room.
-- `/room/<id>` is the chat room. Messages render Markdown; every message and code block has Copy; Quote prefills the composer. The right panel holds the liveliness slider, the budget and spend, Pause, Wake all, and one editor per seat.
+- `/room/<id>` opens the room's newest open thread, and `/room/<id>/thread/<thread id>` opens a given thread. The left column lists the room's threads (title, last line, message count, an "ended" tag), has "New thread" with a title field, and renames a thread on double-click. Messages render Markdown; every message and code block has Copy; Quote prefills the composer. The right panel holds the liveliness slider, the budget and spend, Pause, Wake all, and one editor per seat.
 - `/settings` edits the settings file, pastes keys, and shows which harnesses were found.
 
 ![The room page](static/screenshot-room.png)
@@ -50,9 +50,19 @@ uv run ruff format .
 
 ![The room page on a phone](static/screenshot-mobile.png)
 
-## Rooms and folders
+## Rooms and threads
+
+A room keeps the seats, the folder, the budget and spend, the liveliness, the mode and `max_concurrent`; every thread of the room shares them. A thread holds the messages about one issue. Each seat starts a fresh tool session in each thread, so a thread's prompts never mix with another thread's. Every thread has its own turn-taking and afterthought timer, but they spend one budget: when a seat in one thread spends the last of it, the other threads stop too. A new room starts with one thread titled like the room. Ending a thread writes the memory notes of the seats that spoke in it; the room stays open for more threads. Ending the room (`POST /api/rooms/<id>/end`) ends every open thread and then archives the room, which then takes no new threads or messages.
+
+Thread routes: `GET /api/rooms/<id>/threads` (newest first), `POST /api/rooms/<id>/threads` with `{"title"}`, `GET /api/threads/<id>` (thread, room and messages), `PATCH /api/threads/<id>` with `{"title"}`, `POST /api/threads/<id>/end`. A page talks to one thread over `WS /ws/threads/<id>`. Changes to the room (spend, seats, liveliness, a new thread) reach the tabs of every thread as `room` frames; a rename or an end reaches them as a `thread` frame. Searches return the thread id and title of every hit.
+
+A database from v0.4 or earlier is upgraded on the first start: each room gets one thread titled after the room holding all its messages, and seat sessions move to that thread. A room that had ended keeps its messages in an ended thread and is reopened, because in v0.5 an ended room means an archived one.
+
+## Folders
 
 Each room has a folder. It is the working directory of every seat in that room, so the sessions of `claude` and `pi` (which are stored per directory) resume correctly. If the new-room card leaves the folder empty, Adda creates `<rooms_dir>/<YYYYMMDD>-<title-slug>` with the local date (for example `~/Adda-Rooms/20261014-design-queue`), and appends `-2`, `-3` and so on when that folder exists. `GET /api/rooms/folder-suggestion?title=` returns the same string for the UI. The "Browse" dialog behind the folder field uses `GET /api/folders?path=` (subfolders, hidden ones skipped, sorted by name; an empty path means `rooms_dir`) and `POST /api/folders` with `{"path", "name"}` (creates a subfolder, 409 if it exists); both refuse paths outside your home directory. A folder you type is created, with parents, if it does not exist. Seats never get file or shell tools; they only talk, so the folder is context for the program and a place for you to keep files about the discussion.
+
+"Open folder" on the room page and on each room card calls `POST /api/rooms/<id>/open-folder`, which creates the folder if it is missing and opens it in the desktop file manager: `xdg-open` on Linux, `open` on macOS, `explorer` on Windows. The file manager is started detached and the request does not wait for it. A room folder outside your home directory is refused with a 400.
 
 A seat row with "copies" 3 and the name `Scout` becomes three seats `Scout1`, `Scout2`, `Scout3` that share the persona and the custom instruction.
 
@@ -134,7 +144,24 @@ personas/<slug>/
   memory/NNN-slug.md  one fact per note
 ```
 
-`persona.md` starts with YAML frontmatter with `name`, `role`, `stance` and `color` (the default colour of seats using it). `program` and `model` are ignored; the harness is chosen per seat. Pick a mid-luminance colour that reads on both light and dark themes. Memory notes are never written by hand: when you end a room, the server asks each seat that spoke and has a persona what to remember (at most 3 bullets) and appends each bullet as a note. Seats without a persona write no notes. A tool session lasts one room.
+`persona.md` starts with YAML frontmatter with `name`, `role`, `stance` and `color` (the default colour of seats using it). `program` and `model` are ignored; the harness is chosen per seat. Pick a mid-luminance colour that reads on both light and dark themes. Memory notes are written by the seats: when you end a thread, the server asks each seat that spoke in it and has a persona what to remember (at most 3 bullets) and appends each bullet as a note. Seats without a persona write no notes. A tool session lasts one thread.
+
+A note written since v0.5 starts with YAML frontmatter that records where it came from: `room` and `room_title`, `thread` and `thread_title`, and `written` (an ISO 8601 UTC time). Older notes have no frontmatter and show no source.
+
+```
+---
+room: 3f9c1a2b4d5e
+room_title: Billing
+thread: 8a7b6c5d4e3f
+thread_title: Refund flow
+written: '2026-10-14T09:31:00+00:00'
+---
+# Refunds go through the ledger
+
+Refunds go through the ledger, never straight to the card processor.
+```
+
+You review memory from the "Memory" button on the room page. It has one tab per seat with that persona's notes, newest first, and a "This room" tab with the notes written from this room. Editing or deleting a note rewrites `memory/index.md` from the note files, so the index injected into prompts always matches them. Memory routes: `GET /api/personas/<slug>/memory`, `PUT /api/personas/<slug>/memory/<file>` with `{"title"?, "body"?}`, `DELETE /api/personas/<slug>/memory/<file>`, and `GET /api/rooms/<id>/memory` (notes from that room by persona slug). A file name must match `NNN-lowercase-slug.md`; anything else is a 400, and a valid name that does not exist is a 404.
 
 A seat can also carry a custom instruction, alone or on top of a persona. The system prompt of a seat is: your line from the settings, the persona voice, the custom instruction, the persona's memory index, then the room rules (the other seats and their `@handles`, `@all`, PASS, and that seats only talk).
 

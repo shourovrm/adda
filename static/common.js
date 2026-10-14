@@ -445,3 +445,17 @@ function renderHarnessList(container, harnesses) {
     container.append(row);
   }
 }
+
+// ---------------------------------------------------------------------------
+// Room folder (SPEC v0.5 F4), used by the rooms page cards and the room page
+// ---------------------------------------------------------------------------
+
+/** The server opens the folder in the desktop file manager; the page only reports the outcome. */
+async function openRoomFolder(roomId) {
+  try {
+    const answer = await sendJson('POST', `/api/rooms/${encodeURIComponent(roomId)}/open-folder`, {});
+    showToast(`Opened ${answer.opened}`);
+  } catch (error) {
+    reportError('Could not open the folder', error);
+  }
+}

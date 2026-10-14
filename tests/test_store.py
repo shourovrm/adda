@@ -43,9 +43,16 @@ def store():
     store.close()
 
 
-def seat_message(room_id, seat, text="hello", **fields):
+def seat_message(store, room_id, seat, text="hello", **fields):
+    """A seat message in the room's newest thread (a fresh room has exactly one)."""
     return Message(
-        room_id=room_id, seat_id=seat.id, author=seat.name, role="seat", text=text, **fields
+        room_id=room_id,
+        thread_id=store.newest_thread(room_id).id,
+        seat_id=seat.id,
+        author=seat.name,
+        role="seat",
+        text=text,
+        **fields,
     )
 
 
@@ -135,9 +142,17 @@ def test_rename_seat_rewrites_its_authors_in_its_room_only(store):
     other_room = store.create_room("y")
     seat = store.add_seat(room.id, name="Scout1", program="pi")
     other_seat = store.add_seat(other_room.id, name="Scout1", program="pi")
-    store.add_message(seat_message(room.id, seat))
-    store.add_message(seat_message(other_room.id, other_seat))
-    store.add_message(Message(room_id=room.id, author="owner", role="owner", text="hi"))
+    store.add_message(seat_message(store, room.id, seat))
+    store.add_message(seat_message(store, other_room.id, other_seat))
+    store.add_message(
+        Message(
+            room_id=room.id,
+            thread_id=store.newest_thread(room.id).id,
+            author="owner",
+            role="owner",
+            text="hi",
+        )
+    )
 
     renamed = store.rename_seat(seat.id, "Zed")
 
@@ -151,7 +166,7 @@ def test_rename_to_an_existing_handle_changes_nothing(store):
     room = store.create_room("x")
     taken = store.add_seat(room.id, name="Taken", program="pi")
     seat = store.add_seat(room.id, name="Mine", program="pi")
-    store.add_message(seat_message(room.id, seat))
+    store.add_message(seat_message(store, room.id, seat))
     with pytest.raises(ValueError):
         store.rename_seat(seat.id, "taken")
     assert store.get_seat(seat.id).name == "Mine"
@@ -162,14 +177,14 @@ def test_rename_to_an_existing_handle_changes_nothing(store):
 def test_sessions_survive_rename_and_are_deleted_on_remove(store):
     room = store.create_room("x")
     seat = store.add_seat(room.id, name="A", program="claude")
-    store.set_session(room.id, seat.id, "s1")
-    store.set_session(room.id, seat.id, "s2")
+    store.set_session(store.newest_thread(room.id).id, seat.id, "s1")
+    store.set_session(store.newest_thread(room.id).id, seat.id, "s2")
     store.rename_seat(seat.id, "B")
-    assert store.get_session(room.id, seat.id) == "s2"
+    assert store.get_session(store.newest_thread(room.id).id, seat.id) == "s2"
 
-    store.add_message(seat_message(room.id, seat))
+    store.add_message(seat_message(store, room.id, seat))
     store.remove_seat(seat.id)
-    assert store.get_session(room.id, seat.id) is None
+    assert store.get_session(store.newest_thread(room.id).id, seat.id) is None
     assert store.list_seats(room.id) == []
     assert len(store.list_messages(room.id)) == 1
     with pytest.raises(NotFoundError):
@@ -179,11 +194,11 @@ def test_sessions_survive_rename_and_are_deleted_on_remove(store):
 def test_changing_program_drops_the_session_but_changing_model_keeps_it(store):
     room = store.create_room("x")
     seat = store.add_seat(room.id, name="A", program="claude")
-    store.set_session(room.id, seat.id, "s1")
+    store.set_session(store.newest_thread(room.id).id, seat.id, "s1")
     store.update_seat(seat.id, model="opus")
-    assert store.get_session(room.id, seat.id) == "s1"
+    assert store.get_session(store.newest_thread(room.id).id, seat.id) == "s1"
     store.update_seat(seat.id, program="pi")
-    assert store.get_session(room.id, seat.id) is None
+    assert store.get_session(store.newest_thread(room.id).id, seat.id) is None
 
 
 def test_last_room_seats_uses_newest_room_with_seats(store):
@@ -206,6 +221,7 @@ def test_messages_round_trip_and_last_n(store):
     for number in range(5):
         store.add_message(
             seat_message(
+                store,
                 room.id,
                 seat,
                 text=f"m{number}",
@@ -225,7 +241,9 @@ def test_messages_round_trip_and_last_n(store):
 def test_search_returns_room_title_and_markerless_snippet(store):
     room = store.create_room("Zebra room")
     seat = store.add_seat(room.id, name="A", program="claude")
-    store.add_message(seat_message(room.id, seat, text="the zebra crossing needs a redesign"))
+    store.add_message(
+        seat_message(store, room.id, seat, text="the zebra crossing needs a redesign")
+    )
     hits = store.search("zebra")
     assert len(hits) == 1
     assert hits[0].room_title == "Zebra room"
@@ -236,7 +254,7 @@ def test_search_returns_room_title_and_markerless_snippet(store):
 def test_search_treats_syntax_characters_literally(store):
     room = store.create_room("x")
     seat = store.add_seat(room.id, name="A", program="claude")
-    store.add_message(seat_message(room.id, seat, text="plain words"))
+    store.add_message(seat_message(store, room.id, seat, text="plain words"))
     assert store.search('"unbalanced NEAR( col:on') == []
     assert store.search("   ") == []
 
@@ -262,10 +280,10 @@ def test_upgrade_from_version_one_database(tmp_path):
 
     # The upgraded database is fully usable: new messages are indexed, seats work.
     seat = store.add_seat("t1", name="Ravi", program="claude")
-    store.add_message(seat_message("t1", seat, text="quokka"))
+    store.add_message(seat_message(store, "t1", seat, text="quokka"))
     assert store.search("quokka")[0].message.seat_id == seat.id
-    store.set_session("t1", seat.id, "s")
-    assert store.get_session("t1", seat.id) == "s"
+    store.set_session(store.newest_thread("t1").id, seat.id, "s")
+    assert store.get_session(store.newest_thread("t1").id, seat.id) == "s"
     store.close()
 
     # Opening it again is a no-op, not a second upgrade.
@@ -351,3 +369,176 @@ def test_max_concurrent_is_stored_and_limited_to_one_through_four(store):
             store.update_room(room.id, max_concurrent=bad_value)
         with pytest.raises(ValueError, match="max_concurrent"):
             store.create_room("bad", max_concurrent=bad_value)
+
+
+# The v0.4 schema exactly as shipped, to test the upgrade to threads (SPEC v0.5 F2).
+VERSION_FOUR_SCHEMA = """
+CREATE TABLE rooms (
+    id TEXT PRIMARY KEY, title TEXT NOT NULL, created_at TEXT NOT NULL, ended_at TEXT,
+    mode TEXT NOT NULL, folder TEXT NOT NULL DEFAULT '', liveliness INTEGER NOT NULL DEFAULT 6,
+    budget_usd REAL NOT NULL DEFAULT 0, spent_usd REAL NOT NULL DEFAULT 0,
+    max_concurrent INTEGER NOT NULL DEFAULT 2
+);
+CREATE TABLE room_seats (
+    id TEXT PRIMARY KEY, room_id TEXT NOT NULL REFERENCES rooms(id), name TEXT NOT NULL,
+    program TEXT NOT NULL, model TEXT, thinking TEXT NOT NULL DEFAULT 'default', persona TEXT,
+    instruction TEXT, color TEXT NOT NULL, enabled INTEGER NOT NULL DEFAULT 1,
+    position INTEGER NOT NULL DEFAULT 0, eagerness INTEGER NOT NULL DEFAULT 5
+);
+CREATE TABLE messages (
+    rowid INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL UNIQUE,
+    room_id TEXT NOT NULL REFERENCES rooms(id), seat_id TEXT, author TEXT NOT NULL,
+    role TEXT NOT NULL, text TEXT NOT NULL, created_at TEXT NOT NULL, mentions TEXT NOT NULL,
+    cost_usd REAL, meta TEXT NOT NULL
+);
+CREATE INDEX messages_by_room ON messages(room_id, rowid);
+CREATE VIRTUAL TABLE messages_fts USING fts5(
+    text, author, content='messages', content_rowid='rowid'
+);
+CREATE TRIGGER messages_after_insert AFTER INSERT ON messages BEGIN
+    INSERT INTO messages_fts(rowid, text, author) VALUES (new.rowid, new.text, new.author);
+END;
+CREATE TABLE seat_sessions (
+    room_id TEXT NOT NULL REFERENCES rooms(id), seat_id TEXT NOT NULL,
+    session_id TEXT NOT NULL, PRIMARY KEY (room_id, seat_id)
+);
+INSERT INTO rooms (id, title, created_at, ended_at, mode)
+VALUES ('r1', 'Queue design', '2026-09-01T00:00:00+00:00', NULL, 'bidding'),
+       ('r2', 'Old talk', '2026-08-01T00:00:00+00:00', '2026-08-02T00:00:00+00:00', 'bidding');
+INSERT INTO room_seats (id, room_id, name, program, color)
+VALUES ('s1', 'r1', 'Ravi', 'claude', '#fff'), ('s2', 'r2', 'Tuli', 'pi', '#000');
+INSERT INTO messages (id, room_id, seat_id, author, role, text, created_at, mentions, meta)
+VALUES ('m1', 'r1', NULL, 'owner', 'owner', 'which queue?', '2026-09-01T00:00:01+00:00',
+        '[]', '{}'),
+       ('m2', 'r1', 's1', 'Ravi', 'seat', 'sqlite wombat queue', '2026-09-01T00:00:02+00:00',
+        '[]', '{}'),
+       ('m3', 'r2', 's2', 'Tuli', 'seat', 'old line', '2026-08-01T00:00:01+00:00', '[]', '{}');
+INSERT INTO seat_sessions VALUES ('r1', 's1', 'session-r1'), ('r2', 's2', 'session-r2');
+"""
+
+
+def test_upgrade_from_version_four_gives_every_room_one_thread(tmp_path):
+    database_path = tmp_path / "v4.db"
+    connection = sqlite3.connect(database_path)
+    connection.executescript(VERSION_FOUR_SCHEMA)
+    connection.close()
+
+    store = Store(database_path)
+
+    first_threads = store.list_threads("r1")
+    assert [(thread.title, thread.message_count) for thread in first_threads] == [
+        ("Queue design", 2)
+    ]
+    thread_id = first_threads[0].id
+    assert [message.id for message in store.list_thread_messages(thread_id)] == ["m1", "m2"]
+    assert all(message.thread_id == thread_id for message in store.list_messages("r1"))
+    assert (first_threads[0].last_author, first_threads[0].last_line) == (
+        "Ravi",
+        "sqlite wombat queue",
+    )
+    # Sessions follow their room into its thread, so seats keep resuming.
+    assert store.get_session(thread_id, "s1") == "session-r1"
+
+    # A room that had ended in v0.4 finished its discussion: the thread ends, the room reopens.
+    old_thread = store.list_threads("r2")[0]
+    assert old_thread.ended_at is not None
+    assert store.get_room("r2").ended_at is None
+    assert store.get_session(old_thread.id, "s2") == "session-r2"
+
+    hit = store.search("wombat")[0]
+    assert (hit.room_title, hit.thread_title, hit.message.thread_id) == (
+        "Queue design",
+        "Queue design",
+        thread_id,
+    )
+    store.close()
+
+    # Opening the upgraded file again changes nothing.
+    reopened = Store(database_path)
+    assert [thread.id for thread in reopened.list_threads("r1")] == [thread_id]
+    reopened.close()
+
+
+def test_new_room_has_a_first_thread_titled_like_the_room(store):
+    room = store.create_room("Billing")
+    assert [thread.title for thread in room.threads] == ["Billing"]
+    assert room.threads[0].room_id == room.id
+    assert store.newest_thread(room.id).id == room.threads[0].id
+
+
+def test_thread_crud_and_summaries(store):
+    room = store.create_room("Project")
+    first_id = room.threads[0].id
+    second = store.create_thread(room.id, "  Second topic  ")
+    assert second.title == "Second topic"
+    seat = store.add_seat(room.id, name="Ravi", program="claude")
+    store.add_message(
+        Message(
+            room_id=room.id,
+            thread_id=second.id,
+            seat_id=seat.id,
+            author="Ravi",
+            role="seat",
+            text="\n\nfirst line\nsecond line",
+        )
+    )
+    store.add_message(
+        Message(room_id=room.id, thread_id=second.id, author="system", role="system", text="note")
+    )
+
+    summaries = store.list_threads(room.id)
+    assert [summary.id for summary in summaries] == [second.id, first_id]  # newest first
+    assert (summaries[0].message_count, summaries[0].last_author, summaries[0].last_line) == (
+        1,
+        "Ravi",
+        "first line",
+    )
+    assert (summaries[1].message_count, summaries[1].last_line) == (0, None)
+    assert [summary.id for summary in store.get_room(room.id).threads] == [second.id, first_id]
+
+    assert store.rename_thread(second.id, "Renamed").title == "Renamed"
+    assert store.thread_summary(second.id).title == "Renamed"
+    assert [message.text for message in store.list_thread_messages(first_id)] == []
+    assert len(store.list_thread_messages(second.id, last=1)) == 1
+
+    ended = store.end_thread(second.id)
+    assert ended.ended_at is not None
+    # The newest open thread wins over a newer ended one.
+    assert store.newest_thread(room.id).id == first_id
+    store.end_thread(first_id)
+    assert store.newest_thread(room.id).id == second.id
+    assert store.get_room(room.id).ended_at is None
+
+
+def test_thread_errors(store):
+    room = store.create_room("Project")
+    with pytest.raises(ValueError):
+        store.create_thread(room.id, "   ")
+    with pytest.raises(NotFoundError):
+        store.create_thread("nope", "x")
+    with pytest.raises(NotFoundError):
+        store.get_thread("nope")
+    with pytest.raises(ValueError):
+        store.rename_thread(room.threads[0].id, "")
+    other_room = store.create_room("Other")
+    with pytest.raises(ValueError, match="belongs to room"):
+        store.add_message(
+            Message(
+                room_id=room.id,
+                thread_id=other_room.threads[0].id,
+                author="owner",
+                role="owner",
+                text="hi",
+            )
+        )
+
+
+def test_sessions_are_per_thread(store):
+    room = store.create_room("Project")
+    seat = store.add_seat(room.id, name="Ravi", program="claude")
+    first_id = room.threads[0].id
+    second = store.create_thread(room.id, "Second")
+    store.set_session(first_id, seat.id, "session-one")
+    assert store.get_session(second.id, seat.id) is None
+    store.set_session(second.id, seat.id, "session-two")
+    assert store.get_session(first_id, seat.id) == "session-one"

@@ -1,5 +1,6 @@
 # local-only / private
 CLAUDE.md
+AGENTS.md
 DECISIONS.md
 docs/decisions/
 .claude/

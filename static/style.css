@@ -1,24 +1,34 @@
 /*
   Adda stylesheet, shared by the rooms, room and settings pages.
 
-  Direction: type and flat colour, nothing else. Albert Sans at 17px carries the text; Imbue,
-  a condensed masthead serif, sets headings and the wordmark. Graphite and pale grey grounds
+  Direction: type and flat colour, nothing else. Manrope at 17px carries the text and the
+  interface; Instrument Sans, a tight grotesk, sets headings, panel titles and the wordmark;
+  IBM Plex Mono sets code. Graphite and pale grey grounds
   swap with the colour scheme; Kolkata taxi yellow is the one accent. Each seat owns one colour,
   set as --seat, from which the text colour and the tinted fields are mixed. Surfaces are
   separated by tone steps, never by lines or gradients; only floating menus cast a shadow.
 */
 
+/* Variable TrueType files, bundled so the pages need no network (SPEC v0.5 F1). */
 @font-face {
-  font-family: "Albert Sans";
-  src: url("/static/fonts/albert-sans-latin.woff2") format("woff2");
-  font-weight: 100 900;
+  font-family: "Manrope";
+  src: url("/static/fonts/manrope.ttf") format("truetype");
+  font-weight: 200 800;
   font-display: swap;
 }
 
 @font-face {
-  font-family: "Imbue";
-  src: url("/static/fonts/imbue-latin.woff2") format("woff2");
-  font-weight: 100 900;
+  font-family: "Instrument Sans";
+  src: url("/static/fonts/instrumentsans.ttf") format("truetype");
+  font-weight: 400 700;
+  font-stretch: 75% 100%;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "IBM Plex Mono";
+  src: url("/static/fonts/plexmono.ttf") format("truetype");
+  font-weight: 400; /* one static Regular; bold code is synthesised */
   font-display: swap;
 }
 
@@ -27,9 +37,10 @@
 :root {
   color-scheme: light dark;
 
-  --font-text: "Albert Sans", "Noto Sans Bengali", system-ui, sans-serif;
-  --font-display: "Imbue", "Noto Serif Bengali", Georgia, serif;
-  --font-code: ui-monospace, "JetBrains Mono", "DejaVu Sans Mono", monospace; /* taste-skill-ignore: real code only */
+  --font-text: "Manrope", "Noto Sans Bengali", system-ui, sans-serif;
+  --font-display: "Instrument Sans", "Noto Sans Bengali", system-ui, sans-serif;
+  --font-code: "IBM Plex Mono", ui-monospace, "DejaVu Sans Mono", monospace; /* taste-skill-ignore: real code only */
+  --display-tracking: -0.02em;
 
   --ground: #eff0f1;
   --panel: #e3e4e6;
@@ -98,20 +109,39 @@ h2,
 h3 {
   margin: 0;
   font-family: var(--font-display);
-  font-weight: 500;
-  line-height: 1.05;
+  font-weight: 700;
+  letter-spacing: var(--display-tracking);
+  line-height: 1.1;
 }
 
 h1 {
-  font-size: clamp(2rem, 1.2rem + 2.6vw, 3.2rem);
+  font-size: clamp(1.9rem, 1.3rem + 1.8vw, 2.6rem);
 }
 
 h2 {
-  font-size: 1.9rem;
+  font-size: 1.45rem;
 }
 
+/* Panel titles share the display face at a lighter weight than page headings. */
 h3 {
-  font-size: 1.3rem;
+  font-size: 1.12rem;
+  font-weight: 650;
+}
+
+/* Numbers line up in columns wherever they are compared: meta lines, seat cards, forms. */
+.msg-meta,
+.room-meta,
+.seat-card,
+.seat-chip,
+.thread-item,
+.memory-note-meta,
+form,
+input,
+select,
+table,
+.tag,
+.small {
+  font-variant-numeric: tabular-nums;
 }
 
 p {
@@ -198,10 +228,11 @@ code {
 
 .brand {
   font-family: var(--font-display);
-  font-size: 2.2rem;
+  font-size: 1.5rem;
+  font-weight: 700; /* the file's heaviest instance */
+  letter-spacing: var(--display-tracking);
   line-height: 1;
   text-decoration: none;
-  text-transform: uppercase;
 }
 
 .brand-mark {
@@ -214,9 +245,10 @@ code {
 .brand small {
   margin-left: 10px;
   color: var(--mute);
-  font-family: "Noto Serif Bengali", var(--font-display);
-  font-size: 1rem;
-  text-transform: none;
+  font-family: "Noto Sans Bengali", var(--font-text);
+  font-size: 1.05rem;
+  font-weight: 500;
+  letter-spacing: 0;
 }
 
 .top nav {
@@ -406,6 +438,13 @@ input[type="color"] {
 .btn--small {
   padding: 5px 10px;
   font-size: 0.85rem;
+}
+
+/* Inline with a line of meta text, such as Open folder beside a path. */
+.btn--tiny {
+  padding: 1px 8px;
+  font-size: 0.78rem;
+  box-shadow: inset 0 0 0 1.5px var(--ink);
 }
 
 .btn:disabled {
@@ -711,7 +750,21 @@ body.page-room {
 }
 
 .room-heading h1 {
-  font-size: clamp(1.6rem, 1.1rem + 1.6vw, 2.4rem);
+  min-width: 0;
+  font-size: clamp(1.5rem, 1.1rem + 1.2vw, 2.1rem);
+}
+
+/* The thread title follows the room title on the same baseline, lighter and muted. */
+.thread-heading:not(:empty)::before {
+  content: " / ";
+  color: var(--mute);
+  font-weight: 400;
+}
+
+.thread-heading {
+  color: var(--mute);
+  font-size: 0.78em;
+  font-weight: 600;
 }
 
 .room-heading-actions {
@@ -725,6 +778,17 @@ body.page-room {
   padding: 4px 28px 12px;
   color: var(--mute);
   font-size: 0.88rem;
+}
+
+.room-folder {
+  font-family: var(--font-code);
+  font-size: 0.82rem;
+  overflow-wrap: anywhere;
+}
+
+.room-meta .btn--tiny {
+  margin-left: 8px;
+  vertical-align: 1px;
 }
 
 .connection {
@@ -814,7 +878,7 @@ body.page-room {
 .room {
   display: grid;
   flex: 1;
-  grid-template-columns: minmax(0, 1fr) 320px;
+  grid-template-columns: 250px minmax(0, 1fr) 320px;
   gap: 22px;
   min-height: 0;
   padding: 0 28px 16px;
@@ -1353,6 +1417,237 @@ dialog::backdrop {
   border-left: 6px solid var(--seat);
 }
 
+/* ----- thread column ----- */
+
+.threads {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  padding: 16px 0 0;
+  background: var(--panel);
+}
+
+.threads h3 {
+  padding: 0 16px;
+}
+
+.thread-new {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px 16px 12px;
+}
+
+.thread-new input {
+  padding: 7px 9px;
+  background: var(--card);
+  font-size: 0.9rem;
+}
+
+.thread-new .btn {
+  align-self: flex-start;
+}
+
+.thread-list {
+  flex: 1;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.thread-item {
+  display: grid;
+  gap: 2px;
+  padding: 10px 16px;
+  border-left: 6px solid transparent;
+  color: var(--ink);
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.thread-item:hover {
+  background: color-mix(in srgb, var(--ink) 6%, var(--panel));
+}
+
+.thread-item[aria-current="page"] {
+  border-left-color: var(--accent);
+  background: var(--card);
+}
+
+.thread-item-head {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  justify-content: space-between;
+}
+
+.thread-item-title {
+  min-width: 0;
+  font-weight: 700;
+  line-height: 1.3;
+}
+
+.thread-item-head .tag {
+  flex: none;
+  padding: 0 6px;
+  font-size: 0.72rem;
+}
+
+.thread-item-line {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--mute);
+  font-size: 0.82rem;
+  line-height: 1.4;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.thread-item-line .seat-coloured {
+  color: var(--seat-text);
+}
+
+.thread-item-meta {
+  color: var(--mute);
+  font-size: 0.76rem;
+}
+
+.thread-rename {
+  display: block;
+  margin: 6px 10px;
+  width: calc(100% - 20px);
+  padding: 7px 9px;
+  background: var(--card);
+  font-weight: 700;
+}
+
+.thread-hint {
+  padding: 8px 16px 12px;
+  font-size: 0.76rem;
+}
+
+.threads-toggle {
+  display: none;
+}
+
+.room-card .thread-name {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.room-card .seat-line .btn--tiny {
+  margin-left: 8px;
+}
+
+/* ----- memory drawer ----- */
+
+dialog.memory-drawer {
+  position: fixed;
+  inset: 0 0 0 auto;
+  width: min(520px, 100vw);
+  max-width: none;
+  height: 100dvh;
+  max-height: none;
+  margin: 0;
+  padding: 22px 24px;
+  overflow-y: auto;
+  background: var(--ground);
+  box-shadow: var(--floating-shadow); /* taste-skill-ignore: floats over content */
+}
+
+.memory-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+.memory-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 16px 0 14px;
+}
+
+.memory-tab {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+  padding: 5px 12px;
+  border: 0;
+  background: var(--panel);
+  color: var(--ink);
+  font: inherit;
+  font-size: 0.88rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.memory-tab .dot {
+  width: 10px;
+  height: 10px;
+}
+
+.memory-tab[aria-selected="true"] {
+  background: var(--ink);
+  color: var(--ground);
+}
+
+.memory-empty {
+  margin-top: 12px;
+  padding: 16px;
+  background: var(--panel);
+  color: var(--mute);
+}
+
+.memory-group {
+  margin-top: 18px;
+  padding-left: 12px;
+  border-left: 6px solid var(--seat, var(--mute));
+}
+
+.memory-note {
+  margin-top: 10px;
+  padding: 12px 14px;
+  background: var(--card);
+}
+
+.memory-note-title {
+  margin: 0;
+  font-size: 1rem;
+  font-weight: 700;
+}
+
+.memory-note-body {
+  margin-top: 4px;
+  white-space: pre-wrap;
+}
+
+.memory-note-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  align-items: center;
+  margin-top: 8px;
+}
+
+.memory-note-actions {
+  display: flex;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.memory-note-editor {
+  display: grid;
+  gap: 8px;
+}
+
+.memory-note-editor .side-actions {
+  margin-top: 0;
+}
+
 /* ---------- Settings page ---------- */
 
 .settings-note {
@@ -1480,6 +1775,42 @@ dialog::backdrop {
     padding: 0 16px 12px;
   }
 
+  /* The thread list slides in from the left, the room panel from the right. */
+  .threads {
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 40;
+    width: min(320px, 88vw);
+    transform: translateX(-100%);
+    transition: transform 260ms cubic-bezier(0.22, 1, 0.36, 1);
+    visibility: hidden;
+    box-shadow: var(--floating-shadow); /* taste-skill-ignore: floats over content */
+  }
+
+  body.show-threads .threads {
+    transform: none;
+    visibility: visible;
+  }
+
+  .threads-toggle {
+    display: inline-block;
+  }
+
+  .room-heading h1 {
+    flex-basis: 100%;
+  }
+
+  .room-heading-actions {
+    flex: 1 1 100%;
+    flex-wrap: wrap;
+  }
+
+  .brand {
+    white-space: nowrap;
+  }
+
   .side {
     position: fixed;
     top: 0;
@@ -1555,4 +1886,12 @@ dialog::backdrop {
 
 .seat-eagerness {
   white-space: nowrap;
+}
+
+/* Three columns get tight between the narrow-screen breakpoint and a full desktop width. */
+@media (min-width: 961px) and (max-width: 1240px) {
+  .room {
+    grid-template-columns: 220px minmax(0, 1fr) 290px;
+    gap: 16px;
+  }
 }

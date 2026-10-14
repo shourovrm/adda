@@ -4,16 +4,16 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light dark">
-  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v=0.4">
-  <link rel="stylesheet" href="/static/style.css?v=0.4">
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v=0.5">
+  <link rel="stylesheet" href="/static/style.css?v=0.5">
   <title>Room · Adda</title>
-  <script src="/static/common.js?v=0.4" defer></script>
-  <script src="/static/markdown.js?v=0.4" defer></script>
-  <script src="/static/room.js?v=0.4" defer></script>
+  <script src="/static/common.js?v=0.5" defer></script>
+  <script src="/static/markdown.js?v=0.5" defer></script>
+  <script src="/static/room.js?v=0.5" defer></script>
 </head>
 <body class="page-room">
   <header class="top">
-    <a class="brand" href="/"><img class="brand-mark" src="/static/logo.svg?v=0.4" width="28" height="28" alt="">Adda <small lang="bn">আড্ডা</small></a>
+    <a class="brand" href="/"><img class="brand-mark" src="/static/logo.svg?v=0.5" width="28" height="28" alt="">Adda <small lang="bn">আড্ডা</small></a>
     <nav aria-label="Pages">
       <a href="/">Rooms</a>
       <a href="/settings">Settings</a>
@@ -22,7 +22,7 @@
   </header>
 
   <div class="room-heading">
-    <h1 id="room-title">Room</h1>
+    <h1 class="room-heading-title"><span id="room-title">Room</span><span class="thread-heading" id="thread-title"></span></h1>
     <div class="room-heading-actions">
       <span class="connection" id="connection" data-state="connecting" role="status">Connecting</span>
       <form class="search" id="search-form" role="search">
@@ -32,12 +32,25 @@
         <div class="search-results" id="search-results" hidden></div>
       </form>
       <button class="btn btn--ghost btn--small" id="copy-thread-button" type="button">Copy thread as Markdown</button>
+      <button class="btn btn--ghost btn--small" id="memory-button" type="button" aria-haspopup="dialog">Memory</button>
+      <button class="btn btn--ghost btn--small threads-toggle" id="threads-toggle" type="button" aria-controls="threads" aria-expanded="false">Threads</button>
       <button class="btn btn--ghost btn--small panel-toggle" id="panel-toggle" type="button" aria-controls="side" aria-expanded="false">Room panel</button>
     </div>
   </div>
-  <p class="room-meta" id="room-meta"></p>
+  <p class="room-meta"><span id="room-meta"></span><span class="room-folder" id="room-folder"></span><button class="btn btn--ghost btn--tiny" id="open-folder-button" type="button">Open folder</button><span id="room-state"></span></p>
 
   <div class="room">
+    <nav class="threads" id="threads" aria-label="Threads in this room">
+      <h3>Threads</h3>
+      <form class="thread-new" id="thread-new-form">
+        <label class="visually-hidden" for="thread-new-title">Title of the new thread</label>
+        <input type="text" id="thread-new-title" placeholder="Title of a new thread" maxlength="200" autocomplete="off" required>
+        <button class="btn btn--accent btn--small" id="thread-new-button" type="submit">New thread</button>
+      </form>
+      <ol class="thread-list" id="thread-list"></ol>
+      <p class="small mute thread-hint">Double-click a title to rename it.</p>
+    </nav>
+
     <main class="chat">
       <div class="message-scroller" id="message-scroller">
         <ol class="message-list" id="message-list" aria-label="Discussion" aria-live="polite"></ol>
@@ -106,8 +119,18 @@
 
   <div class="drawer-scrim" id="drawer-scrim" hidden></div>
 
+  <dialog class="memory-drawer" id="memory-dialog" aria-labelledby="memory-title">
+    <div class="memory-head">
+      <h2 id="memory-title">Memory</h2>
+      <button class="btn btn--ghost btn--small" id="memory-close-button" type="button">Close</button>
+    </div>
+    <p class="small mute">What each persona remembers between threads. Notes are written when a thread ends.</p>
+    <div class="memory-tabs" id="memory-tabs" role="tablist" aria-label="Whose memory"></div>
+    <div class="memory-panel" id="memory-panel" role="tabpanel"></div>
+  </dialog>
+
   <dialog id="ended-dialog" aria-labelledby="ended-title">
-    <h2 id="ended-title">Discussion ended</h2>
+    <h2 id="ended-title">Thread ended</h2>
     <div id="ended-notes"></div>
     <form method="dialog"><button class="btn btn--accent" type="submit">Close</button></form>
   </dialog>

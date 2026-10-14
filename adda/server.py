@@ -1,4 +1,4 @@
-"""FastAPI app: REST, one WebSocket per room, and the static pages (SPEC section 6)."""
+"""FastAPI app: REST, one WebSocket per thread, and the static pages (SPEC section 6, v0.5)."""
 
 from __future__ import annotations
 
@@ -29,10 +29,39 @@ from adda.config import (
     save_settings,
     settings_view,
 )
-from adda.folders import FolderExistsError, create_folder, default_room_folder, list_folders
+from adda.folders import (
+    FolderExistsError,
+    FolderOpenError,
+    create_folder,
+    default_room_folder,
+    list_folders,
+    open_in_file_manager,
+    prepare_room_folder,
+)
 from adda.harnesses import clear_model_cache, detect_harnesses
-from adda.models import Harness, Mode, Program, Room, Seat, Thinking, seat_handle
-from adda.personas import list_personas, load_persona
+from adda.models import (
+    Harness,
+    MemoryNote,
+    Mode,
+    Program,
+    Room,
+    Seat,
+    Thinking,
+    ThreadSummary,
+    seat_handle,
+)
+from adda.personas import (
+    SLUG_PATTERN,
+    MemoryNoteNotFoundError,
+    Persona,
+    PersonaError,
+    delete_memory_note,
+    list_memory_notes,
+    list_personas,
+    load_persona,
+    load_personas,
+    update_memory_note,
+)
 from adda.routers.base import Router
 from adda.routers.heuristic import HeuristicRouter
 from adda.routers.jev import JevRouter
@@ -55,7 +84,7 @@ CLIENT_ERRORS = (
     ValueError,  # includes ConfigError, PersonaError and pydantic validation errors
     NotFoundError,
     UnknownSeatError,
-    RoomEndedError,
+    RoomEndedError,  # includes ThreadEndedError
     BudgetReachedError,
 )
 MAX_COPIES = 12
@@ -85,6 +114,19 @@ class NewSeat(BaseModel):
 class NewFolder(BaseModel):
     path: str
     name: str
+
+
+class NewThread(BaseModel):
+    title: str
+
+
+class ThreadPatch(BaseModel):
+    title: str
+
+
+class MemoryNotePatch(BaseModel):
+    title: str | None = None
+    body: str | None = None
 
 
 class NewRoom(BaseModel):
@@ -120,7 +162,12 @@ def expand_copies(new_seat: NewSeat) -> list[str]:
 
 
 class Hub:
-    """Everything the app shares: store, routers, one scheduler and socket set per room."""
+    """Everything the app shares: store, routers, one scheduler per thread, and the sockets.
+
+    Room-level changes (patches, seats, archiving) go through the hub because every thread of
+    the room has its own scheduler, and a seat that changes program or leaves must stop
+    speaking in all of them.
+    """
 
     def __init__(
         self,
@@ -132,6 +179,7 @@ class Hub:
         environment: dict[str, str],
         home: Path,
         today: Callable[[], date],
+        open_folder: Callable[[Path], None] = open_in_file_manager,
     ) -> None:
         self.settings = settings
         self.store = store
@@ -143,8 +191,10 @@ class Hub:
         self.environment = environment
         self.home = home
         self.today = today
-        self.schedulers: dict[str, Scheduler] = {}
-        self.connections: dict[str, set[WebSocket]] = {}
+        self.open_folder = open_folder
+        self.schedulers: dict[str, Scheduler] = {}  # by thread id
+        # Room id -> {socket: id of the thread it shows}; `room` frames reach every thread's tabs.
+        self.connections: dict[str, dict[WebSocket, str]] = {}
         self.background_tasks: set[asyncio.Task] = set()
         self.harness_cache: list[Harness] | None = None
 
@@ -164,27 +214,101 @@ class Hub:
             return {}
         return {harness.program: harness.version for harness in self.harness_cache}
 
-    # Rooms
+    # Threads and their schedulers
 
-    def scheduler(self, room_id: str) -> Scheduler:
-        """The room's scheduler, created on first use; raises NotFoundError for no room."""
-        self.store.get_room(room_id)
-        if room_id not in self.schedulers:
-            self.schedulers[room_id] = Scheduler(
-                room_id=room_id,
+    def scheduler(self, thread_id: str) -> Scheduler:
+        """The thread's scheduler, created on first use; raises NotFoundError for no thread."""
+        if thread_id not in self.schedulers:
+            room_id = self.store.get_thread(thread_id).room_id
+            self.schedulers[thread_id] = Scheduler(
+                thread_id,
                 store=self.store,
                 settings=self.settings,
                 router=self.router,
                 fallback_router=self.fallback_router,
-                broadcast=lambda frame: self.broadcast(room_id, frame),
+                broadcast=lambda frame: self.broadcast(room_id, frame, thread_id=thread_id),
+                broadcast_room=lambda frame: self.broadcast(room_id, frame),
                 adapter_builder=self.adapter_builder,
                 harness_versions=self.harness_versions,
             )
-        return self.schedulers[room_id]
+        return self.schedulers[thread_id]
+
+    def room_scheduler(self, room_id: str) -> Scheduler:
+        """A scheduler for room-level work (patches, seats, the room view): the one of the
+        thread a room page opens. Raises NotFoundError for no room."""
+        return self.scheduler(self.store.newest_thread(room_id).id)
+
+    def schedulers_of_room(self, room_id: str) -> list[Scheduler]:
+        """The schedulers that exist so far for threads of this room."""
+        return [scheduler for scheduler in self.schedulers.values() if scheduler.room_id == room_id]
 
     def room_view(self, room: Room) -> dict[str, Any]:
-        described = self.scheduler(room.id).describe(room)
+        described = self.room_scheduler(room.id).describe(room)
         return described.model_dump(mode="json")
+
+    def thread_view(self, thread_id: str) -> dict[str, Any]:
+        return self.store.thread_summary(thread_id).model_dump(mode="json")
+
+    async def create_thread(self, room_id: str, title: str) -> ThreadSummary:
+        room = self.store.get_room(room_id)
+        if room.ended_at is not None:
+            raise RoomEndedError(f"room {room_id} is archived")
+        thread = self.store.create_thread(room_id, title)
+        # The room's thread list changed; every open tab of the room shows it.
+        await self.scheduler(thread.id).publish_room()
+        return self.store.thread_summary(thread.id)
+
+    # Room-level changes, applied once and felt by every thread
+
+    async def patch_room(self, room_id: str, patch: dict[str, Any]) -> Room:
+        room = await self.room_scheduler(room_id).apply_room_patch(patch)
+        if "budget_usd" in patch:
+            for scheduler in self.schedulers_of_room(room_id):
+                scheduler.forget_budget_notice()
+        return room
+
+    async def patch_seat(self, room_id: str, seat_id: str, patch: dict[str, Any]) -> Room:
+        acting_scheduler = self.room_scheduler(room_id)
+        program_before = self._seat_in_room(room_id, seat_id).program
+        room = await acting_scheduler.apply_seat_patch(seat_id, patch)
+        if self.store.get_seat(seat_id).program != program_before:
+            # Another program cannot resume this seat's sessions in any thread.
+            for scheduler in self.schedulers_of_room(room_id):
+                if scheduler is not acting_scheduler:
+                    await scheduler.cancel_seat(seat_id)
+        return room
+
+    async def remove_seat(self, room_id: str, seat_id: str) -> Room:
+        acting_scheduler = self.room_scheduler(room_id)
+        self._seat_in_room(room_id, seat_id)
+        for scheduler in self.schedulers_of_room(room_id):
+            if scheduler is not acting_scheduler:
+                await scheduler.forget_seat(seat_id)
+        return await acting_scheduler.remove_seat(seat_id)
+
+    async def archive_room(self, room_id: str) -> dict[str, list[str]]:
+        """End every open thread (writing their memory notes), then archive the room.
+        Notes of a seat that spoke in several threads are listed together."""
+        room = self.store.get_room(room_id)
+        if room.ended_at is not None:
+            raise RoomEndedError(f"room {room_id} is archived")
+        notes: dict[str, list[str]] = {}
+        for thread in self.store.list_threads(room_id):
+            if thread.ended_at is None:
+                thread_notes = await self.scheduler(thread.id).end()
+                for seat_id, seat_notes in thread_notes.items():
+                    notes.setdefault(seat_id, []).extend(seat_notes)
+        self.store.end_room(room_id)
+        await self.room_scheduler(room_id).publish_room()
+        return notes
+
+    def _seat_in_room(self, room_id: str, seat_id: str) -> Seat:
+        for seat in self.store.get_room(room_id).seats:
+            if seat.id == seat_id:
+                return seat
+        raise UnknownSeatError(f"no seat {seat_id!r} in room {room_id}")
+
+    # Rooms
 
     def create_room(self, body: NewRoom) -> Room:
         title = body.title.strip()
@@ -313,14 +437,20 @@ class Hub:
 
     # Sockets
 
-    async def broadcast(self, room_id: str, frame: dict[str, Any]) -> None:
-        for websocket in list(self.connections.get(room_id, set())):
+    async def broadcast(
+        self, room_id: str, frame: dict[str, Any], thread_id: str | None = None
+    ) -> None:
+        """Send to the tabs of one thread, or with no `thread_id` to every tab of the room."""
+        sockets = self.connections.get(room_id, {})
+        for websocket, socket_thread_id in list(sockets.items()):
+            if thread_id is not None and socket_thread_id != thread_id:
+                continue
             try:
                 await websocket.send_json(frame)
             except (WebSocketDisconnect, RuntimeError, OSError) as error:
                 # A tab closed mid-send; drop it so the other tabs keep receiving.
                 logger.info("dropping websocket for room %s: %s", room_id, error)
-                self.connections[room_id].discard(websocket)
+                sockets.pop(websocket, None)
 
     def run_in_background(self, coroutine) -> asyncio.Task:
         task = asyncio.create_task(coroutine)
@@ -345,10 +475,12 @@ def create_app(
     static_directory: Path = STATIC_DIRECTORY,
     home: Path | None = None,
     today: Callable[[], date] = date.today,
+    open_folder: Callable[[Path], None] = open_in_file_manager,
 ) -> FastAPI:
     """Build the app. Tests inject fakes; `adda serve` passes nothing and loads from config.
 
-    `home` limits the folder browser and `today` dates default room folders; tests inject both.
+    `home` limits the folder browser and `today` dates default room folders; `open_folder`
+    shows a folder in the desktop file manager. Tests inject all three.
     `environment` is where ADDA_CONFIG and ADDA_KEYS_FILE are read when settings are saved and
     reloaded; it defaults to the process environment.
     """
@@ -367,6 +499,7 @@ def create_app(
         environment,
         home if home is not None else Path.home(),
         today,
+        open_folder,
     )
 
     @asynccontextmanager
@@ -390,6 +523,7 @@ def create_app(
 
     @app.exception_handler(NotFoundError)
     @app.exception_handler(UnknownSeatError)
+    @app.exception_handler(MemoryNoteNotFoundError)
     async def not_found(request: Request, error: Exception) -> JSONResponse:
         return JSONResponse({"detail": str(error.args[0] if error.args else error)}, 404)
 
@@ -403,6 +537,10 @@ def create_app(
     async def bad_request(request: Request, error: ValueError) -> JSONResponse:
         return JSONResponse({"detail": str(error)}, 400)
 
+    @app.exception_handler(FolderOpenError)
+    async def opener_failed(request: Request, error: FolderOpenError) -> JSONResponse:
+        return JSONResponse({"detail": str(error)}, 500)
+
     # Pages
 
     def page(file_name: str) -> FileResponse:
@@ -415,8 +553,13 @@ def create_app(
     async def rooms_page() -> FileResponse:
         return page("index.html")
 
+    # The room page opens the newest open thread; the second form opens a given thread.
     @app.get("/room/{room_id}")
     async def room_page(room_id: str) -> FileResponse:
+        return page("room.html")
+
+    @app.get("/room/{room_id}/thread/{thread_id}")
+    async def thread_page(room_id: str, thread_id: str) -> FileResponse:
         return page("room.html")
 
     @app.get("/settings")
@@ -435,6 +578,33 @@ def create_app(
         return [
             persona.model_dump(mode="json") for persona in list_personas(hub.settings.personas_dir)
         ]
+
+    def persona_for_memory(slug: str) -> Persona:
+        """404 for a persona that is not in the library; 400 for a slug that is not a name."""
+        if not SLUG_PATTERN.match(slug):
+            raise PersonaError(f"invalid persona slug {slug!r}")
+        if not (hub.settings.personas_dir / slug / "persona.md").is_file():
+            raise NotFoundError(f"persona {slug!r} not found")
+        return load_persona(hub.settings.personas_dir, slug)
+
+    def notes_json(notes: list[MemoryNote]) -> list[dict]:
+        return [note.model_dump(mode="json") for note in notes]
+
+    @app.get("/api/personas/{slug}/memory")
+    async def get_persona_memory(slug: str) -> list[dict]:
+        return notes_json(list_memory_notes(persona_for_memory(slug)))
+
+    @app.put("/api/personas/{slug}/memory/{file_name}")
+    async def put_persona_memory(slug: str, file_name: str, body: MemoryNotePatch) -> dict:
+        note = update_memory_note(
+            persona_for_memory(slug), file_name, title=body.title, body=body.body
+        )
+        return note.model_dump(mode="json")
+
+    @app.delete("/api/personas/{slug}/memory/{file_name}")
+    async def delete_persona_memory(slug: str, file_name: str) -> dict:
+        delete_memory_note(persona_for_memory(slug), file_name)
+        return {"deleted": file_name}
 
     @app.get("/api/settings")
     async def get_settings() -> dict:
@@ -485,41 +655,95 @@ def create_app(
     async def folder_suggestion(title: str = "") -> dict:
         return {"folder": str(hub.suggest_folder(title))}
 
+    def messages_json(thread_id: str) -> list[dict]:
+        return [
+            message.model_dump(mode="json") for message in store.list_thread_messages(thread_id)
+        ]
+
     @app.get("/api/rooms/{room_id}")
     async def get_room(room_id: str) -> dict:
-        room = hub.scheduler(room_id).current_room()
-        messages = store.list_messages(room_id)
+        """The room and, for pages written before threads, the thread a room page opens."""
+        scheduler = hub.room_scheduler(room_id)
         return {
-            "room": room.model_dump(mode="json"),
-            "messages": [message.model_dump(mode="json") for message in messages],
+            "room": scheduler.current_room().model_dump(mode="json"),
+            "thread": hub.thread_view(scheduler.thread_id),
+            "messages": messages_json(scheduler.thread_id),
         }
 
     @app.patch("/api/rooms/{room_id}")
     async def patch_room(room_id: str, body: dict[str, Any]) -> dict:
-        room = await hub.scheduler(room_id).apply_room_patch(body)
-        return room.model_dump(mode="json")
+        return (await hub.patch_room(room_id, body)).model_dump(mode="json")
 
     @app.post("/api/rooms/{room_id}/seats")
     async def add_seat(room_id: str, body: NewSeat) -> dict:
-        scheduler = hub.scheduler(room_id)
+        scheduler = hub.room_scheduler(room_id)
         hub.add_seats(room_id, body)
         return (await scheduler.publish_room()).model_dump(mode="json")
 
     @app.patch("/api/rooms/{room_id}/seats/{seat_id}")
     async def patch_seat(room_id: str, seat_id: str, body: dict[str, Any]) -> dict:
-        room = await hub.scheduler(room_id).apply_seat_patch(seat_id, body)
-        return room.model_dump(mode="json")
+        return (await hub.patch_seat(room_id, seat_id, body)).model_dump(mode="json")
 
     @app.delete("/api/rooms/{room_id}/seats/{seat_id}")
     async def delete_seat(room_id: str, seat_id: str) -> dict:
-        room = await hub.scheduler(room_id).remove_seat(seat_id)
-        return room.model_dump(mode="json")
+        return (await hub.remove_seat(room_id, seat_id)).model_dump(mode="json")
 
     @app.post("/api/rooms/{room_id}/end")
     async def end_room(room_id: str) -> dict:
-        scheduler = hub.scheduler(room_id)
-        notes = await scheduler.end()
-        return {"room": scheduler.current_room().model_dump(mode="json"), "notes": notes}
+        """Archive the room: every open thread ends (and writes memory notes) first."""
+        notes = await hub.archive_room(room_id)
+        return {
+            "room": hub.room_scheduler(room_id).current_room().model_dump(mode="json"),
+            "notes": notes,
+        }
+
+    @app.post("/api/rooms/{room_id}/open-folder")
+    async def open_room_folder(room_id: str) -> dict:
+        folder = prepare_room_folder(store.get_room(room_id).folder, hub.home)
+        hub.open_folder(folder)
+        return {"opened": str(folder)}
+
+    @app.get("/api/rooms/{room_id}/memory")
+    async def get_room_memory(room_id: str) -> dict[str, list[dict]]:
+        """Notes written from this room, by persona slug. Every persona a seat of the room
+        uses is listed, even with no notes, so the UI can show an empty tab."""
+        room = store.get_room(room_id)
+        grouped: dict[str, list[dict]] = {
+            seat.persona: [] for seat in room.seats if seat.persona is not None
+        }
+        for slug, persona in load_personas(hub.settings.personas_dir).items():
+            notes = [note for note in list_memory_notes(persona) if note.room_id == room_id]
+            if notes:
+                grouped[slug] = notes_json(notes)
+        return grouped
+
+    # Threads
+
+    @app.get("/api/rooms/{room_id}/threads")
+    async def list_threads(room_id: str) -> list[dict]:
+        return [summary.model_dump(mode="json") for summary in store.list_threads(room_id)]
+
+    @app.post("/api/rooms/{room_id}/threads")
+    async def create_thread(room_id: str, body: NewThread) -> dict:
+        return (await hub.create_thread(room_id, body.title)).model_dump(mode="json")
+
+    @app.get("/api/threads/{thread_id}")
+    async def get_thread(thread_id: str) -> dict:
+        scheduler = hub.scheduler(thread_id)
+        return {
+            "thread": hub.thread_view(thread_id),
+            "room": scheduler.current_room().model_dump(mode="json"),
+            "messages": messages_json(thread_id),
+        }
+
+    @app.patch("/api/threads/{thread_id}")
+    async def patch_thread(thread_id: str, body: ThreadPatch) -> dict:
+        return (await hub.scheduler(thread_id).rename(body.title)).model_dump(mode="json")
+
+    @app.post("/api/threads/{thread_id}/end")
+    async def end_thread(thread_id: str) -> dict:
+        notes = await hub.scheduler(thread_id).end()
+        return {"thread": hub.thread_view(thread_id), "notes": notes}
 
     @app.get("/api/search")
     async def search(q: str = "") -> list[dict]:
@@ -527,44 +751,62 @@ def create_app(
             {
                 "message": hit.message.model_dump(mode="json"),
                 "room_title": hit.room_title,
+                "thread_id": hit.message.thread_id,
+                "thread_title": hit.thread_title,
                 "snippet": hit.snippet,
             }
             for hit in store.search(q)
         ]
 
-    # WebSocket
+    # WebSockets
 
+    @app.websocket("/ws/threads/{thread_id}")
+    async def thread_socket(websocket: WebSocket, thread_id: str) -> None:
+        await serve_thread_socket(hub, websocket, lambda: thread_id)
+
+    # Kept for pages written before threads: the room's newest open thread.
     @app.websocket("/ws/{room_id}")
     async def room_socket(websocket: WebSocket, room_id: str) -> None:
-        await websocket.accept()
-        try:
-            scheduler = hub.scheduler(room_id)
-        except NotFoundError as error:
-            await websocket.send_json({"type": "error", "text": str(error)})
-            await websocket.close(code=4404)
-            return
-        hub.connections.setdefault(room_id, set()).add(websocket)
-        try:
-            await websocket.send_json(
-                {
-                    "type": "hello",
-                    "room": scheduler.current_room().model_dump(mode="json"),
-                    "messages": [
-                        message.model_dump(mode="json") for message in store.list_messages(room_id)
-                    ],
-                    "owner": {"name": hub.settings.owner_name},
-                    "router": hub.router.name,
-                }
-            )
-            while True:
-                raw_text = await websocket.receive_text()
-                await handle_frame(hub, scheduler, websocket, raw_text)
-        except WebSocketDisconnect:
-            logger.info("websocket closed for room %s", room_id)
-        finally:
-            hub.connections.get(room_id, set()).discard(websocket)
+        await serve_thread_socket(hub, websocket, lambda: store.newest_thread(room_id).id)
 
     return app
+
+
+async def serve_thread_socket(
+    hub: Hub, websocket: WebSocket, resolve_thread_id: Callable[[], str]
+) -> None:
+    """Say hello with the room, the thread and its messages, then apply client frames until
+    the tab closes. An unknown id gets an error frame and close code 4404."""
+    await websocket.accept()
+    try:
+        scheduler = hub.scheduler(resolve_thread_id())
+    except NotFoundError as error:
+        await websocket.send_json({"type": "error", "text": str(error.args[0])})
+        await websocket.close(code=4404)
+        return
+    room_sockets = hub.connections.setdefault(scheduler.room_id, {})
+    room_sockets[websocket] = scheduler.thread_id
+    try:
+        await websocket.send_json(
+            {
+                "type": "hello",
+                "room": scheduler.current_room().model_dump(mode="json"),
+                "thread": hub.thread_view(scheduler.thread_id),
+                "messages": [
+                    message.model_dump(mode="json")
+                    for message in hub.store.list_thread_messages(scheduler.thread_id)
+                ],
+                "owner": {"name": hub.settings.owner_name},
+                "router": hub.router.name,
+            }
+        )
+        while True:
+            raw_text = await websocket.receive_text()
+            await handle_frame(hub, scheduler, websocket, raw_text)
+    except WebSocketDisconnect:
+        logger.info("websocket closed for thread %s", scheduler.thread_id)
+    finally:
+        room_sockets.pop(websocket, None)
 
 
 async def handle_frame(hub: Hub, scheduler: Scheduler, websocket: WebSocket, raw_text: str) -> None:
@@ -595,13 +837,13 @@ async def apply_frame(
     elif frame_type == "stop":
         await scheduler.stop()
     elif frame_type == "end":
-        # Ending runs one more turn per seat; do it in the background so this socket can
-        # still receive frames meanwhile.
+        # Ending the thread runs one more turn per seat; do it in the background so this
+        # socket can still receive frames meanwhile.
         hub.run_in_background(end_and_report(scheduler, websocket))
     elif frame_type == "room":
-        await scheduler.apply_room_patch(_patch_of(frame))
+        await hub.patch_room(scheduler.room_id, _patch_of(frame))
     elif frame_type == "seat":
-        await scheduler.apply_seat_patch(str(frame.get("seat") or ""), _patch_of(frame))
+        await hub.patch_seat(scheduler.room_id, str(frame.get("seat") or ""), _patch_of(frame))
     else:
         raise ValueError(f"unknown frame type {frame_type!r}")
 

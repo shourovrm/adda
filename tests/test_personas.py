@@ -1,14 +1,23 @@
 import shutil
+from datetime import datetime
 from pathlib import Path
 
 import pytest
 
+from adda.models import MemorySource
 from adda.personas import (
+    MemoryNoteNotFoundError,
+    Persona,
     PersonaError,
+    delete_memory_note,
+    list_memory_notes,
     list_personas,
     load_persona,
     load_personas,
     memory_index,
+    read_memory_note,
+    rebuild_memory_index,
+    update_memory_note,
     write_memory_note,
 )
 
@@ -103,3 +112,116 @@ def test_shipped_library_has_the_four_role_slugs():
         "tests": "Codex",
     }
     assert all(summary.color.startswith("#") for summary in summaries.values())
+
+
+SOURCE = MemorySource(
+    room_id="room-1",
+    room_title='Design: "the" room',
+    thread_id="thread-1",
+    thread_title="Why: colons & quotes",
+)
+INVALID_FILE_NAMES = ["../001-x.md", "index.md", "001-A.md", "1-x.md", "001-x.txt"]
+
+
+@pytest.fixture
+def alpha(personas_directory):
+    return load_persona(personas_directory, "alpha")
+
+
+def test_note_with_source_round_trips_frontmatter(alpha):
+    title = 'Use "SQLite": always'
+    note_path = write_memory_note(alpha, title, "Body text.", SOURCE)
+    assert note_path.read_text(encoding="utf-8").startswith("---\nroom: room-1\n")
+    note = list_memory_notes(alpha)[0]
+    assert note.file == note_path.name
+    assert (note.title, note.body) == (title, "Body text.")
+    assert (note.room_id, note.room_title) == ("room-1", 'Design: "the" room')
+    assert (note.thread_id, note.thread_title) == ("thread-1", "Why: colons & quotes")
+    assert isinstance(note.written, datetime)
+
+
+def test_legacy_note_lists_with_empty_source_fields(alpha):
+    (note,) = list_memory_notes(alpha)
+    assert (note.file, note.title) == ("001-first-fact.md", "First fact")
+    assert note.body == "The owner likes short answers."
+    assert note.room_id is None
+    assert note.thread_title is None
+    assert note.written is None
+
+
+def test_notes_list_newest_first(alpha):
+    write_memory_note(alpha, "Second", "b")
+    write_memory_note(alpha, "Third", "c", SOURCE)
+    assert [note.file for note in list_memory_notes(alpha)] == [
+        "003-third.md",
+        "002-second.md",
+        "001-first-fact.md",
+    ]
+
+
+def test_missing_memory_directory_lists_nothing(tmp_path):
+    persona = Persona("x", "x", "", "", "#000000", "", tmp_path / "x")
+    assert list_memory_notes(persona) == []
+
+
+def test_update_keeps_frontmatter_and_file_name_and_rewrites_index(alpha):
+    note_path = write_memory_note(alpha, "Old title", "Old body.", SOURCE)
+    before = read_memory_note(alpha, note_path.name)
+    updated = update_memory_note(alpha, note_path.name, title="New: title", body="New body.")
+    assert updated.file == note_path.name
+    assert (updated.title, updated.body) == ("New: title", "New body.")
+    assert updated.room_title == before.room_title
+    assert updated.written == before.written
+    index_lines = memory_index(alpha).splitlines()
+    assert f"- [New: title]({note_path.name})" in index_lines
+    assert not any("Old title" in line for line in index_lines)
+
+
+def test_update_with_blank_title_or_body_is_rejected(alpha):
+    with pytest.raises(PersonaError, match="title"):
+        update_memory_note(alpha, "001-first-fact.md", title="   ")
+    with pytest.raises(PersonaError, match="body"):
+        update_memory_note(alpha, "001-first-fact.md", body="")
+    assert read_memory_note(alpha, "001-first-fact.md").title == "First fact"
+
+
+def test_delete_removes_file_and_index_line(alpha):
+    note_path = write_memory_note(alpha, "Temporary", "x")
+    delete_memory_note(alpha, note_path.name)
+    assert not note_path.exists()
+    assert memory_index(alpha) == "- [First fact](001-first-fact.md)"
+
+
+def test_rebuild_index_repairs_a_corrupted_index(alpha):
+    write_memory_note(alpha, "Second", "b")
+    (alpha.memory_directory / "index.md").write_text("garbage\n", encoding="utf-8")
+    rebuild_memory_index(alpha)
+    assert memory_index(alpha).splitlines() == [
+        "- [First fact](001-first-fact.md)",
+        "- [Second](002-second.md)",
+    ]
+
+
+def test_rebuild_index_without_notes_is_empty(tmp_path):
+    persona = Persona("x", "x", "", "", "#000000", "", tmp_path / "x")
+    rebuild_memory_index(persona)
+    assert memory_index(persona) == ""
+
+
+@pytest.mark.parametrize("file_name", INVALID_FILE_NAMES)
+def test_invalid_note_file_names_are_rejected(alpha, file_name):
+    with pytest.raises(PersonaError, match="invalid memory note file name"):
+        read_memory_note(alpha, file_name)
+    with pytest.raises(PersonaError, match="invalid memory note file name"):
+        update_memory_note(alpha, file_name, title="t")
+    with pytest.raises(PersonaError, match="invalid memory note file name"):
+        delete_memory_note(alpha, file_name)
+
+
+def test_missing_valid_note_name_raises_not_found(alpha):
+    with pytest.raises(MemoryNoteNotFoundError):
+        read_memory_note(alpha, "099-ghost.md")
+    with pytest.raises(MemoryNoteNotFoundError):
+        update_memory_note(alpha, "099-ghost.md", title="t")
+    with pytest.raises(MemoryNoteNotFoundError):
+        delete_memory_note(alpha, "099-ghost.md")

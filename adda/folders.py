@@ -1,4 +1,5 @@
-"""Folder browsing for the room-folder picker, and default room folder names (SPEC v0.3 D3, D4).
+"""Folder browsing for the room-folder picker, default room folder names (SPEC v0.3 D3, D4), and
+opening a room folder in the desktop file manager (v0.5 F4).
 
 The browser only shows folders inside the owner's home directory, because the UI is a folder
 picker for a personal tool and has no reason to list system directories. Paths are resolved
@@ -8,6 +9,9 @@ picker for a personal tool and has no reason to list system directories. Paths a
 from __future__ import annotations
 
 import re
+import subprocess
+import sys
+from collections.abc import Callable
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -95,3 +99,55 @@ def create_folder(raw_path: str, name: str, home: Path) -> dict[str, str]:
     except OSError as error:
         raise FolderError(f"cannot create {new_folder}: {error}") from error
     return _entry(new_folder)
+
+
+class FolderOpenError(RuntimeError):
+    """The platform's file manager could not be started."""
+
+
+# The command that opens a folder in the desktop file manager, by `sys.platform` value.
+OPENER_COMMANDS = {"linux": "xdg-open", "darwin": "open", "win32": "explorer"}
+
+
+def opener_command(platform: str) -> str:
+    """xdg-open on Linux (and other Unix-likes), open on macOS, explorer on Windows."""
+    for platform_prefix, command in OPENER_COMMANDS.items():
+        if platform.startswith(platform_prefix):
+            return command
+    # FreeBSD and friends ship xdg-open with their desktops too.
+    return OPENER_COMMANDS["linux"]
+
+
+def open_in_file_manager(
+    folder: Path,
+    platform: str = sys.platform,
+    popen: Callable[..., Any] = subprocess.Popen,
+) -> None:
+    """Start the file manager on `folder` and return at once.
+
+    The child runs detached in its own session with no pipes, and nobody waits for it: the
+    file manager outlives the request, and a server shutdown must not close it.
+    """
+    command = [opener_command(platform), str(folder)]
+    try:
+        popen(
+            command,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    except OSError as error:
+        raise FolderOpenError(f"cannot run {command[0]} on {folder}: {error}") from error
+
+
+def prepare_room_folder(raw_path: str, home: Path) -> Path:
+    """The room folder, resolved, checked to be inside home, and created if it is missing."""
+    if not raw_path.strip():
+        raise FolderError("this room has no folder")
+    folder = _resolve_inside_home(raw_path.strip(), home)
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+    except OSError as error:
+        raise FolderError(f"cannot create {folder}: {error}") from error
+    return folder

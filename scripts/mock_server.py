@@ -1,4 +1,4 @@
-"""Fake Adda server for UI work (SPEC section 6 and the v0.3 delta).
+"""Fake Adda server for UI work (SPEC section 6 and the v0.3, v0.4 and v0.5 deltas).
 
 Run with `uv run python scripts/mock_server.py`; it listens on 127.0.0.1:8766 and keeps
 everything in memory. It serves the real static pages, so the front end can be built and
@@ -259,11 +259,17 @@ CANNED_REPLIES = [
 # ---------------------------------------------------------------------------
 
 rooms: dict[str, dict[str, Any]] = {}
-messages_by_room: dict[str, list[dict[str, Any]]] = {}
-sockets_by_room: dict[str, set[WebSocket]] = {}
+threads: dict[str, dict[str, Any]] = {}
+messages_by_thread: dict[str, list[dict[str, Any]]] = {}
+sockets_by_thread: dict[str, set[WebSocket]] = {}
 turn_tasks: dict[str, set[asyncio.Task]] = {}
 afterthought_tasks: dict[str, asyncio.Task] = {}
+memory_by_persona: dict[str, list[dict[str, Any]]] = {}
 message_counter = 0
+
+# The real server validates memory file names with this pattern before touching the disk.
+MEMORY_FILE_PATTERN = re.compile(r"^\d{3}-[a-z0-9-]+\.md$")
+LAST_LINE_LENGTH = 160
 
 
 def build_seat(room_id: str, position: int, spec: dict[str, Any]) -> dict[str, Any]:
@@ -304,12 +310,13 @@ def expand_new_seats(
     return seats
 
 
-def add_message(room_id: str, role: str, author: str, text: str, **extra: Any) -> dict[str, Any]:
+def add_message(thread: dict[str, Any], role: str, author: str, text: str, **extra: Any) -> dict:
     global message_counter
     message_counter += 1
     message = {
         "id": message_counter,
-        "room_id": room_id,
+        "room_id": thread["room_id"],
+        "thread_id": thread["id"],
         "seat_id": extra.pop("seat_id", None),
         "author": author,
         "role": role,
@@ -319,8 +326,53 @@ def add_message(room_id: str, role: str, author: str, text: str, **extra: Any) -
         "cost_usd": extra.pop("cost_usd", None),
         "meta": extra.pop("meta", {}),
     }
-    messages_by_room.setdefault(room_id, []).append(message)
+    messages_by_thread[thread["id"]].append(message)
     return message
+
+
+def make_thread(room_id: str, title: str, **fields: Any) -> dict[str, Any]:
+    thread = {
+        "id": make_id(),
+        "room_id": room_id,
+        "title": title,
+        "created_at": iso(fields.get("created_at", now())),
+        "ended_at": fields.get("ended_at"),
+    }
+    threads[thread["id"]] = thread
+    messages_by_thread[thread["id"]] = []
+    return thread
+
+
+def flatten_line(text: str) -> str:
+    flat = re.sub(r"[#*`>|]", "", re.sub(r"\s+", " ", text)).strip()
+    return flat if len(flat) <= LAST_LINE_LENGTH else flat[:LAST_LINE_LENGTH] + "…"
+
+
+def thread_summary(thread: dict[str, Any]) -> dict[str, Any]:
+    """ThreadSummary of SPEC v0.5 F2: the thread plus its count and last spoken line."""
+    thread_messages = messages_by_thread[thread["id"]]
+    spoken = [m for m in thread_messages if m["role"] != "system"]
+    last = spoken[-1] if spoken else None
+    return {
+        **thread,
+        "message_count": len(thread_messages),
+        "last_author": last["author"] if last else None,
+        "last_line": flatten_line(last["text"]) if last else None,
+    }
+
+
+def threads_of_room(room_id: str) -> list[dict[str, Any]]:
+    """Newest first, as Room.threads is ordered."""
+    owned = [t for t in threads.values() if t["room_id"] == room_id]
+    return sorted(owned, key=lambda thread: thread["created_at"], reverse=True)
+
+
+def room_view(room: dict[str, Any]) -> dict[str, Any]:
+    return {**room, "threads": [thread_summary(t) for t in threads_of_room(room["id"])]}
+
+
+def newest_open_thread(room: dict[str, Any]) -> dict[str, Any] | None:
+    return next((t for t in threads_of_room(room["id"]) if not t["ended_at"]), None)
 
 
 def make_room(title: str, seat_specs: list[dict[str, Any]], **fields: Any) -> dict[str, Any]:
@@ -340,7 +392,6 @@ def make_room(title: str, seat_specs: list[dict[str, Any]], **fields: Any) -> di
     }
     room["seats"] = expand_new_seats(room_id, seat_specs, 0)
     rooms[room_id] = room
-    messages_by_room[room_id] = []
     return room
 
 
@@ -348,10 +399,65 @@ def slugify(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")[:40] or "room"
 
 
+# ---------------------------------------------------------------------------
+# Persona memory (SPEC v0.5 F3)
+# ---------------------------------------------------------------------------
+
+
+def next_memory_file(slug: str, title: str) -> str:
+    used = [int(note["file"][:3]) for note in memory_by_persona.get(slug, [])]
+    return f"{(max(used) + 1 if used else 1):03d}-{slugify(title)[:40]}.md"
+
+
+def write_memory_note(
+    slug: str, title: str, body: str, thread: dict[str, Any] | None, written: datetime
+) -> dict[str, Any]:
+    room = rooms[thread["room_id"]] if thread else None
+    note = {
+        "file": next_memory_file(slug, title),
+        "title": title,
+        "body": body,
+        "room_id": room["id"] if room else None,
+        "room_title": room["title"] if room else None,
+        "thread_id": thread["id"] if thread else None,
+        "thread_title": thread["title"] if thread else None,
+        "written": iso(written),
+    }
+    memory_by_persona.setdefault(slug, []).append(note)
+    return note
+
+
+def notes_newest_first(slug: str) -> list[dict[str, Any]]:
+    # Legacy notes have no date; they sort last, in file order.
+    notes = memory_by_persona.get(slug, [])
+    return sorted(notes, key=lambda note: (note["written"] or "", note["file"]), reverse=True)
+
+
+def find_memory_note(slug: str, file_name: str) -> dict[str, Any]:
+    if not MEMORY_FILE_PATTERN.match(file_name):
+        raise HTTPException(400, "not a memory note file name")
+    if not any(persona["slug"] == slug for persona in PERSONAS):
+        raise HTTPException(404, "no such persona")
+    note = next((n for n in memory_by_persona.get(slug, []) if n["file"] == file_name), None)
+    if note is None:
+        raise HTTPException(404, "no such note")
+    return note
+
+
+def refresh_note_counts() -> None:
+    for persona in PERSONAS:
+        persona["note_count"] = len(memory_by_persona.get(persona["slug"], []))
+
+
+# ---------------------------------------------------------------------------
+# Seed data
+# ---------------------------------------------------------------------------
+
+
 def seed_data() -> None:
     started = now() - timedelta(minutes=50)
     live = make_room(
-        "Should Adda keep seat sessions per discussion or per persona?",
+        "Adda v0.5",
         [
             {
                 "name": "Ravi",
@@ -367,18 +473,65 @@ def seed_data() -> None:
                 "persona": "implementation",
             },
             {"name": "Pi", "program": "pi", "model": "z-ai/glm-5.3-flash", "persona": "users-view"},
+            {"name": "Scratch", "program": "pi", "instruction": "Answer in one line."},
         ],
-        created_at=started,
+        created_at=started - timedelta(days=2),
         folder="/home/riad/repos/adda",
         budget_usd=1.0,
     )
-    ravi, tuli, pi_seat = live["seats"]
-    live_id = live["id"]
-    add_message(
-        live_id, "system", "system", "Room opened in /home/riad/repos/adda.", created_at=started
+    ravi, tuli, pi_seat, _scratch = live["seats"]
+
+    naming = make_thread(
+        live["id"],
+        "Name the memory folder",
+        created_at=started - timedelta(days=2),
+        ended_at=iso(started - timedelta(days=2) + timedelta(minutes=20)),
     )
     add_message(
-        live_id,
+        naming,
+        "owner",
+        "owner",
+        "Where do memory notes live: next to the persona or in the data folder?",
+        created_at=started - timedelta(days=2),
+    )
+    add_message(
+        naming,
+        "seat",
+        "Ravi",
+        "Next to the persona. Notes are part of who the persona is, and that folder is committed.",
+        seat_id=ravi["id"],
+        cost_usd=0.012,
+        created_at=started - timedelta(days=2) + timedelta(minutes=2),
+        meta={"bid_score": 7.1, "model": "sonnet", "latency_ms": 5200, "woken_by": "bid"},
+    )
+
+    recovery = make_thread(live["id"], "Crash recovery", created_at=started - timedelta(hours=5))
+    add_message(
+        recovery,
+        "owner",
+        "owner",
+        "If the server dies mid-reply, what do we lose?",
+        created_at=started - timedelta(hours=5),
+    )
+    add_message(
+        recovery,
+        "seat",
+        "Tuli",
+        "Only the reply in flight. Every finished message is already in SQLite.",
+        seat_id=tuli["id"],
+        cost_usd=0.004,
+        created_at=started - timedelta(hours=5) + timedelta(minutes=1),
+        meta={"bid_score": 6.8, "model": tuli["model"], "latency_ms": 3100, "woken_by": "bid"},
+    )
+
+    sessions = make_thread(
+        live["id"], "Seat sessions per discussion or per persona?", created_at=started
+    )
+    add_message(
+        sessions, "system", "system", "Room opened in /home/riad/repos/adda.", created_at=started
+    )
+    add_message(
+        sessions,
         "owner",
         "owner",
         "Pi says notes are the memory and the session is a scratchpad. @all does anyone disagree, "
@@ -387,17 +540,18 @@ def seed_data() -> None:
         mentions=[ravi["id"], tuli["id"], pi_seat["id"]],
     )
     clock = started + timedelta(minutes=2)
-    spent = 0.0
+    spent = 0.016
+    persona_seats = [ravi, tuli, pi_seat]
     for index in range(22):
-        seat = live["seats"][index % 3]
-        other = live["seats"][(index + 1) % 3]
+        seat = persona_seats[index % 3]
+        other = persona_seats[(index + 1) % 3]
         text = CANNED_REPLIES[index % len(CANNED_REPLIES)].replace("{other}", f"@{other['name']}")
         if index == 0:
             text = "# Crash cost\n\n" + text
         cost = round(0.004 + 0.009 * (index % 4), 4)
         spent += cost
         add_message(
-            live_id,
+            sessions,
             "seat",
             seat["name"],
             text,
@@ -413,7 +567,7 @@ def seed_data() -> None:
         )
         if index == 9:
             add_message(
-                live_id,
+                sessions,
                 "system",
                 "system",
                 "Pi is cooling down; Ravi answers next.",
@@ -428,59 +582,140 @@ def seed_data() -> None:
             {"name": "Tuli", "program": "opencode", "persona": "implementation"},
             {"name": "Pi", "program": "pi", "persona": "users-view"},
         ],
-        created_at=now() - timedelta(days=1),
-        ended_at=iso(now() - timedelta(days=1) + timedelta(minutes=30)),
+        created_at=now() - timedelta(days=4),
+        ended_at=iso(now() - timedelta(days=4) + timedelta(minutes=30)),
         spent_usd=0.42,
-        folder="",
+        folder="/srv/shared/opencode-provider",
+    )
+    provider = make_thread(
+        ended["id"],
+        "Pick the OpenCode provider",
+        created_at=now() - timedelta(days=4),
+        ended_at=iso(now() - timedelta(days=4) + timedelta(minutes=30)),
     )
     add_message(
-        ended["id"],
+        provider,
         "owner",
         "owner",
         "Which provider do we point OpenCode at?",
-        created_at=now() - timedelta(days=1),
+        created_at=now() - timedelta(days=4),
     )
     add_message(
-        ended["id"],
+        provider,
         "seat",
         "Tuli",
         "DeepSeek direct. It is cheapest and the key is already set.",
         seat_id=ended["seats"][0]["id"],
         cost_usd=0.003,
-        created_at=now() - timedelta(days=1),
+        created_at=now() - timedelta(days=4),
     )
 
     paused = make_room(
         "General chat with Pi",
         [{"name": "Pi", "program": "pi", "persona": "users-view"}],
-        created_at=now() - timedelta(hours=3),
+        created_at=now() - timedelta(days=3),
         liveliness=0,
         budget_usd=0,
         spent_usd=0.01,
     )
-    add_message(paused["id"], "owner", "owner", "Hello Pi.", created_at=now() - timedelta(hours=3))
+    hello = make_thread(paused["id"], "General chat with Pi", created_at=now() - timedelta(days=3))
+    add_message(hello, "owner", "owner", "Hello Pi.", created_at=now() - timedelta(days=3))
     add_message(
-        paused["id"],
+        hello,
         "seat",
         "Pi",
         "Hello. I only speak when you @Pi me while the room is paused.",
         seat_id=paused["seats"][0]["id"],
         cost_usd=0.0001,
-        created_at=now() - timedelta(hours=3),
+        created_at=now() - timedelta(days=3),
     )
 
+    seed_memory(naming, provider, recovery)
+
+
+def seed_memory(naming: dict[str, Any], provider: dict[str, Any], recovery: dict[str, Any]) -> None:
+    """Notes with and without provenance, so the drawer shows both kinds."""
+    two_days_ago = now() - timedelta(days=2)
+    four_days_ago = now() - timedelta(days=4)
+    memory_by_persona["architecture"] = []
+    memory_by_persona["architecture"].append(
+        {
+            "file": "001-store-is-the-source-of-truth.md",
+            "title": "The store is the source of truth",
+            "body": "Sessions are scratch space. Anything that must survive goes to SQLite first.",
+            "room_id": None,
+            "room_title": None,
+            "thread_id": None,
+            "thread_title": None,
+            "written": None,
+        }
+    )
+    write_memory_note(
+        "architecture",
+        "Notes live beside the persona",
+        "Riad agreed: notes go in personas/<slug>/memory and are committed with the persona.",
+        naming,
+        two_days_ago + timedelta(minutes=20),
+    )
+    write_memory_note(
+        "architecture",
+        "One tool session per thread",
+        "A thread gets a fresh session; the persona carries over only through notes.",
+        recovery,
+        now() - timedelta(hours=4),
+    )
+    write_memory_note(
+        "implementation",
+        "DeepSeek direct for OpenCode",
+        "Cheapest working provider; the key is already in keys.env.",
+        provider,
+        four_days_ago + timedelta(minutes=30),
+    )
+    write_memory_note(
+        "implementation",
+        "Prefer one column over a new table",
+        "Riad picks the smallest schema change that holds; a guarded ALTER is fine.",
+        naming,
+        two_days_ago + timedelta(minutes=20),
+    )
+    write_memory_note(
+        "users-view",
+        "Riad wants a decision at the end",
+        "End every long answer with the one thing to do next.",
+        provider,
+        four_days_ago + timedelta(minutes=30),
+    )
+    write_memory_note(
+        "users-view",
+        "Ask what breaks for the owner",
+        "Before agreeing to a design, name the first thing Riad would notice going wrong.",
+        recovery,
+        now() - timedelta(hours=4),
+    )
+    refresh_note_counts()
+
 
 # ---------------------------------------------------------------------------
-# Broadcasting and turn logic
+# Broadcasting and turn logic (one scheduler per thread; budget and spend live on the room)
 # ---------------------------------------------------------------------------
 
 
-async def broadcast(room_id: str, frame: dict[str, Any]) -> None:
-    for socket in list(sockets_by_room.get(room_id, ())):
+async def broadcast(thread_id: str, frame: dict[str, Any]) -> None:
+    for socket in list(sockets_by_thread.get(thread_id, ())):
         try:
             await socket.send_json(frame)
         except (RuntimeError, WebSocketDisconnect):
-            sockets_by_room[room_id].discard(socket)
+            sockets_by_thread[thread_id].discard(socket)
+
+
+async def broadcast_to_room(room_id: str, frame: dict[str, Any]) -> None:
+    """`room` and `thread` frames reach every open thread of the room (spend, seats, titles)."""
+    for thread in threads_of_room(room_id):
+        await broadcast(thread["id"], frame)
+
+
+async def broadcast_room(room: dict[str, Any]) -> None:
+    await broadcast_to_room(room["id"], {"type": "room", "room": room_view(room)})
 
 
 def threshold_for(liveliness: int, automatic_turns: int) -> float:
@@ -521,36 +756,44 @@ def over_budget(room: dict[str, Any]) -> bool:
 
 
 async def seat_speaks(
-    room: dict[str, Any], seat: dict[str, Any], woken_by: str, bid_score: float | None
+    room: dict[str, Any],
+    thread: dict[str, Any],
+    seat: dict[str, Any],
+    woken_by: str,
+    bid_score: float | None,
 ) -> None:
     """One reply from one seat; several of these run at once, so replies may cross."""
-    room_id = room["id"]
-    await broadcast(room_id, {"type": "typing", "seat": seat["id"], "state": "start"})
+    thread_id = thread["id"]
+    await broadcast(thread_id, {"type": "typing", "seat": seat["id"], "state": "start"})
     try:
         # A small random spread makes concurrent seats finish in a varying order.
         await asyncio.sleep(REPLY_DELAY_SECONDS + random.uniform(0, 0.8))
     finally:
-        await broadcast(room_id, {"type": "typing", "seat": seat["id"], "state": "stop"})
+        await broadcast(thread_id, {"type": "typing", "seat": seat["id"], "state": "stop"})
     others = [s for s in room["seats"] if s["id"] != seat["id"]]
     other_name = others[0]["name"] if others else "everyone"
     text = random.choice(CANNED_REPLIES).replace("{other}", f"@{other_name}")
-    await post_seat_message(room, seat, text, woken_by, bid_score)
+    await post_seat_message(room, thread, seat, text, woken_by, bid_score)
     if random.random() < MORE_PROBABILITY and not over_budget(room):
         # The real scheduler strips a trailing [more] line and restarts the seat without a bid.
-        await broadcast(room_id, {"type": "typing", "seat": seat["id"], "state": "start"})
+        await broadcast(thread_id, {"type": "typing", "seat": seat["id"], "state": "start"})
         try:
             await asyncio.sleep(REPLY_DELAY_SECONDS)
         finally:
-            await broadcast(room_id, {"type": "typing", "seat": seat["id"], "state": "stop"})
-        await post_seat_message(room, seat, random.choice(CANNED_MORE), "more", None)
+            await broadcast(thread_id, {"type": "typing", "seat": seat["id"], "state": "stop"})
+        await post_seat_message(room, thread, seat, random.choice(CANNED_MORE), "more", None)
 
 
 async def post_seat_message(
-    room: dict[str, Any], seat: dict[str, Any], text: str, woken_by: str, bid_score: float | None
+    room: dict[str, Any],
+    thread: dict[str, Any],
+    seat: dict[str, Any],
+    text: str,
+    woken_by: str,
+    bid_score: float | None,
 ) -> None:
-    room_id = room["id"]
     message = add_message(
-        room_id,
+        thread,
         "seat",
         seat["name"],
         text,
@@ -564,15 +807,18 @@ async def post_seat_message(
         },
     )
     room["spent_usd"] = round(room["spent_usd"] + COST_PER_REPLY_USD, 4)
-    await broadcast(room_id, {"type": "message", "message": message})
-    await broadcast(room_id, {"type": "room", "room": room})
+    await broadcast(thread["id"], {"type": "message", "message": message})
+    await broadcast_room(room)
 
 
 async def run_bidding_round(
-    room: dict[str, Any], kind: str, automatic_turns: int, guarantee_speakers: int
+    room: dict[str, Any],
+    thread: dict[str, Any],
+    kind: str,
+    automatic_turns: int,
+    guarantee_speakers: int,
 ) -> bool:
     """Broadcast one bids frame and let the chosen seats speak at once. True if anyone spoke."""
-    room_id = room["id"]
     eligible = [s for s in room["seats"] if s["enabled"] and s["available"]]
     if not eligible:
         return False
@@ -597,7 +843,7 @@ async def run_bidding_round(
             bid["score"] = max(bid["score"], round(threshold + 0.5, 1))
             chosen_bids.append(bid)
     await broadcast(
-        room_id,
+        thread["id"],
         {
             "type": "bids",
             "bids": bids,
@@ -611,11 +857,15 @@ async def run_bidding_round(
     if not chosen_bids:
         return False
     chosen_ids = {bid["seat"] for bid in chosen_bids}
-    await announce_pass(room, [s for s in eligible if s["id"] not in chosen_ids])
+    await announce_pass(thread, [s for s in eligible if s["id"] not in chosen_ids])
     woken_by = "afterthought" if kind == "afterthought" else "bid"
     speaking = [
         seat_speaks(
-            room, next(s for s in eligible if s["id"] == bid["seat"]), woken_by, bid["score"]
+            room,
+            thread,
+            next(s for s in eligible if s["id"] == bid["seat"]),
+            woken_by,
+            bid["score"],
         )
         for bid in chosen_bids
     ]
@@ -623,43 +873,47 @@ async def run_bidding_round(
     return True
 
 
-async def run_turns(room: dict[str, Any], queued: list[dict[str, Any]], woken_by: str) -> None:
+async def run_turns(
+    room: dict[str, Any], thread: dict[str, Any], queued: list[dict[str, Any]], woken_by: str
+) -> None:
     """One owner message or wake: mentioned seats at once, a bidding round, then quiet."""
-    room_id = room["id"]
+    thread_id = thread["id"]
     mentioned = [] if over_budget(room) else queued
-    await asyncio.gather(*(seat_speaks(room, seat, woken_by, None) for seat in mentioned))
+    await asyncio.gather(*(seat_speaks(room, thread, seat, woken_by, None) for seat in mentioned))
 
     if room["mode"] == "bidding" and room["liveliness"] > 0 and not over_budget(room):
         # The first round after an owner message always seats two voices; the second is random.
         guaranteed = 0 if queued else 2
-        await run_bidding_round(room, "message", 0, guaranteed)
+        await run_bidding_round(room, thread, "message", 0, guaranteed)
         if not over_budget(room):
-            await run_bidding_round(room, "message", 1, 0)
+            await run_bidding_round(room, thread, "message", 1, 0)
 
     if over_budget(room):
-        add_budget_notice = add_message(
-            room_id,
+        budget_notice = add_message(
+            thread,
             "system",
             "system",
             f"Budget of ${room['budget_usd']:.2f} reached; raise it to continue.",
         )
-        await broadcast(room_id, {"type": "message", "message": add_budget_notice})
+        await broadcast(thread_id, {"type": "message", "message": budget_notice})
         await broadcast(
-            room_id, {"type": "quiet", "reason": "budget", "next_tick_in_s": None, "ticks_left": 0}
+            thread_id,
+            {"type": "quiet", "reason": "budget", "next_tick_in_s": None, "ticks_left": 0},
         )
     elif room["liveliness"] == 0 or room["mode"] != "bidding":
         await broadcast(
-            room_id, {"type": "quiet", "reason": "paused", "next_tick_in_s": None, "ticks_left": 0}
+            thread_id,
+            {"type": "quiet", "reason": "paused", "next_tick_in_s": None, "ticks_left": 0},
         )
     else:
-        start_afterthoughts(room)
-        await broadcast_quiet_with_tick(room, AFTERTHOUGHT_TICKS)
+        start_afterthoughts(room, thread)
+        await broadcast_quiet_with_tick(thread, AFTERTHOUGHT_TICKS)
 
 
-async def broadcast_quiet_with_tick(room: dict[str, Any], ticks_left: int) -> None:
+async def broadcast_quiet_with_tick(thread: dict[str, Any], ticks_left: int) -> None:
     next_tick = AFTERTHOUGHT_DELAY_SECONDS if ticks_left > 0 else None
     await broadcast(
-        room["id"],
+        thread["id"],
         {
             "type": "quiet",
             "reason": "nobody",
@@ -669,48 +923,52 @@ async def broadcast_quiet_with_tick(room: dict[str, Any], ticks_left: int) -> No
     )
 
 
-async def run_afterthoughts(room: dict[str, Any]) -> None:
+async def run_afterthoughts(room: dict[str, Any], thread: dict[str, Any]) -> None:
     """Wait out each quiet delay, then hold an afterthought round; stops after the tick cap."""
     ticks_left = AFTERTHOUGHT_TICKS
     while ticks_left > 0:
         await asyncio.sleep(AFTERTHOUGHT_DELAY_SECONDS)
         if room["mode"] != "bidding" or room["liveliness"] == 0 or over_budget(room):
             return
+        if thread["ended_at"]:
+            return
         ticks_left -= 1
-        await run_bidding_round(room, "afterthought", 0, 1)
-        await broadcast_quiet_with_tick(room, ticks_left)
+        await run_bidding_round(room, thread, "afterthought", 0, 1)
+        await broadcast_quiet_with_tick(thread, ticks_left)
 
 
-def start_afterthoughts(room: dict[str, Any]) -> None:
-    cancel_afterthoughts(room["id"])
-    afterthought_tasks[room["id"]] = asyncio.create_task(run_afterthoughts(room))
+def start_afterthoughts(room: dict[str, Any], thread: dict[str, Any]) -> None:
+    cancel_afterthoughts(thread["id"])
+    afterthought_tasks[thread["id"]] = asyncio.create_task(run_afterthoughts(room, thread))
 
 
-def cancel_afterthoughts(room_id: str) -> None:
-    task = afterthought_tasks.pop(room_id, None)
+def cancel_afterthoughts(thread_id: str) -> None:
+    task = afterthought_tasks.pop(thread_id, None)
     if task and not task.done():
         task.cancel()
 
 
-async def announce_pass(room: dict[str, Any], candidates: list[dict[str, Any]]) -> None:
+async def announce_pass(thread: dict[str, Any], candidates: list[dict[str, Any]]) -> None:
     """Sometimes a seat that was not chosen says PASS, so the UI has a passed frame to show."""
     if candidates and random.random() < PASS_PROBABILITY:
         passer = random.choice(candidates)
-        await broadcast(room["id"], {"type": "passed", "seat": passer["id"]})
+        await broadcast(thread["id"], {"type": "passed", "seat": passer["id"]})
 
 
-def start_turns(room: dict[str, Any], queued: list[dict[str, Any]], woken_by: str) -> None:
+def start_turns(
+    room: dict[str, Any], thread: dict[str, Any], queued: list[dict[str, Any]], woken_by: str
+) -> None:
     """Owner messages do not cancel speakers (v0.4); they only reset the afterthought spell."""
-    cancel_afterthoughts(room["id"])
-    task = asyncio.create_task(run_turns(room, queued, woken_by))
-    running = turn_tasks.setdefault(room["id"], set())
+    cancel_afterthoughts(thread["id"])
+    task = asyncio.create_task(run_turns(room, thread, queued, woken_by))
+    running = turn_tasks.setdefault(thread["id"], set())
     running.add(task)
     task.add_done_callback(running.discard)
 
 
-def stop_everything(room_id: str) -> bool:
-    cancel_afterthoughts(room_id)
-    running = [task for task in turn_tasks.get(room_id, ()) if not task.done()]
+def stop_everything(thread_id: str) -> bool:
+    cancel_afterthoughts(thread_id)
+    running = [task for task in turn_tasks.get(thread_id, ()) if not task.done()]
     for task in running:
         task.cancel()
     return bool(running)
@@ -741,6 +999,13 @@ def get_room(room_id: str) -> dict[str, Any]:
     return room
 
 
+def get_thread(thread_id: str) -> dict[str, Any]:
+    thread = threads.get(thread_id)
+    if thread is None:
+        raise HTTPException(404, "no such thread")
+    return thread
+
+
 def apply_room_patch(room: dict[str, Any], patch: dict[str, Any]) -> None:
     unknown = set(patch) - ROOM_PATCH_KEYS
     if unknown:
@@ -767,12 +1032,22 @@ def apply_seat_patch(room: dict[str, Any], seat_id: str, patch: dict[str, Any]) 
             raise HTTPException(422, "name must not be empty")
         if any(s["name"] == new_name and s["id"] != seat_id for s in room["seats"]):
             raise HTTPException(422, "name already used in this room")
-        for message in messages_by_room[room["id"]]:
-            if message["seat_id"] == seat_id:
-                message["author"] = new_name
+        for thread in threads_of_room(room["id"]):
+            for message in messages_by_thread[thread["id"]]:
+                if message["seat_id"] == seat_id:
+                    message["author"] = new_name
         patch = {**patch, "name": new_name}
         seat["handle"] = make_handle(new_name)
     seat.update(patch)
+
+
+def clean_thread_title(body: dict[str, Any]) -> str:
+    title = str(body.get("title") or "").strip()
+    if not title:
+        raise HTTPException(422, "a thread needs a title")
+    if len(title) > 200:
+        raise HTTPException(422, "title is longer than 200 characters")
+    return title
 
 
 # ---------------------------------------------------------------------------
@@ -789,6 +1064,11 @@ def rooms_page() -> FileResponse:
 
 @app.get("/room/{room_id}")
 def room_page(room_id: str) -> FileResponse:
+    return FileResponse(STATIC_DIRECTORY / "room.html")
+
+
+@app.get("/room/{room_id}/thread/{thread_id}")
+def thread_page(room_id: str, thread_id: str) -> FileResponse:
     return FileResponse(STATIC_DIRECTORY / "room.html")
 
 
@@ -835,7 +1115,8 @@ async def write_settings(request: Request) -> dict[str, Any]:
 
 @app.get("/api/rooms")
 def list_rooms() -> list[dict[str, Any]]:
-    return sorted(rooms.values(), key=lambda room: room["created_at"], reverse=True)
+    newest_first = sorted(rooms.values(), key=lambda room: room["created_at"], reverse=True)
+    return [room_view(room) for room in newest_first]
 
 
 def resolve_sandbox_path(path_text: str) -> Path:
@@ -931,148 +1212,279 @@ async def create_room(request: Request) -> dict[str, Any]:
         budget_usd=body.get("budget_usd", defaults["budget_usd"]),
         max_concurrent=body.get("max_concurrent", defaults["max_concurrent"]),
     )
-    add_message(room["id"], "system", "system", f"Room opened in {room['folder']}.")
-    return room
+    first_thread = make_thread(room["id"], title)
+    add_message(first_thread, "system", "system", f"Room opened in {room['folder']}.")
+    return room_view(room)
 
 
 @app.get("/api/rooms/{room_id}")
 def read_room(room_id: str) -> dict[str, Any]:
-    return {"room": get_room(room_id), "messages": messages_by_room[room_id]}
+    """Kept for v0.4 callers: the room plus the messages of its newest open thread."""
+    room = get_room(room_id)
+    newest = newest_open_thread(room)
+    return {
+        "room": room_view(room),
+        "messages": messages_by_thread[newest["id"]] if newest else [],
+    }
 
 
 @app.patch("/api/rooms/{room_id}")
 async def patch_room(room_id: str, request: Request) -> dict[str, Any]:
     room = get_room(room_id)
     apply_room_patch(room, await request.json())
-    await broadcast(room_id, {"type": "room", "room": room})
-    return room
+    await broadcast_room(room)
+    return room_view(room)
 
 
 @app.post("/api/rooms/{room_id}/seats")
 async def add_seat(room_id: str, request: Request) -> dict[str, Any]:
     room = get_room(room_id)
     room["seats"].extend(expand_new_seats(room_id, [await request.json()], len(room["seats"])))
-    await broadcast(room_id, {"type": "room", "room": room})
-    return room
+    await broadcast_room(room)
+    return room_view(room)
 
 
 @app.patch("/api/rooms/{room_id}/seats/{seat_id}")
 async def patch_seat(room_id: str, seat_id: str, request: Request) -> dict[str, Any]:
     room = get_room(room_id)
     apply_seat_patch(room, seat_id, await request.json())
-    await broadcast(room_id, {"type": "room", "room": room})
-    return room
+    await broadcast_room(room)
+    return room_view(room)
 
 
 @app.delete("/api/rooms/{room_id}/seats/{seat_id}")
 async def delete_seat(room_id: str, seat_id: str) -> dict[str, Any]:
     room = get_room(room_id)
     room["seats"] = [s for s in room["seats"] if s["id"] != seat_id]
-    await broadcast(room_id, {"type": "room", "room": room})
-    return room
+    await broadcast_room(room)
+    return room_view(room)
 
 
 @app.post("/api/rooms/{room_id}/end")
 async def end_room(room_id: str) -> dict[str, Any]:
+    """Archives the room: every open thread ends first, each writing its notes."""
     room = get_room(room_id)
-    notes = await finish_room(room)
-    return {"room": room, "notes": notes}
-
-
-async def finish_room(room: dict[str, Any]) -> dict[str, list[str]]:
-    stop_everything(room["id"])
+    notes: dict[str, list[str]] = {}
+    for thread in threads_of_room(room_id):
+        if not thread["ended_at"]:
+            for seat_id, seat_notes in (await finish_thread(room, thread)).items():
+                notes.setdefault(seat_id, []).extend(seat_notes)
     room["ended_at"] = iso(now())
-    spoke = {m["seat_id"] for m in messages_by_room[room["id"]] if m["seat_id"]}
-    notes = {
-        seat["id"]: [f"{seat['name']} remembers: keep sessions per discussion."]
-        for seat in room["seats"]
-        if seat["id"] in spoke and seat["persona"]
+    await broadcast_room(room)
+    return {"room": room_view(room), "notes": notes}
+
+
+@app.post("/api/rooms/{room_id}/open-folder")
+def open_folder(room_id: str) -> dict[str, str]:
+    """The real server runs xdg-open; the mock only answers, and refuses a room with no folder."""
+    room = get_room(room_id)
+    if not room["folder"]:
+        raise HTTPException(400, "this room has no folder")
+    if not room["folder"].startswith("/home/riad") and not room["folder"].startswith(
+        str(SANDBOX_ROOT)
+    ):
+        raise HTTPException(400, "folder must be inside the home directory")
+    return {"opened": room["folder"]}
+
+
+@app.get("/api/rooms/{room_id}/threads")
+def list_threads(room_id: str) -> list[dict[str, Any]]:
+    get_room(room_id)
+    return [thread_summary(thread) for thread in threads_of_room(room_id)]
+
+
+@app.post("/api/rooms/{room_id}/threads")
+async def create_thread(room_id: str, request: Request) -> dict[str, Any]:
+    room = get_room(room_id)
+    if room["ended_at"]:
+        raise HTTPException(409, "this room is archived")
+    thread = make_thread(room_id, clean_thread_title(await request.json()))
+    # Other tabs on this room learn about the new thread through the room's thread list.
+    await broadcast_room(room)
+    return thread_summary(thread)
+
+
+@app.get("/api/threads/{thread_id}")
+def read_thread(thread_id: str) -> dict[str, Any]:
+    thread = get_thread(thread_id)
+    return {
+        "thread": thread_summary(thread),
+        "room": room_view(rooms[thread["room_id"]]),
+        "messages": messages_by_thread[thread_id],
     }
-    await broadcast(room["id"], {"type": "room", "room": room})
-    await broadcast(room["id"], {"type": "ended", "notes": notes})
+
+
+@app.patch("/api/threads/{thread_id}")
+async def rename_thread(thread_id: str, request: Request) -> dict[str, Any]:
+    thread = get_thread(thread_id)
+    thread["title"] = clean_thread_title(await request.json())
+    summary = thread_summary(thread)
+    await broadcast_to_room(thread["room_id"], {"type": "thread", "thread": summary})
+    return summary
+
+
+@app.post("/api/threads/{thread_id}/end")
+async def end_thread(thread_id: str) -> dict[str, Any]:
+    thread = get_thread(thread_id)
+    room = rooms[thread["room_id"]]
+    if thread["ended_at"]:
+        raise HTTPException(409, "this thread has already ended")
+    notes = await finish_thread(room, thread)
+    return {"thread": thread_summary(thread), "notes": notes}
+
+
+async def finish_thread(room: dict[str, Any], thread: dict[str, Any]) -> dict[str, list[str]]:
+    """Ending a thread asks every seat with a persona that spoke for notes and stores them."""
+    stop_everything(thread["id"])
+    thread["ended_at"] = iso(now())
+    spoke = {m["seat_id"] for m in messages_by_thread[thread["id"]] if m["seat_id"]}
+    notes: dict[str, list[str]] = {}
+    for seat in room["seats"]:
+        if seat["id"] not in spoke or not seat["persona"]:
+            continue
+        title = f"Decided in {thread['title']}"[:80]
+        body = f"{seat['name']} remembers: keep one tool session per thread."
+        write_memory_note(seat["persona"], title, body, thread, now())
+        notes[seat["id"]] = [body]
+    refresh_note_counts()
+    await broadcast_to_room(room["id"], {"type": "thread", "thread": thread_summary(thread)})
+    await broadcast(thread["id"], {"type": "ended", "notes": notes})
     return notes
+
+
+@app.get("/api/personas/{slug}/memory")
+def list_memory(slug: str) -> list[dict[str, Any]]:
+    if not any(persona["slug"] == slug for persona in PERSONAS):
+        raise HTTPException(404, "no such persona")
+    return notes_newest_first(slug)
+
+
+@app.put("/api/personas/{slug}/memory/{file_name}")
+async def update_memory(slug: str, file_name: str, request: Request) -> dict[str, Any]:
+    note = find_memory_note(slug, file_name)
+    body = await request.json()
+    if "title" in body:
+        title = str(body["title"]).strip()
+        if not title:
+            raise HTTPException(422, "a note needs a title")
+        note["title"] = title
+    if "body" in body:
+        note["body"] = str(body["body"]).strip()
+    return note
+
+
+@app.delete("/api/personas/{slug}/memory/{file_name}")
+def delete_memory(slug: str, file_name: str) -> dict[str, str]:
+    note = find_memory_note(slug, file_name)
+    memory_by_persona[slug].remove(note)
+    refresh_note_counts()
+    return {"deleted": file_name}
+
+
+@app.get("/api/rooms/{room_id}/memory")
+def room_memory(room_id: str) -> dict[str, list[dict[str, Any]]]:
+    get_room(room_id)
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for persona in PERSONAS:
+        from_room = [n for n in notes_newest_first(persona["slug"]) if n["room_id"] == room_id]
+        if from_room:
+            grouped[persona["slug"]] = from_room
+    return grouped
 
 
 @app.get("/api/search")
 def search(q: str = "") -> list[dict[str, Any]]:
     needle = q.strip().lower()
     results = []
-    for room_id, room_messages in messages_by_room.items():
-        for message in room_messages:
+    for thread_id, thread_messages in messages_by_thread.items():
+        thread = threads[thread_id]
+        for message in thread_messages:
             if needle and needle in message["text"].lower():
                 results.append(
                     {
                         "message": message,
-                        "room_title": rooms[room_id]["title"],
+                        "room_title": rooms[thread["room_id"]]["title"],
+                        "thread_id": thread_id,
+                        "thread_title": thread["title"],
                         "snippet": message["text"][:120],
                     }
                 )
     return results[:30]
 
 
-async def handle_client_frame(room: dict[str, Any], frame: dict[str, Any]) -> None:
-    room_id = room["id"]
+async def handle_client_frame(
+    room: dict[str, Any], thread: dict[str, Any], frame: dict[str, Any]
+) -> None:
     kind = frame.get("type")
     if kind == "say":
-        await handle_say(room, str(frame.get("text", "")).strip())
+        await handle_say(room, thread, str(frame.get("text", "")).strip())
     elif kind == "wake":
         seat = next((s for s in room["seats"] if s["id"] == frame.get("seat")), None)
         if seat is None:
             raise HTTPException(404, "no such seat")
-        refuse_if_unavailable(room)
-        start_turns(room, [seat], "wake")
+        refuse_if_unavailable(room, thread)
+        start_turns(room, thread, [seat], "wake")
     elif kind == "wake_all":
-        refuse_if_unavailable(room)
-        start_turns(room, [s for s in room["seats"] if s["enabled"] and s["available"]], "wake")
+        refuse_if_unavailable(room, thread)
+        enabled = [s for s in room["seats"] if s["enabled"] and s["available"]]
+        start_turns(room, thread, enabled, "wake")
     elif kind == "stop":
-        stop_everything(room_id)
+        stop_everything(thread["id"])
         await broadcast(
-            room_id, {"type": "quiet", "reason": "nobody", "next_tick_in_s": None, "ticks_left": 0}
+            thread["id"],
+            {"type": "quiet", "reason": "nobody", "next_tick_in_s": None, "ticks_left": 0},
         )
     elif kind == "end":
-        await finish_room(room)
+        if thread["ended_at"]:
+            raise HTTPException(409, "this thread has already ended")
+        await finish_thread(room, thread)
     elif kind == "room":
         apply_room_patch(room, frame.get("patch") or {})
-        await broadcast(room_id, {"type": "room", "room": room})
+        await broadcast_room(room)
     elif kind == "seat":
         apply_seat_patch(room, frame.get("seat"), frame.get("patch") or {})
-        await broadcast(room_id, {"type": "room", "room": room})
+        await broadcast_room(room)
     else:
         raise HTTPException(422, f"unknown frame type {kind}")
 
 
-def refuse_if_unavailable(room: dict[str, Any]) -> None:
+def refuse_if_unavailable(room: dict[str, Any], thread: dict[str, Any]) -> None:
     if room["ended_at"]:
-        raise HTTPException(409, "this room has ended")
+        raise HTTPException(409, "this room is archived")
+    if thread["ended_at"]:
+        raise HTTPException(409, "this thread has ended")
     if over_budget(room):
         raise HTTPException(
             409, f"Budget of ${room['budget_usd']:.2f} reached; raise it to continue."
         )
 
 
-async def handle_say(room: dict[str, Any], text: str) -> None:
+async def handle_say(room: dict[str, Any], thread: dict[str, Any], text: str) -> None:
     if not text:
         return
-    refuse_if_unavailable(room)
+    refuse_if_unavailable(room, thread)
     queued = find_mentioned_seats(room, text, None)
-    message = add_message(room["id"], "owner", "owner", text, mentions=[s["id"] for s in queued])
-    await broadcast(room["id"], {"type": "message", "message": message})
-    start_turns(room, queued, "all" if re.search(r"(?<!\w)@all\b", text, re.I) else "mention")
+    message = add_message(thread, "owner", "owner", text, mentions=[s["id"] for s in queued])
+    await broadcast(thread["id"], {"type": "message", "message": message})
+    woken_by = "all" if re.search(r"(?<!\w)@all\b", text, re.I) else "mention"
+    start_turns(room, thread, queued, woken_by)
 
 
-@app.websocket("/ws/{room_id}")
-async def room_socket(socket: WebSocket, room_id: str) -> None:
+@app.websocket("/ws/threads/{thread_id}")
+async def thread_socket(socket: WebSocket, thread_id: str) -> None:
     await socket.accept()
-    room = rooms.get(room_id)
-    if room is None:
+    thread = threads.get(thread_id)
+    if thread is None:
         await socket.close(code=4404)
         return
-    sockets_by_room.setdefault(room_id, set()).add(socket)
+    room = rooms[thread["room_id"]]
+    sockets_by_thread.setdefault(thread_id, set()).add(socket)
     await socket.send_json(
         {
             "type": "hello",
-            "room": room,
-            "messages": messages_by_room[room_id],
+            "room": room_view(room),
+            "thread": thread_summary(thread),
+            "messages": messages_by_thread[thread_id],
             "owner": {"name": SETTINGS["owner"]["name"]},
             "router": "jev",
         }
@@ -1081,13 +1493,13 @@ async def room_socket(socket: WebSocket, room_id: str) -> None:
         while True:
             frame = await socket.receive_json()
             try:
-                await handle_client_frame(room, frame)
+                await handle_client_frame(room, thread, frame)
             except HTTPException as problem:
                 await socket.send_json({"type": "error", "text": str(problem.detail)})
     except WebSocketDisconnect:
         pass
     finally:
-        sockets_by_room[room_id].discard(socket)
+        sockets_by_thread[thread_id].discard(socket)
 
 
 app.mount("/static", StaticFiles(directory=STATIC_DIRECTORY), name="static")

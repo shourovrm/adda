@@ -1,4 +1,9 @@
-"""Turn-taking for one room (SPEC v0.4 E1 and E2): an event-driven room, not a turn loop.
+"""Turn-taking for one thread of a room (SPEC v0.4 E1 and E2, v0.5 F2): event-driven, not a loop.
+
+There is one Scheduler per thread. Seats, folder, budget, spend, liveliness, mode and
+max_concurrent belong to the room and are read from the store on every decision, so two threads
+of one room share the budget. Messages, sessions, speaking seats and afterthought ticks belong
+to the thread. `room` frames go to every tab of the room; everything else to the thread's tabs.
 
 Every posted message (owner or seat) triggers one "reaction": mentions start seats, a `[more]`
 continuation restarts the author, and a Jev round lets seats bid to speak. Several seats may
@@ -19,7 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from adda.config import Settings
-from adda.models import MODES, THINKING_LEVELS, Bid, Message, Room, Seat
+from adda.models import MODES, THINKING_LEVELS, Bid, MemorySource, Message, Room, Seat, Thread
 from adda.personas import Persona, PersonaError, load_persona, load_personas, write_memory_note
 from adda.prompts import (
     END_OF_DISCUSSION_PROMPT,
@@ -89,7 +94,11 @@ EMPTY_MEANS_NONE_FIELDS = ("model", "persona", "instruction")
 
 
 class RoomEndedError(RuntimeError):
-    """The room has ended; it takes no new messages."""
+    """The room is archived; it takes no new messages."""
+
+
+class ThreadEndedError(RoomEndedError):
+    """The thread has ended; it takes no new messages (other threads of the room still do)."""
 
 
 class UnknownSeatError(LookupError):
@@ -128,6 +137,30 @@ def adjusted_bid_score(
     return min(10.0, max(0.0, adjusted))
 
 
+def note_title_from_bullet(bullet: str) -> str:
+    """Title for a memory note: the bullet's first sentence, cut at a word boundary.
+
+    Seats answer the end-of-thread prompt with full sentences, so a hard cut at a fixed
+    length left titles like 'needs an explicit "a yes fixes'. Prefer the first sentence; when
+    that is still too long, cut before the last space inside the limit.
+    """
+    text = bullet.strip()
+    for terminator in (". ", "; ", ": "):
+        head, separator, _tail = text.partition(terminator)
+        if separator and len(head) <= MEMORY_NOTE_TITLE_LENGTH:
+            return head.rstrip()
+    if len(text) <= MEMORY_NOTE_TITLE_LENGTH:
+        return text.rstrip(".")
+    cut = text.rfind(" ", 0, MEMORY_NOTE_TITLE_LENGTH)
+    if cut < MEMORY_NOTE_TITLE_LENGTH // 2:
+        cut = MEMORY_NOTE_TITLE_LENGTH
+    title = text[:cut]
+    if title.count('"') % 2 == 1:
+        # The cut fell inside a quotation; drop the opened fragment rather than leave it dangling.
+        title = title[: title.rfind('"')]
+    return title.rstrip(" ,;:")
+
+
 def budget_exhausted(room: Room) -> bool:
     return room.budget_usd > 0 and room.spent_usd >= room.budget_usd
 
@@ -139,7 +172,7 @@ def budget_message(room: Room) -> str:
 class Scheduler:
     def __init__(
         self,
-        room_id: str,
+        thread_id: str,
         store: Store,
         settings: Settings,
         router: Router,
@@ -150,13 +183,18 @@ class Scheduler:
         clock: Callable[[], float] = time.monotonic,
         sleep: Sleep = asyncio.sleep,
         uniform: Callable[[float, float], float] = random.uniform,
+        broadcast_room: Broadcast | None = None,
     ) -> None:
-        self.room_id = room_id
+        """`broadcast` reaches the tabs of this thread; `broadcast_room` reaches every tab of the
+        room (for `room` and `thread` frames) and defaults to `broadcast`."""
+        self.thread_id = thread_id
+        self.room_id = store.get_thread(thread_id).room_id
         self.store = store
         self.settings = settings
         self.router = router
         self.fallback_router = fallback_router
         self.broadcast = broadcast
+        self.broadcast_room = broadcast_room if broadcast_room is not None else broadcast
         self.adapter_builder = adapter_builder
         self.harness_versions = harness_versions
         # Time and randomness are injected so tests never wait for an afterthought delay.
@@ -262,10 +300,24 @@ class Scheduler:
         return seat.model or (harness_settings.model if harness_settings else "") or None
 
     async def publish_room(self) -> Room:
-        """Send the current room to every tab (any change: spend, seats, liveliness...)."""
+        """Send the current room to every tab of every thread of the room (any change: spend,
+        seats, liveliness, threads...)."""
         room = self.current_room()
-        await self.broadcast({"type": "room", "room": room.model_dump(mode="json")})
+        await self.broadcast_room({"type": "room", "room": room.model_dump(mode="json")})
         return room
+
+    async def publish_thread(self) -> Thread:
+        """Send this thread's summary to every tab of the room (title change or end)."""
+        summary = self.store.thread_summary(self.thread_id)
+        await self.broadcast_room({"type": "thread", "thread": summary.model_dump(mode="json")})
+        return summary
+
+    def current_thread(self) -> Thread:
+        return self.store.get_thread(self.thread_id)
+
+    async def rename(self, title: str) -> Thread:
+        self.store.rename_thread(self.thread_id, title)
+        return await self.publish_thread()
 
     # Patches (one code path for REST and WebSocket)
 
@@ -294,9 +346,12 @@ class Scheduler:
             fields["max_concurrent"] = _whole_number(patch["max_concurrent"], "max_concurrent")
         self.store.update_room(self.room_id, **fields)
         if "budget_usd" in fields:
-            # A new budget deserves a fresh notice if it is still exceeded.
-            self._budget_notice_for = None
+            self.forget_budget_notice()
         return await self.publish_room()
+
+    def forget_budget_notice(self) -> None:
+        """A new budget deserves a fresh notice if it is still exceeded."""
+        self._budget_notice_for = None
 
     async def apply_seat_patch(self, seat_id: str, patch: dict[str, Any]) -> Room:
         """Change one seat. Name, persona and instruction apply from the next prompt; model and
@@ -326,19 +381,23 @@ class Scheduler:
             )  # PersonaError is a ValueError
         self.store.update_seat(seat_id, **fields)
         if "program" in fields and fields["program"] != seat.program:
-            await self._cancel_seat(seat_id)
+            await self.cancel_seat(seat_id)
         return await self.publish_room()
 
     async def remove_seat(self, seat_id: str) -> Room:
-        """Remove a seat; if it is speaking right now, cancel its reply first."""
+        """Remove a seat; if it is speaking right now, cancel its reply first. The caller
+        cancels it in the room's other threads (see `forget_seat`)."""
         self._require_seat(seat_id)
-        await self._cancel_seat(seat_id)
+        await self.forget_seat(seat_id)
         self.store.remove_seat(seat_id)
+        return await self.publish_room()
+
+    async def forget_seat(self, seat_id: str) -> None:
+        """Cancel the seat's reply in this thread and drop what this thread knows about it."""
+        await self.cancel_seat(seat_id)
         self.seen_until.pop(seat_id, None)
         self.last_spoke_at.pop(seat_id, None)
-        self.more_streak.pop(seat_id, None)
         self.passed_seats.discard(seat_id)
-        return await self.publish_room()
 
     def _require_seat(self, seat_id: str) -> Seat:
         for seat in self.store.get_room(self.room_id).seats:
@@ -361,6 +420,7 @@ class Scheduler:
         wakes = resolve_mentions(text, room.seats, author_seat_id=None)
         message = Message(
             room_id=self.room_id,
+            thread_id=self.thread_id,
             author="owner",
             role="owner",
             text=text,
@@ -415,12 +475,13 @@ class Scheduler:
             await asyncio.wait(tasks)
 
     async def end(self) -> dict[str, list[str]]:
-        """Cancel everything, then ask every persona-backed seat that spoke what to remember,
-        write the notes, mark the room ended. Seats without a persona write no notes."""
+        """Cancel everything, then ask every persona-backed seat that spoke in this thread what
+        to remember, write the notes, mark the thread ended. Seats without a persona write no
+        notes. The room stays open for other threads."""
         self._require_open_room()
         await self.stop()
         room = self.current_room()
-        messages = self.store.list_messages(self.room_id)
+        messages = self.store.list_thread_messages(self.thread_id)
         seats_by_id = {seat.id: seat for seat in room.seats}
         speaker_ids: list[str] = []
         for message in messages:
@@ -439,8 +500,9 @@ class Scheduler:
                 continue
             notes[seat_id] = await self._collect_memory_notes(seat, persona, room, messages)
 
-        self.store.end_room(self.room_id)
+        self.store.end_thread(self.thread_id)
         await self.broadcast({"type": "ended", "notes": notes})
+        await self.publish_thread()
         await self.publish_room()
         return notes
 
@@ -486,7 +548,7 @@ class Scheduler:
             raise
         except Exception as error:
             # Nobody awaits these tasks, so report here instead of losing the error.
-            logger.exception("turn-taking failed in room %s", self.room_id)
+            logger.exception("turn-taking failed in thread %s", self.thread_id)
             await self.broadcast({"type": "error", "text": f"turn-taking failed: {error}"})
 
     def _start_seat(
@@ -524,7 +586,7 @@ class Scheduler:
         except asyncio.CancelledError:
             raise
         except Exception as error:
-            logger.exception("seat turn failed in room %s", self.room_id)
+            logger.exception("seat turn failed in thread %s", self.thread_id)
             await self.broadcast({"type": "error", "text": f"turn-taking failed: {error}"})
         finally:
             if self.speaking.get(seat_id) is asyncio.current_task():
@@ -537,9 +599,13 @@ class Scheduler:
 
     def _room_accepts_starts(self) -> bool:
         room = self.store.get_room(self.room_id)
-        return room.ended_at is None and not budget_exhausted(room)
+        return not self._is_closed(room) and not budget_exhausted(room)
 
-    async def _cancel_seat(self, seat_id: str) -> None:
+    def _is_closed(self, room: Room) -> bool:
+        """The room is archived or this thread has ended."""
+        return room.ended_at is not None or self.current_thread().ended_at is not None
+
+    async def cancel_seat(self, seat_id: str) -> None:
         """Cancel one seat's reply (removed, or switched to another program)."""
         task = self.speaking.get(seat_id)
         self.follow_up.pop(seat_id, None)
@@ -560,7 +626,7 @@ class Scheduler:
         checks whether it has gone quiet.
         """
         room = self.store.get_room(self.room_id)
-        if room.ended_at is not None:
+        if self._is_closed(room):
             return
         if message is not None:
             self.passed_seats.clear()
@@ -609,7 +675,7 @@ class Scheduler:
         if not self._is_idle():
             return
         room = self.store.get_room(self.room_id)
-        if room.ended_at is not None:
+        if self._is_closed(room):
             return
         if budget_exhausted(room):
             await self._stop_for_budget(room)
@@ -640,7 +706,7 @@ class Scheduler:
     def _afterthought_possible(self, room: Room) -> bool:
         """An afterthought tick may be scheduled: a bidding room that is open, within budget and
         the safety cap, still has ticks in this quiet spell and has a seat that could bid."""
-        if room.ended_at is not None or budget_exhausted(room) or self._safety_reached():
+        if self._is_closed(room) or budget_exhausted(room) or self._safety_reached():
             return False
         if room.mode != "bidding" or room.liveliness == 0 or self._ticks_left(room) == 0:
             return False
@@ -741,7 +807,7 @@ class Scheduler:
         """
         async with self._bidding_lock:
             room = self.store.get_room(self.room_id)
-            if room.ended_at is not None or budget_exhausted(room):
+            if self._is_closed(room) or budget_exhausted(room):
                 return 0
             described = self.describe(room)
             bidders = [
@@ -751,7 +817,9 @@ class Scheduler:
             ]
             if not bidders:
                 return 0
-            window = self.store.list_messages(self.room_id, last=self.settings.router_window)
+            window = self.store.list_thread_messages(
+                self.thread_id, last=self.settings.router_window
+            )
             latest_author_id = window[-1].seat_id if window else None
             transcript = render_transcript(window, self.settings.owner_name)
             router, bids = await self._ask_router(transcript, bidders, question_kind)
@@ -871,14 +939,21 @@ class Scheduler:
 
         # The prompt holds what the seat has not seen at the moment it starts; replies posted
         # while it composes reach it with its next prompt.
-        messages = self.store.list_messages(self.room_id)
+        messages = self.store.list_thread_messages(self.thread_id)
         unseen = self._unseen_messages(seat.id, messages)
-        prompt = turn_prompt(room, unseen, seat, self.settings.owner_name, woken_by)
+        prompt = turn_prompt(
+            room,
+            unseen,
+            seat,
+            self.settings.owner_name,
+            woken_by,
+            thread_title=self.current_thread().title,
+        )
         other_seats = [other for other in room.seats if other.id != seat.id and other.enabled]
         seat_system_prompt = system_prompt(
             seat, persona, other_seats, self.settings.owner_name, self.settings.owner_line
         )
-        session_id = self.store.get_session(self.room_id, seat.id)
+        session_id = self.store.get_session(self.thread_id, seat.id)
 
         started_at = self.clock()
         await self.broadcast({"type": "typing", "seat": seat.id, "state": "start"})
@@ -897,7 +972,7 @@ class Scheduler:
         if messages:
             self.seen_until[seat.id] = messages[-1].id
         if reply.session_id:
-            self.store.set_session(self.room_id, seat.id, reply.session_id)
+            self.store.set_session(self.thread_id, seat.id, reply.session_id)
         text, wants_more = split_more_marker(reply.text.strip())
         text = text.strip()
         if is_pass(reply.text) or not text:
@@ -916,6 +991,7 @@ class Scheduler:
             meta["bid_score"] = bid_score
         message = Message(
             room_id=self.room_id,
+            thread_id=self.thread_id,
             seat_id=seat.id,
             author=seat.name,
             role="seat",
@@ -957,9 +1033,11 @@ class Scheduler:
         prompt = END_OF_DISCUSSION_PROMPT
         if unseen:
             owner_name = self.settings.owner_name
-            prompt = f"{turn_prompt(room, unseen, seat, owner_name)}\n\n{END_OF_DISCUSSION_PROMPT}"
+            thread_title = self.current_thread().title
+            catch_up = turn_prompt(room, unseen, seat, owner_name, thread_title=thread_title)
+            prompt = f"{catch_up}\n\n{END_OF_DISCUSSION_PROMPT}"
         other_seats = [other for other in room.seats if other.id != seat.id and other.enabled]
-        session_id = self.store.get_session(self.room_id, seat.id)
+        session_id = self.store.get_session(self.thread_id, seat.id)
         await self.broadcast({"type": "typing", "seat": seat.id, "state": "start"})
         try:
             reply = await adapter.run(
@@ -979,9 +1057,14 @@ class Scheduler:
             self.store.add_spend(self.room_id, reply.cost_usd)
 
         bullets = parse_memory_bullets(reply.text)
+        thread = self.current_thread()
+        # Recorded in the note so the owner can review what each thread taught a persona.
+        source = MemorySource(
+            room_id=room.id, room_title=room.title, thread_id=thread.id, thread_title=thread.title
+        )
         for bullet in bullets:
-            title = bullet[:MEMORY_NOTE_TITLE_LENGTH].rstrip()
-            write_memory_note(persona, title, bullet)
+            title = note_title_from_bullet(bullet)
+            write_memory_note(persona, title, bullet, source=source)
         return bullets
 
     # Personas
@@ -1006,12 +1089,22 @@ class Scheduler:
         await self.broadcast({"type": "message", "message": message.model_dump(mode="json")})
 
     async def _post_system(self, text: str) -> None:
-        await self._post(Message(room_id=self.room_id, author="system", role="system", text=text))
+        await self._post(
+            Message(
+                room_id=self.room_id,
+                thread_id=self.thread_id,
+                author="system",
+                role="system",
+                text=text,
+            )
+        )
 
     def _require_open_room(self) -> Room:
         room = self.store.get_room(self.room_id)
         if room.ended_at is not None:
-            raise RoomEndedError(f"room {self.room_id} has ended")
+            raise RoomEndedError(f"room {self.room_id} is archived")
+        if self.current_thread().ended_at is not None:
+            raise ThreadEndedError(f"thread {self.thread_id} has ended")
         return room
 
 

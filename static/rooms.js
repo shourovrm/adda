@@ -101,6 +101,9 @@ function createRoomCard(room) {
     seatLine.append(dot, ' ', seat.name, ' ');
   }
   seatLine.append(createElement('span', 'mute', room.folder || 'no folder'));
+  if (room.folder) {
+    seatLine.append(' ', createButton('Open folder', 'btn btn--ghost btn--tiny', () => openRoomFolder(room.id)));
+  }
 
   const lastLine = createElement('p', 'last-line mute', '');
   lastLine.dataset.role = 'last-line';
@@ -110,30 +113,28 @@ function createRoomCard(room) {
 }
 
 /**
- * GET /api/rooms returns rooms without messages, so each card asks for its own thread once to
- * show the message count and the last line. Failures are logged and leave the card without a preview.
+ * Room.threads (SPEC v0.5 F2) carries every thread's count and last line, newest first, so the
+ * card needs no extra request: it shows the thread count and the newest thread's last line.
  */
-async function fillRoomPreview(room, card) {
-  try {
-    const { messages } = await fetchJson(`/api/rooms/${room.id}`);
-    const countText = `${messages.length} messages · ${describeRoomSpend(room)}`;
-    card.querySelector('[data-role="counts"]').textContent = countText;
-    const lastSpoken = [...messages].reverse().find((message) => message.role !== 'system');
-    if (lastSpoken) {
-      const author = lastSpoken.role === 'owner' ? state.settings.owner.name : lastSpoken.author;
-      const lineElement = card.querySelector('[data-role="last-line"]');
-      const authorElement = createElement('b', '', author);
-      if (lastSpoken.role === 'seat') {
-        const seat = room.seats.find((candidate) => candidate.id === lastSpoken.seat_id);
-        if (seat) setSeatColor(authorElement, seat.color);
-        authorElement.style.color = 'var(--seat-text)';
-      }
-      const flat = lastSpoken.text.replace(/\s+/g, ' ').replace(/[#*`>|]/g, '').trim();
-      lineElement.replaceChildren(authorElement, ' ', flat.length > 140 ? flat.slice(0, 140) + '…' : flat);
-    }
-  } catch (error) {
-    console.error('Could not preview room', room.id, error);
+function fillRoomPreview(room, card) {
+  const threads = Array.isArray(room.threads) ? room.threads : [];
+  const messageCount = threads.reduce((total, thread) => total + (thread.message_count || 0), 0);
+  const threadWord = threads.length === 1 ? 'thread' : 'threads';
+  const countText = `${threads.length} ${threadWord} · ${messageCount} messages · ${describeRoomSpend(room)}`;
+  card.querySelector('[data-role="counts"]').textContent = countText;
+  const newest = threads[0];
+  if (!newest || !newest.last_line) return;
+  const isOwner = !newest.last_author || newest.last_author === 'owner';
+  const authorElement = createElement('b', '', isOwner ? state.settings.owner.name : newest.last_author);
+  const seat = room.seats.find((candidate) => candidate.name === newest.last_author);
+  if (seat) {
+    setSeatColor(authorElement, seat.color);
+    authorElement.style.color = 'var(--seat-text)';
   }
+  const flat = newest.last_line.replace(/\s+/g, ' ').replace(/[#*`>|]/g, '').trim();
+  const line = flat.length > 140 ? flat.slice(0, 140) + '…' : flat;
+  const lineElement = card.querySelector('[data-role="last-line"]');
+  lineElement.replaceChildren(createElement('span', 'thread-name', newest.title), ' · ', authorElement, ' ', line);
 }
 
 function renderRoomList() {

@@ -159,12 +159,16 @@ def turn_prompt(
     seat: Seat,
     owner_name: str,
     woken_by: str | None = None,
+    thread_title: str | None = None,
 ) -> str:
     transcript = render_transcript(unseen_messages, owner_name) or "(no new messages)"
     hint = REASON_HINTS.get(woken_by or "")
     hint_line = f"{hint}\n" if hint else ""
+    # A room is a project; the thread title names the issue this discussion is about.
+    thread_line = f"Thread: {thread_title}\n" if thread_title and thread_title != room.title else ""
     return (
         f"Adda room: {room.title}\n"
+        f"{thread_line}"
         f"New messages since your last turn:\n\n{transcript}\n\n"
         f"{hint_line}"
         f"It is your turn to speak as @{seat.handle}. Reply with your message text only. "

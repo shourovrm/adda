@@ -70,7 +70,13 @@ def store(tmp_path):
 
 
 @pytest.fixture
-def client(environment, static_directory, factory, store, tmp_path):
+def opened_folders() -> list:
+    """Folders the app asked the (fake) file manager to open."""
+    return []
+
+
+@pytest.fixture
+def client(environment, static_directory, factory, store, tmp_path, opened_folders):
     app = create_app(
         load_settings(environment),
         store=store,
@@ -81,6 +87,7 @@ def client(environment, static_directory, factory, store, tmp_path):
         static_directory=static_directory,
         home=tmp_path,
         today=lambda: TODAY,
+        open_folder=opened_folders.append,
     )
     with TestClient(app) as test_client:
         yield test_client
@@ -773,3 +780,300 @@ def test_new_seat_rejects_eagerness_outside_zero_to_ten(client):
         json={"title": "x", "seats": [{"name": "A", "program": "claude", "eagerness": 11}]},
     )
     assert response.status_code == 400
+
+
+# Threads (SPEC v0.5 F2) ---------------------------------------------------------------------
+
+
+def first_thread_id(room: dict) -> str:
+    return room["threads"][0]["id"]
+
+
+def test_new_room_has_a_first_thread_titled_like_the_room(client):
+    room = make_room(client, "Billing")
+    assert [thread["title"] for thread in room["threads"]] == ["Billing"]
+    listed = client.get(f"/api/rooms/{room['id']}/threads").json()
+    assert [thread["id"] for thread in listed] == [first_thread_id(room)]
+    assert set(listed[0]) == {
+        "id",
+        "room_id",
+        "title",
+        "created_at",
+        "ended_at",
+        "message_count",
+        "last_author",
+        "last_line",
+    }
+
+
+def test_thread_crud_routes(client):
+    room = make_room(client, "Billing")
+    created = client.post(f"/api/rooms/{room['id']}/threads", json={"title": "Refunds"})
+    assert created.status_code == 200, created.text
+    thread = created.json()
+    assert (thread["title"], thread["room_id"], thread["message_count"]) == (
+        "Refunds",
+        room["id"],
+        0,
+    )
+    listed = client.get(f"/api/rooms/{room['id']}/threads").json()
+    assert [entry["title"] for entry in listed] == ["Refunds", "Billing"]  # newest first
+
+    fetched = client.get(f"/api/threads/{thread['id']}").json()
+    assert set(fetched) == {"thread", "room", "messages"}
+    assert fetched["thread"]["id"] == thread["id"]
+    assert fetched["room"]["id"] == room["id"]
+    assert fetched["messages"] == []
+
+    renamed = client.patch(f"/api/threads/{thread['id']}", json={"title": "Refund flow"})
+    assert renamed.json()["title"] == "Refund flow"
+    assert client.patch(f"/api/threads/{thread['id']}", json={"title": " "}).status_code == 400
+
+    ended = client.post(f"/api/threads/{thread['id']}/end")
+    assert ended.status_code == 200
+    assert ended.json()["thread"]["ended_at"] is not None
+    assert ended.json()["notes"] == {}
+    assert client.post(f"/api/threads/{thread['id']}/end").status_code == 409
+    # The room stays open, and its page now opens the remaining open thread.
+    room_body = client.get(f"/api/rooms/{room['id']}").json()
+    assert room_body["room"]["ended_at"] is None
+    assert room_body["thread"]["id"] == first_thread_id(room)
+
+
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
+        ("get", "/api/threads/nope"),
+        ("patch", "/api/threads/nope"),
+        ("post", "/api/threads/nope/end"),
+        ("get", "/api/rooms/nope/threads"),
+        ("post", "/api/rooms/nope/threads"),
+    ],
+)
+def test_unknown_thread_or_room_is_404(client, method, path):
+    response = client.request(method, path, json={"title": "x"})
+    assert response.status_code == 404
+    assert "not found" in response.json()["detail"]
+
+
+def test_get_room_returns_messages_of_the_newest_open_thread(client):
+    room = make_room(client, "Billing")
+    with client.websocket_connect(f"/ws/threads/{first_thread_id(room)}") as websocket:
+        websocket.receive_json()
+        websocket.send_json({"type": "say", "text": "in the first thread"})
+        receive_until(websocket, "quiet")
+    second = client.post(f"/api/rooms/{room['id']}/threads", json={"title": "Second"}).json()
+    body = client.get(f"/api/rooms/{room['id']}").json()
+    assert body["thread"]["id"] == second["id"]
+    assert body["messages"] == []
+    first = client.get(f"/api/threads/{first_thread_id(room)}").json()
+    assert [message["text"] for message in first["messages"]] == ["in the first thread"]
+    assert first["thread"]["message_count"] == 1
+    assert first["thread"]["last_line"] == "in the first thread"
+
+
+def test_archived_room_refuses_new_threads(client):
+    room = make_room(client, "Billing")
+    assert client.post(f"/api/rooms/{room['id']}/end").status_code == 200
+    archived = client.get(f"/api/rooms/{room['id']}").json()["room"]
+    assert archived["ended_at"] is not None
+    assert all(thread["ended_at"] is not None for thread in archived["threads"])
+    response = client.post(f"/api/rooms/{room['id']}/threads", json={"title": "late"})
+    assert response.status_code == 409
+
+
+@pytest.mark.parametrize("path", ["/room/abc", "/room/abc/thread/def"])
+def test_room_and_thread_pages_serve_the_room_page(client, path):
+    response = client.get(path)
+    assert response.status_code == 200
+    assert "room page" in response.text
+
+
+def test_thread_socket_hello_carries_room_thread_messages_owner_and_router(client):
+    room = make_room(client, "Billing")
+    thread_id = first_thread_id(room)
+    with client.websocket_connect(f"/ws/threads/{thread_id}") as websocket:
+        hello = websocket.receive_json()
+    assert hello["type"] == "hello"
+    assert set(hello) == {"type", "room", "thread", "messages", "owner", "router"}
+    assert hello["room"]["id"] == room["id"]
+    assert hello["thread"]["id"] == thread_id
+    assert hello["thread"]["title"] == "Billing"
+    assert hello["messages"] == []
+    assert set(hello["owner"]) == {"name"}
+    assert hello["router"] == "heuristic"
+
+
+def test_unknown_thread_socket_sends_error_and_closes(client):
+    with client.websocket_connect("/ws/threads/nope") as websocket:
+        frame = websocket.receive_json()
+        assert frame["type"] == "error"
+        assert "not found" in frame["text"]
+
+
+def test_room_socket_alias_opens_the_newest_open_thread(client):
+    room = make_room(client, "Billing")
+    second = client.post(f"/api/rooms/{room['id']}/threads", json={"title": "Second"}).json()
+    with client.websocket_connect(f"/ws/{room['id']}") as websocket:
+        assert websocket.receive_json()["thread"]["id"] == second["id"]
+
+
+def test_messages_stay_in_their_thread_and_room_frames_reach_every_thread(client):
+    room = make_room(client, "Billing")
+    first_id = first_thread_id(room)
+    second = client.post(f"/api/rooms/{room['id']}/threads", json={"title": "Second"}).json()
+    with client.websocket_connect(f"/ws/threads/{first_id}") as first_tab:
+        first_tab.receive_json()
+        with client.websocket_connect(f"/ws/threads/{second['id']}") as second_tab:
+            second_tab.receive_json()
+            second_tab.send_json({"type": "say", "text": "only in the second"})
+            receive_until(second_tab, "quiet")
+
+            # A room patch from the second thread's tab reaches the first thread's tab.
+            second_tab.send_json({"type": "room", "patch": {"budget_usd": 3.0}})
+            room_frame = receive_until(first_tab, "room")
+            assert all(frame["type"] != "message" for frame in room_frame)
+            assert room_frame[-1]["room"]["budget_usd"] == 3.0
+
+            # A rename reaches every tab of the room as a thread frame.
+            client.patch(f"/api/threads/{second['id']}", json={"title": "Renamed"})
+            thread_frame = receive_until(first_tab, "thread")[-1]
+            assert thread_frame["thread"]["id"] == second["id"]
+            assert thread_frame["thread"]["title"] == "Renamed"
+            assert receive_until(second_tab, "thread")[-1]["thread"]["title"] == "Renamed"
+
+            # Ending over the socket ends only that thread.
+            second_tab.send_json({"type": "end"})
+            receive_until(second_tab, "ended")
+            ended_frame = receive_until(second_tab, "thread")[-1]
+            assert ended_frame["thread"]["ended_at"] is not None
+    assert client.get(f"/api/threads/{first_id}").json()["messages"] == []
+    assert client.get(f"/api/threads/{first_id}").json()["thread"]["ended_at"] is None
+
+
+def test_new_thread_is_announced_to_open_tabs_with_a_room_frame(client):
+    room = make_room(client, "Billing")
+    with client.websocket_connect(f"/ws/threads/{first_thread_id(room)}") as websocket:
+        websocket.receive_json()
+        client.post(f"/api/rooms/{room['id']}/threads", json={"title": "Second"})
+        room_frame = receive_until(websocket, "room")[-1]
+    assert [thread["title"] for thread in room_frame["room"]["threads"]] == ["Second", "Billing"]
+
+
+def test_search_hits_carry_thread_id_and_title(client):
+    room = make_room(client, "storage choices")
+    thread = client.post(f"/api/rooms/{room['id']}/threads", json={"title": "queues"}).json()
+    with client.websocket_connect(f"/ws/threads/{thread['id']}") as websocket:
+        websocket.receive_json()
+        websocket.send_json({"type": "say", "text": "prefer a wombat queue"})
+        receive_until(websocket, "quiet")
+    hit = client.get("/api/search", params={"q": "wombat"}).json()[0]
+    assert (hit["room_title"], hit["thread_id"], hit["thread_title"]) == (
+        "storage choices",
+        thread["id"],
+        "queues",
+    )
+
+
+# Memory review (SPEC v0.5 F3) ---------------------------------------------------------------
+
+
+def test_ending_a_thread_writes_notes_with_their_source(client, factory):
+    room = make_room(client, "Billing")
+    thread_id = first_thread_id(room)
+    factory_reply_then_note(client, factory, thread_id, "- Refunds go through the ledger")
+
+    notes = client.get("/api/personas/alpha/memory").json()
+    newest = notes[0]
+    assert newest["title"] == "Refunds go through the ledger"
+    assert (newest["room_id"], newest["room_title"]) == (room["id"], "Billing")
+    assert (newest["thread_id"], newest["thread_title"]) == (thread_id, "Billing")
+    assert newest["written"] is not None
+    assert notes[-1]["file"] == "001-first-fact.md"
+    assert notes[-1]["room_id"] is None  # a legacy note
+
+    grouped = client.get(f"/api/rooms/{room['id']}/memory").json()
+    assert set(grouped) == {"alpha", "beta"}  # every persona a seat uses
+    assert [note["file"] for note in grouped["alpha"]] == [newest["file"]]
+    assert grouped["beta"] == []
+
+
+def factory_reply_then_note(client, factory, thread_id: str, note_text: str) -> None:
+    """Ravi (persona alpha) speaks once in the thread, then answers the end-of-thread question
+    with `note_text`."""
+    with client.websocket_connect(f"/ws/threads/{thread_id}") as websocket:
+        websocket.receive_json()
+        factory.by_name["Ravi"].script("my reply", note_text)
+        websocket.send_json({"type": "say", "text": "@ravi thoughts?"})
+        receive_until(websocket, "quiet")
+    assert client.post(f"/api/threads/{thread_id}/end").status_code == 200
+
+
+def test_memory_note_update_and_delete(client, tmp_path):
+    memory_directory = tmp_path / "personas" / "alpha" / "memory"
+    updated = client.put(
+        "/api/personas/alpha/memory/001-first-fact.md",
+        json={"title": "Short answers", "body": "The owner wants short answers."},
+    )
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["title"] == "Short answers"
+    assert "- [Short answers](001-first-fact.md)" in (memory_directory / "index.md").read_text()
+
+    deleted = client.delete("/api/personas/alpha/memory/001-first-fact.md")
+    assert deleted.json() == {"deleted": "001-first-fact.md"}
+    assert client.get("/api/personas/alpha/memory").json() == []
+    assert "001-first-fact.md" not in (memory_directory / "index.md").read_text()
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "status"),
+    [
+        ("get", "/api/personas/nobody/memory", 404),
+        ("put", "/api/personas/nobody/memory/001-first-fact.md", 404),
+        ("put", "/api/personas/alpha/memory/999-missing.md", 404),
+        ("delete", "/api/personas/alpha/memory/999-missing.md", 404),
+        ("put", "/api/personas/alpha/memory/index.md", 400),
+        ("delete", "/api/personas/alpha/memory/001-First.md", 400),
+        ("delete", "/api/personas/alpha/memory/001-a_b.md", 400),
+        # An encoded slash never reaches the handler: no route has that many segments.
+        ("delete", "/api/personas/alpha/memory/..%2Fpersona.md", 404),
+        ("get", "/api/personas/bad..slug/memory", 400),
+        ("get", "/api/rooms/nope/memory", 404),
+    ],
+)
+def test_memory_route_errors(client, method, path, status):
+    response = client.request(method, path, json={"title": "x"})
+    assert response.status_code == status, response.text
+    assert response.json()["detail"]
+
+
+def test_memory_note_update_rejects_a_blank_title(client):
+    response = client.put("/api/personas/alpha/memory/001-first-fact.md", json={"title": "  "})
+    assert response.status_code == 400
+
+
+# Open folder (SPEC v0.5 F4) -----------------------------------------------------------------
+
+
+def test_open_folder_opens_and_creates_the_room_folder(client, tmp_path, opened_folders):
+    folder = tmp_path / "projects" / "billing"
+    room = make_room(client, "Billing", folder=str(folder))
+    folder.rmdir()  # deleted by hand since the room was made
+    response = client.post(f"/api/rooms/{room['id']}/open-folder")
+    assert response.status_code == 200, response.text
+    assert response.json() == {"opened": str(folder)}
+    assert folder.is_dir()
+    assert opened_folders == [folder]
+
+
+def test_open_folder_refuses_a_folder_outside_home(client, store, opened_folders):
+    room = make_room(client, "Billing")
+    store.update_room(room["id"], folder="/etc")
+    response = client.post(f"/api/rooms/{room['id']}/open-folder")
+    assert response.status_code == 400
+    assert "inside" in response.json()["detail"]
+    assert opened_folders == []
+
+
+def test_open_folder_of_an_unknown_room_is_404(client):
+    assert client.post("/api/rooms/nope/open-folder").status_code == 404

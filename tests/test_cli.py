@@ -31,7 +31,13 @@ def populated_store(cli_environment):
     store.add_seat(room.id, name="Ravi", program="claude")
     store.add_seat(room.id, name="Tuli", program="pi")
     store.add_message(
-        Message(room_id=room.id, author="owner", role="owner", text="prefer sqlite always")
+        Message(
+            room_id=room.id,
+            thread_id=room.threads[0].id,
+            author="owner",
+            role="owner",
+            text="prefer sqlite always",
+        )
     )
     store.close()
     return room
@@ -81,7 +87,13 @@ def test_search_limit_option(cli_environment, capsys):
     room = store.create_room("many")
     for number in range(3):
         store.add_message(
-            Message(room_id=room.id, author="owner", role="owner", text=f"needle {number}")
+            Message(
+                room_id=room.id,
+                thread_id=room.threads[0].id,
+                author="owner",
+                role="owner",
+                text=f"needle {number}",
+            )
         )
     store.close()
     main(["search", "needle", "--limit", "2"])

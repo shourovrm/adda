@@ -8,7 +8,7 @@ from dataclasses import dataclass, field
 import pytest
 
 from adda.models import Room, SeatReply
-from adda.personas import PersonaError
+from adda.personas import PersonaError, list_memory_notes, load_persona
 from adda.prompts import END_OF_DISCUSSION_PROMPT
 from adda.routers.base import RouterError
 from adda.routers.heuristic import HeuristicRouter
@@ -124,7 +124,7 @@ def build_harness(
         harness.frames.append(frame)
 
     harness.scheduler = Scheduler(
-        room.id,
+        room.threads[0].id,
         store,
         make_settings(tmp_path, **setting_overrides),
         router,
@@ -495,7 +495,7 @@ async def test_rename_mid_room_rewrites_authors_and_keeps_the_session(harness):
     room = await harness.scheduler.apply_seat_patch(ravi_id, {"name": "Rabindra"})
     assert [seat.name for seat in room.seats][0] == "Rabindra"
     assert [m.author for m in harness.messages() if m.role == "seat"] == ["Rabindra"]
-    assert harness.store.get_session(harness.room_id, ravi_id) == "session-1"
+    assert harness.store.get_session(harness.scheduler.thread_id, ravi_id) == "session-1"
     assert harness.frames_of("room")[-1]["room"]["seats"][0]["handle"] == "rabindra"
 
     await harness.scheduler.say("@rabindra again")
@@ -521,12 +521,14 @@ async def test_program_model_and_thinking_changes_rebuild_the_adapter(harness):
     assert harness.adapter("Ravi").thinking == "high"
     await harness.scheduler.apply_seat_patch(ravi_id, {"instruction": "Be brief.", "color": "#fff"})
     assert harness.factory.build_count("Ravi") == 3
-    assert harness.store.get_session(harness.room_id, ravi_id) == "session-1"
+    assert harness.store.get_session(harness.scheduler.thread_id, ravi_id) == "session-1"
 
     await harness.scheduler.apply_seat_patch(ravi_id, {"program": "pi"})
     assert harness.factory.build_count("Ravi") == 4
     assert harness.adapter("Ravi").program == "pi"
-    assert harness.store.get_session(harness.room_id, ravi_id) is None  # new program, new session
+    assert (
+        harness.store.get_session(harness.scheduler.thread_id, ravi_id) is None
+    )  # new program, new session
 
 
 async def test_empty_strings_in_a_seat_patch_clear_optional_fields(harness):
@@ -751,9 +753,16 @@ async def test_end_writes_notes_only_for_seats_with_personas(tmp_path):
     assert END_OF_DISCUSSION_PROMPT in room.adapter("Ravi").calls[-1]["prompt"]
     note_files = sorted(p.name for p in (tmp_path / "personas" / "alpha" / "memory").glob("00*"))
     assert note_files == ["001-first-fact.md", "002-keep-designs-small.md"]
-    assert room.store.get_room(room.room_id).ended_at is not None
+    # Ending a thread leaves the room open for other threads.
+    assert room.store.get_thread(room.scheduler.thread_id).ended_at is not None
+    assert room.store.get_room(room.room_id).ended_at is None
     assert room.frames_of("ended")[0]["notes"] == {ravi_id: ["Keep designs small"]}
-    assert room.frames_of("room")[-1]["room"]["ended_at"] is not None
+    assert room.frames_of("thread")[-1]["thread"]["ended_at"] is not None
+    assert room.frames_of("room")[-1]["room"]["threads"][0]["ended_at"] is not None
+    # The note records where it came from.
+    note = list_memory_notes(load_persona(tmp_path / "personas", "alpha"))[0]
+    assert (note.thread_id, note.thread_title) == (room.scheduler.thread_id, "design talk")
+    assert (note.room_id, note.room_title) == (room.room_id, "design talk")
 
 
 async def test_ended_room_takes_no_more_input(harness):
@@ -1094,7 +1103,7 @@ async def test_end_cancels_speakers_before_collecting_notes(tmp_path):
     await wait_started(room, "Ravi")
     await room.scheduler.end()
     assert room.adapter("Ravi").was_cancelled
-    assert room.store.get_room(room.room_id).ended_at is not None
+    assert room.store.get_thread(room.scheduler.thread_id).ended_at is not None
     assert room.scheduler.speaking == {}
 
 
@@ -1427,3 +1436,123 @@ async def test_frame_shapes_follow_the_spec(tmp_path):
         assert set(typing) == {"type", "seat", "state"}
     await room.scheduler.publish_room()
     assert room.frames_of("room")[-1]["room"]["max_concurrent"] == 2
+
+
+# Threads (SPEC v0.5 F2) ---------------------------------------------------------------------
+
+
+def second_thread(room: Harness, title: str = "second topic") -> tuple[Scheduler, list[dict]]:
+    """Another thread of the same room with its own scheduler; its thread-only frames are
+    recorded apart, while room-wide frames land in the room's own list as well."""
+    thread = room.store.create_thread(room.room_id, title)
+    thread_frames: list[dict] = []
+
+    async def record_thread(frame: dict) -> None:
+        thread_frames.append(frame)
+
+    async def record_room(frame: dict) -> None:
+        room.frames.append(frame)
+        thread_frames.append(frame)
+
+    scheduler = Scheduler(
+        thread.id,
+        room.store,
+        room.scheduler.settings,
+        room.router,
+        HeuristicRouter(),
+        record_thread,
+        adapter_builder=room.factory,
+        clock=room.clock,
+        sleep=room.sleeper,
+        uniform=lambda low, high: 1.0,
+        broadcast_room=record_room,
+    )
+    return scheduler, thread_frames
+
+
+async def test_threads_of_a_room_keep_their_own_messages_and_sessions(tmp_path):
+    room = build_harness(tmp_path, liveliness=0)
+    other, other_frames = second_thread(room)
+    room.adapter("Ravi").script(SeatReply(text="in the first", session_id="session-a"))
+    await room.scheduler.say("@ravi first thread")
+    await room.settle()
+    room.adapter("Ravi").script(SeatReply(text="in the second", session_id="session-b"))
+    await other.say("@ravi second thread")
+    await other.wait_until_idle()
+
+    first_texts = [m.text for m in room.store.list_thread_messages(room.scheduler.thread_id)]
+    second_texts = [m.text for m in room.store.list_thread_messages(other.thread_id)]
+    assert first_texts == ["@ravi first thread", "in the first"]
+    assert second_texts == ["@ravi second thread", "in the second"]
+    ravi_id = room.seat_id("Ravi")
+    assert room.store.get_session(room.scheduler.thread_id, ravi_id) == "session-a"
+    assert room.store.get_session(other.thread_id, ravi_id) == "session-b"
+    # The second thread's first prompt holds only its own messages, under a fresh session.
+    second_call = room.adapter("Ravi").calls[-1]
+    assert second_call["session_id"] is None
+    assert "first thread" not in second_call["prompt"]
+    assert "Thread: second topic" in second_call["prompt"]
+    # Thread-only frames stay in their thread.
+    assert all(
+        frame["message"]["thread_id"] == other.thread_id
+        for frame in other_frames
+        if frame["type"] == "message"
+    )
+
+
+async def test_threads_share_the_room_budget_and_room_frames(tmp_path):
+    room = build_harness(tmp_path, liveliness=0, budget_usd=0.05)
+    other, _ = second_thread(room)
+    room.adapter("Ravi").script(SeatReply(text="costly", cost_usd=0.06))
+    await room.scheduler.say("@ravi spend it")
+    await room.settle()
+
+    assert room.store.get_room(room.room_id).spent_usd == pytest.approx(0.06)
+    assert room.frames_of("room")[-1]["room"]["spent_usd"] == pytest.approx(0.06)
+    # The other thread is over the same budget: wakes are refused there.
+    with pytest.raises(BudgetReachedError):
+        await other.wake(room.seat_id("Tuli"))
+
+
+async def test_ending_one_thread_leaves_the_others_open(tmp_path):
+    room = build_harness(tmp_path, liveliness=0)
+    other, other_frames = second_thread(room)
+    await other.end()
+    with pytest.raises(RoomEndedError):
+        await other.say("still there?")
+    await room.scheduler.say("@pi this thread still works")
+    await room.settle()
+    assert room.spoken()[-1][0] == "Pi"
+    thread_frames = [frame for frame in other_frames if frame["type"] == "thread"]
+    assert thread_frames[-1]["thread"]["id"] == other.thread_id
+    assert thread_frames[-1]["thread"]["ended_at"] is not None
+
+
+async def test_rename_broadcasts_a_thread_frame(harness):
+    summary = await harness.scheduler.rename("  New name ")
+    assert summary.title == "New name"
+    assert harness.frames_of("thread")[-1]["thread"]["title"] == "New name"
+    with pytest.raises(ValueError):
+        await harness.scheduler.rename(" ")
+
+
+async def test_archived_room_refuses_input_in_every_thread(harness):
+    harness.store.end_room(harness.room_id)
+    with pytest.raises(RoomEndedError, match="archived"):
+        await harness.scheduler.say("hello?")
+
+
+def test_note_title_prefers_first_sentence_and_word_boundary():
+    from adda.scheduler import note_title_from_bullet
+
+    assert note_title_from_bullet("Keep sessions per thread. Notes carry the memory.") == (
+        "Keep sessions per thread"
+    )
+    long_bullet = (
+        'Any question that asks people to admit a failure needs an explicit "a yes fixes the '
+        'rule, not the policy," or the answers will be biased toward no'
+    )
+    title = note_title_from_bullet(long_bullet)
+    assert len(title) <= 80
+    assert not title.endswith('"a')
+    assert title.endswith("explicit")

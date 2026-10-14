@@ -86,9 +86,9 @@ def test_handles_ignore_whitespace_and_case():
 
 def test_transcript_shows_the_owner_by_name():
     messages = [
-        Message(room_id="r", author="owner", role="owner", text="hello"),
-        Message(room_id="r", author="Ravi", role="seat", text="hi"),
-        Message(room_id="r", author="system", role="system", text="note"),
+        Message(room_id="r", thread_id="t", author="owner", role="owner", text="hello"),
+        Message(room_id="r", thread_id="t", author="Ravi", role="seat", text="hi"),
+        Message(room_id="r", thread_id="t", author="system", role="system", text="note"),
     ]
     assert render_transcript(messages, "Riad") == "Riad: hello\nRavi: hi\nsystem: note"
 
@@ -139,7 +139,9 @@ def test_instruction_without_persona_has_no_memory_section(tmp_path):
 def test_turn_prompt_names_room_handle_and_owner():
     room = Room(title="Queue design")
     seat = make_seat("Scout 2")
-    messages = [Message(room_id=room.id, author="owner", role="owner", text="Which queue?")]
+    messages = [
+        Message(room_id=room.id, thread_id="t", author="owner", role="owner", text="Which queue?")
+    ]
     prompt = turn_prompt(room, messages, seat, "Riad")
     assert "Adda room: Queue design" in prompt
     assert "Riad: Which queue?" in prompt
@@ -196,3 +198,10 @@ def test_turn_prompt_explains_afterthoughts_and_continuations():
     assert "carry on" in turn_prompt(room, [], seat, "Riad", "more")
     plain = turn_prompt(room, [], seat, "Riad", "mention")
     assert "quiet for a while" not in plain and "carry on" not in plain
+
+
+def test_turn_prompt_names_the_thread_when_it_differs_from_the_room():
+    room = Room(title="Billing")
+    seat = make_seat("Ravi")
+    assert "Thread: Refund flow" in turn_prompt(room, [], seat, "Riad", thread_title="Refund flow")
+    assert "Thread:" not in turn_prompt(room, [], seat, "Riad", thread_title="Billing")

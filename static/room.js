@@ -1,12 +1,16 @@
 /*
- * Room page (SPEC section 8). Regions, top to bottom:
+ * Room page (SPEC section 8 and the v0.5 delta). A room is a project: it owns the seats, the
+ * folder and the budget; the discussion happens in one of its threads, and the page shows one
+ * thread at a time over `WS /ws/threads/{thread_id}`. Regions, top to bottom:
  *   1. Constants and state
  *   2. Small lookups (seats, colours, labels)
  *   3. Frame handlers, one per server frame type (SPEC section 6)
  *   4. Render functions, one per region of the page
  *   5. Seat cards and the seat editor
  *   6. Composer, @ menu, search, drawer, keyboard
- *   7. Startup
+ *   7. Threads: list, switching, new, rename
+ *   8. Memory drawer and Open folder
+ *   9. Startup
  *
  * Seats are identified by id everywhere; names are only shown. Message text reaches the DOM
  * through AddaMarkdown (which never uses innerHTML) or textContent.
@@ -37,10 +41,26 @@ const WOKEN_BY_LABELS = {
 };
 const DEFAULT_MAX_CONCURRENT = 2;
 const QUIET_COUNTDOWN_TICK_MS = 1000;
+const THREAD_LAST_LINE_LENGTH = 90;
+const THIS_ROOM_TAB = 'this-room';
+
+/** `/room/{room_id}` or `/room/{room_id}/thread/{thread_id}`; anything else yields empty ids. */
+function parseRoomPath(pathname) {
+  const match = /^\/room\/([^/]+)(?:\/thread\/([^/]+))?\/?$/.exec(pathname);
+  if (!match) return { roomId: '', threadId: null };
+  return { roomId: decodeURIComponent(match[1]), threadId: match[2] ? decodeURIComponent(match[2]) : null };
+}
 
 const state = {
-  roomId: decodeURIComponent(location.pathname.split('/').filter(Boolean).pop() || ''),
+  roomId: parseRoomPath(location.pathname).roomId,
+  threadId: null,
   room: null,
+  thread: null, // ThreadSummary of the thread on screen
+  threads: [], // ThreadSummary list of the room, newest first
+  renamingThreadId: null,
+  memoryTab: null, // seat id or THIS_ROOM_TAB
+  editingNoteFile: null, // "slug/file" of the note being edited
+  memoryView: { kind: 'none', seat: null }, // the notes last loaded into the drawer
   messages: [],
   ownerName: 'Owner',
   router: null,
@@ -71,7 +91,21 @@ const state = {
 const elements = {
   ownerName: document.getElementById('owner-name'),
   title: document.getElementById('room-title'),
+  threadTitle: document.getElementById('thread-title'),
   meta: document.getElementById('room-meta'),
+  folder: document.getElementById('room-folder'),
+  openFolderButton: document.getElementById('open-folder-button'),
+  roomState: document.getElementById('room-state'),
+  threadsToggle: document.getElementById('threads-toggle'),
+  threadNewForm: document.getElementById('thread-new-form'),
+  threadNewTitle: document.getElementById('thread-new-title'),
+  threadNewButton: document.getElementById('thread-new-button'),
+  threadList: document.getElementById('thread-list'),
+  memoryButton: document.getElementById('memory-button'),
+  memoryDialog: document.getElementById('memory-dialog'),
+  memoryCloseButton: document.getElementById('memory-close-button'),
+  memoryTabs: document.getElementById('memory-tabs'),
+  memoryPanel: document.getElementById('memory-panel'),
   connection: document.getElementById('connection'),
   copyThreadButton: document.getElementById('copy-thread-button'),
   panelToggle: document.getElementById('panel-toggle'),
@@ -128,8 +162,14 @@ function seatById(seatId) {
   return seatsOfRoom().find((seat) => seat.id === seatId) || null;
 }
 
-function isRoomEnded() {
+/** An archived room takes no edits to its seats or settings. */
+function isRoomArchived() {
   return Boolean(state.room && state.room.ended_at);
+}
+
+/** Nothing more can be said in an ended thread or in any thread of an archived room. */
+function isThreadClosed() {
+  return isRoomArchived() || Boolean(state.thread && state.thread.ended_at);
 }
 
 function isConnected() {
@@ -204,7 +244,8 @@ function sendFrame(frame) {
 // ---------------------------------------------------------------------------
 
 function handleFrame(frame) {
-  if (frame.type !== 'quiet' && frame.type !== 'typing' && frame.type !== 'bids' && frame.type !== 'room' && frame.type !== 'passed') {
+  const keepsQuietNotice = ['quiet', 'typing', 'bids', 'room', 'passed', 'thread'];
+  if (!keepsQuietNotice.includes(frame.type)) {
     state.quietReason = null;
   }
   switch (frame.type) {
@@ -231,6 +272,9 @@ function handleFrame(frame) {
       break;
     case 'ended':
       handleEndedFrame(frame);
+      break;
+    case 'thread':
+      handleThreadFrame(frame.thread);
       break;
     case 'error':
       state.endRequested = false;
@@ -276,6 +320,13 @@ function handleStatus(status) {
 
 function handleHello(frame) {
   state.room = frame.room;
+  if (Array.isArray(frame.room.threads)) {
+    state.threads = frame.room.threads;
+  }
+  if (frame.thread) {
+    state.thread = frame.thread;
+    upsertThreadSummary(frame.thread);
+  }
   state.messages = frame.messages;
   state.ownerName = frame.owner.name;
   state.router = frame.router;
@@ -310,6 +361,7 @@ function handleMessageFrame(message) {
   state.messages.push(message);
   appendMessageElement(message);
   renderRoomMeta();
+  renderThreadList();
   renderPanel();
   renderSeats();
   renderStatusLine();
@@ -362,7 +414,13 @@ function handleBidsFrame(frame) {
 function handleRoomFrame(room) {
   const namesChanged = renameMessageAuthors(room);
   state.room = room;
+  if (Array.isArray(room.threads)) {
+    state.threads = room.threads;
+    const current = state.threads.find((thread) => thread.id === state.threadId);
+    if (current) state.thread = current;
+  }
   renderRoomMeta();
+  renderThreadList();
   renderPanel();
   renderSeats();
   renderComposerState();
@@ -391,8 +449,10 @@ function renameMessageAuthors(room) {
 
 function handleEndedFrame(frame) {
   state.endRequested = false;
-  if (state.room && !state.room.ended_at) {
-    state.room.ended_at = new Date().toISOString();
+  // The `ended` frame belongs to the thread on screen; the room itself stays open.
+  if (state.thread && !state.thread.ended_at) {
+    state.thread = { ...state.thread, ended_at: new Date().toISOString() };
+    upsertThreadSummary(state.thread);
   }
   renderEverything();
   renderEndedNotes(frame.notes || {});
@@ -405,6 +465,7 @@ function handleEndedFrame(frame) {
 
 function renderEverything() {
   renderRoomMeta();
+  renderThreadList();
   renderConnection();
   renderMessages();
   renderPanel();
@@ -420,21 +481,35 @@ function describeRoomState(room) {
   return 'Live';
 }
 
+function describeThreadState() {
+  if (isRoomArchived()) return 'Archived';
+  if (state.thread && state.thread.ended_at) return 'Thread ended';
+  return describeRoomState(state.room);
+}
+
+/** Heading: room title, then the thread title. Meta: mode, folder with its button, counts, spend, state. */
 function renderRoomMeta() {
   const room = state.room;
   if (!room) return;
+  const threadTitle = state.thread ? state.thread.title : '';
   elements.title.textContent = room.title;
-  document.title = `${room.title} · Adda`;
+  // The first thread is named after the room; repeating that title in the heading says nothing.
+  const showsThreadTitle = threadTitle && threadTitle !== room.title;
+  elements.threadTitle.textContent = showsThreadTitle ? threadTitle : '';
+  elements.threadTitle.hidden = !showsThreadTitle;
+  document.title = showsThreadTitle ? `${threadTitle} · ${room.title} · Adda` : `${room.title} · Adda`;
   const persisted = state.messages.filter((message) => !message.isLocal);
   const budgetText = room.budget_usd > 0 ? ` of ${formatMoney(room.budget_usd)}` : ' (no budget limit)';
-  const parts = [
-    MODE_LABELS[room.mode] || room.mode,
-    room.folder || 'no folder',
-    `${persisted.length} ${persisted.length === 1 ? 'message' : 'messages'}`,
+  elements.meta.textContent = `${MODE_LABELS[room.mode] || room.mode} · `;
+  elements.folder.textContent = room.folder || 'no folder';
+  elements.folder.title = room.folder || '';
+  elements.openFolderButton.hidden = !room.folder;
+  const after = [
+    `${persisted.length} ${persisted.length === 1 ? 'message' : 'messages'} in this thread`,
     `${formatMoney(room.spent_usd)}${budgetText}`,
-    describeRoomState(room),
+    describeThreadState(),
   ];
-  elements.meta.textContent = parts.join(' · ');
+  elements.roomState.textContent = ` · ${after.join(' · ')}`;
 }
 
 function renderConnection() {
@@ -646,19 +721,19 @@ function renderPanel() {
   if (document.activeElement !== elements.maxConcurrent) {
     elements.maxConcurrent.value = String(room.max_concurrent ?? DEFAULT_MAX_CONCURRENT);
   }
-  elements.maxConcurrent.disabled = isRoomEnded();
+  elements.maxConcurrent.disabled = isRoomArchived();
   elements.livelinessValue.textContent = room.liveliness;
   elements.livelinessSentence.textContent = describeLiveliness(room.liveliness, countAutomaticTurns());
   if (document.activeElement !== elements.budget) elements.budget.value = room.budget_usd;
   elements.spendText.textContent = `${formatMoney(room.spent_usd)} used`;
   for (const radio of elements.modeOptions.querySelectorAll('input[name="mode"]')) {
     radio.checked = radio.value === room.mode;
-    radio.disabled = isRoomEnded();
+    radio.disabled = isRoomArchived();
   }
   elements.pauseButton.textContent = room.liveliness === 0 ? 'Resume' : 'Pause';
-  elements.pauseButton.disabled = isRoomEnded();
-  elements.wakeAllButton.disabled = isRoomEnded() || !isConnected();
-  elements.addSeatButton.disabled = isRoomEnded();
+  elements.pauseButton.disabled = isRoomArchived();
+  elements.wakeAllButton.disabled = isThreadClosed() || !isConnected();
+  elements.addSeatButton.disabled = isRoomArchived();
 }
 
 function renderRouterName() {
@@ -749,7 +824,7 @@ function renderSeats(forceEditorSync = false) {
     buildSeatCards();
     forceEditorSync = true;
   }
-  const ended = isRoomEnded();
+  const ended = isThreadClosed();
   for (const seat of state.room.seats) {
     const references = seatCardReferences[seat.id];
     const seatState = computeSeatState(seat);
@@ -1096,14 +1171,16 @@ function ensureCooldownTicker() {
 // ---------------------------------------------------------------------------
 
 function renderComposerState() {
-  const ended = isRoomEnded();
+  const ended = isThreadClosed();
   const connected = isConnected();
   elements.composerInput.disabled = ended;
   elements.sendButton.disabled = ended || !connected;
   elements.stopButton.disabled = ended || !connected || state.typingSeatIds.size === 0;
   elements.endButton.disabled = ended || !connected || state.endRequested || state.room === null;
-  if (ended) {
-    elements.composerHint.textContent = 'This discussion has ended.';
+  if (isRoomArchived()) {
+    elements.composerHint.textContent = 'This room is archived. Its threads can be read, not continued.';
+  } else if (ended) {
+    elements.composerHint.textContent = 'This thread has ended. Start a new thread to go on.';
   } else if (!connected) {
     elements.composerHint.textContent = "Not connected. Messages can't be sent.";
   } else {
@@ -1120,7 +1197,7 @@ function autoGrowComposer() {
 
 function submitComposer() {
   const text = elements.composerInput.value.trim();
-  if (text === '' || isRoomEnded()) return;
+  if (text === '' || isThreadClosed()) return;
   // No optimistic render: the server echoes a message frame to every tab.
   if (!sendFrame({ type: 'say', text })) return;
   elements.composerInput.value = '';
@@ -1133,7 +1210,7 @@ function requestStop() {
 }
 
 function requestEnd() {
-  if (!confirm('End this discussion? Each seat with a persona will write memory notes.')) return;
+  if (!confirm('End this thread? Each seat with a persona that spoke will write memory notes.')) return;
   if (sendFrame({ type: 'end' })) {
     state.endRequested = true;
     renderComposerState();
@@ -1323,22 +1400,30 @@ function renderSearchResults(query, results) {
   }
   for (const result of results) {
     const message = result.message;
+    const threadId = result.thread_id || message.thread_id || null;
     const link = createElement('a', 'search-result');
-    link.href = `/room/${message.room_id}#m-${message.id}`;
+    link.href = threadId ? `${threadPath(message.room_id, threadId)}#m-${message.id}` : `/room/${message.room_id}#m-${message.id}`;
     const snippet = createElement('div', 'small');
     appendHighlighted(snippet, result.snippet, query);
     const author = message.role === 'owner' ? state.ownerName : message.author;
+    const where = result.thread_title ? `${result.room_title} · ${result.thread_title}` : result.room_title;
     link.append(
-      createElement('b', '', result.room_title),
+      createElement('b', '', where),
       snippet,
       createElement('div', 'small mute', `${author} · ${formatDay(message.created_at)}`),
     );
-    if (message.room_id === state.roomId) {
+    if (message.room_id === state.roomId && threadId) {
+      // Same room: stay on the page; another thread is a socket switch, not a page load.
       link.addEventListener('click', (event) => {
         event.preventDefault();
         hideSearchResults();
         elements.searchInput.value = '';
-        scrollToMessage(message.id);
+        if (threadId === state.threadId) {
+          scrollToMessage(message.id);
+        } else {
+          state.pendingHighlightId = String(message.id);
+          openThread(threadId, { pushHistory: true });
+        }
       });
     }
     elements.searchResults.append(link);
@@ -1362,14 +1447,36 @@ function isDrawerOpen() {
   return document.body.classList.contains('show-panel');
 }
 
+function isThreadDrawerOpen() {
+  return document.body.classList.contains('show-threads');
+}
+
+/** The scrim stays while either narrow-screen drawer is open. */
+function syncDrawerScrim() {
+  elements.drawerScrim.hidden = !isDrawerOpen() && !isThreadDrawerOpen();
+}
+
 function setDrawer(open) {
   document.body.classList.toggle('show-panel', open);
   elements.panelToggle.setAttribute('aria-expanded', String(open));
-  elements.drawerScrim.hidden = !open;
+  if (open) setThreadDrawer(false);
+  syncDrawerScrim();
 }
 
 function toggleDrawer() {
   setDrawer(!isDrawerOpen());
+}
+
+function setThreadDrawer(open) {
+  document.body.classList.toggle('show-threads', open);
+  elements.threadsToggle.setAttribute('aria-expanded', String(open));
+  if (open) setDrawer(false);
+  syncDrawerScrim();
+}
+
+function closeDrawers() {
+  setDrawer(false);
+  setThreadDrawer(false);
 }
 
 // ----- keyboard -----
@@ -1381,21 +1488,563 @@ function handleDocumentKeydown(event) {
     elements.searchInput.select();
     return;
   }
-  if (event.key !== 'Escape' || elements.endedDialog.open) return;
+  // An open dialog closes itself on Esc; that Esc must not also stop a speaker.
+  if (event.key !== 'Escape' || elements.endedDialog.open || elements.memoryDialog.open) return;
   if (!elements.searchResults.hidden) {
     elements.searchInput.value = '';
     hideSearchResults();
     return;
   }
-  if (isDrawerOpen()) {
-    setDrawer(false);
+  if (state.renamingThreadId !== null) return; // the rename field handles its own Esc
+  if (isDrawerOpen() || isThreadDrawerOpen()) {
+    closeDrawers();
     return;
   }
   requestStop();
 }
 
 // ---------------------------------------------------------------------------
-// 7. Startup
+// 7. Threads: list, switching, new, rename
+// ---------------------------------------------------------------------------
+
+let memoryRequestCounter = 0;
+
+function threadPath(roomId, threadId) {
+  return `/room/${encodeURIComponent(roomId)}/thread/${encodeURIComponent(threadId)}`;
+}
+
+/** Replace a summary by id, or add it; the list stays newest first like Room.threads. */
+function upsertThreadSummary(summary) {
+  const index = state.threads.findIndex((thread) => thread.id === summary.id);
+  if (index >= 0) {
+    state.threads[index] = { ...state.threads[index], ...summary };
+  } else {
+    state.threads.push(summary);
+  }
+  state.threads.sort((first, second) => second.created_at.localeCompare(first.created_at));
+}
+
+function handleThreadFrame(summary) {
+  upsertThreadSummary(summary);
+  if (summary.id === state.threadId) {
+    state.thread = state.threads.find((thread) => thread.id === summary.id);
+    renderRoomMeta();
+    renderPanel();
+    renderSeats();
+    renderComposerState();
+  }
+  renderThreadList();
+}
+
+function flattenLine(text) {
+  const flat = String(text).replace(/\s+/g, ' ').replace(/[#*`>|]/g, '').trim();
+  return flat.length > THREAD_LAST_LINE_LENGTH ? flat.slice(0, THREAD_LAST_LINE_LENGTH) + '…' : flat;
+}
+
+/**
+ * Count and last line of a thread. The thread on screen is counted from the loaded messages,
+ * because the owner's own messages arrive without a fresh summary from the server.
+ */
+function describeThreadActivity(thread) {
+  const persisted = thread.id === state.threadId ? state.messages.filter((message) => !message.isLocal) : [];
+  if (persisted.length === 0) {
+    return { count: thread.message_count || 0, author: thread.last_author, line: thread.last_line };
+  }
+  const lastSpoken = [...persisted].reverse().find((message) => message.role !== 'system');
+  return {
+    count: persisted.length,
+    author: lastSpoken ? lastSpoken.author : null,
+    line: lastSpoken ? lastSpoken.text : null,
+  };
+}
+
+function createThreadItem(thread) {
+  const item = createElement('li');
+  const link = createElement('a', 'thread-item');
+  link.href = threadPath(state.roomId, thread.id);
+  link.dataset.thread = thread.id;
+  link.title = 'Open this thread. Double-click or press F2 to rename it.';
+  if (thread.id === state.threadId) link.setAttribute('aria-current', 'page');
+
+  const head = createElement('span', 'thread-item-head');
+  head.append(createElement('span', 'thread-item-title', thread.title));
+  if (thread.ended_at) head.append(createElement('span', 'tag', 'ended'));
+
+  const activity = describeThreadActivity(thread);
+  const line = createElement('span', 'thread-item-line');
+  if (activity.line) {
+    const authorName = activity.author === 'owner' || !activity.author ? state.ownerName : activity.author;
+    const author = createElement('b', '', authorName);
+    const seat = seatsOfRoom().find((candidate) => candidate.name === activity.author);
+    if (seat) {
+      setSeatColor(author, seat.color);
+      author.classList.add('seat-coloured');
+    }
+    line.append(author, ' ', flattenLine(activity.line));
+  } else {
+    line.append('No messages yet.');
+  }
+
+  const countWord = activity.count === 1 ? 'message' : 'messages';
+  const meta = createElement('span', 'thread-item-meta', `${activity.count} ${countWord} · ${formatDay(thread.created_at)}`);
+  link.append(head, line, meta);
+  item.append(link);
+  return item;
+}
+
+function renderThreadList() {
+  // A rebuild would destroy the rename field the owner is typing in; it re-renders when done.
+  if (state.renamingThreadId !== null) return;
+  elements.threadList.replaceChildren();
+  for (const thread of state.threads) {
+    elements.threadList.append(createThreadItem(thread));
+  }
+  elements.threadNewTitle.disabled = isRoomArchived();
+  elements.threadNewButton.disabled = isRoomArchived();
+  elements.threadNewTitle.placeholder = isRoomArchived() ? 'This room is archived' : 'Title of a new thread';
+}
+
+/** Forget everything that belongs to the previous thread; the room and the libraries stay. */
+function resetThreadState() {
+  state.messages = [];
+  state.typingSeatIds.clear();
+  state.lastBids = {};
+  state.chosenSeatIds.clear();
+  state.lastBidsKind = 'message';
+  state.cooldownEndsAt = {};
+  state.quietReason = null;
+  state.quietFrame = null;
+  state.endRequested = false;
+  state.ownerScrolledUp = false;
+  hideJumpLatest();
+}
+
+/** Show one thread: drop the old socket, clear its state, connect to the new one. */
+function openThread(threadId, { pushHistory }) {
+  if (pushHistory && threadId !== state.threadId) {
+    history.pushState({ threadId }, '', threadPath(state.roomId, threadId));
+  }
+  if (socketClient) socketClient.close();
+  state.threadId = threadId;
+  state.thread = state.threads.find((thread) => thread.id === threadId) || null;
+  resetThreadState();
+  renderEverything();
+  connectThreadSocket(threadId);
+  setThreadDrawer(false);
+}
+
+/** Frames and status from a socket that was already replaced are ignored. */
+function connectThreadSocket(threadId) {
+  const client = createSocketClient({
+    url: `/ws/threads/${encodeURIComponent(threadId)}`,
+    onFrame: (frame) => {
+      if (client === socketClient) handleFrame(frame);
+    },
+    onStatus: (status) => {
+      if (client === socketClient) handleStatus(status);
+    },
+  });
+  socketClient = client;
+  client.connect();
+}
+
+async function createThread(event) {
+  event.preventDefault();
+  const title = elements.threadNewTitle.value.trim();
+  if (!title) {
+    elements.threadNewTitle.focus();
+    return;
+  }
+  elements.threadNewButton.disabled = true;
+  try {
+    const summary = await sendJson('POST', `/api/rooms/${encodeURIComponent(state.roomId)}/threads`, { title });
+    elements.threadNewTitle.value = '';
+    upsertThreadSummary(summary);
+    openThread(summary.id, { pushHistory: true });
+    elements.composerInput.focus();
+  } catch (error) {
+    reportError('Could not start the thread', error);
+  } finally {
+    elements.threadNewButton.disabled = isRoomArchived();
+  }
+}
+
+/** Swap the thread's list entry for a title field; Enter or leaving the field saves, Esc cancels. */
+function startRenamingThread(threadId) {
+  const thread = state.threads.find((candidate) => candidate.id === threadId);
+  const link = elements.threadList.querySelector(`[data-thread="${CSS.escape(threadId)}"]`);
+  if (!thread || !link) return;
+  state.renamingThreadId = threadId;
+
+  const input = createElement('input', 'thread-rename');
+  input.type = 'text';
+  input.value = thread.title;
+  input.maxLength = 200;
+  input.setAttribute('aria-label', 'Thread title');
+  let finished = false;
+  const finish = (save) => {
+    if (finished) return;
+    finished = true;
+    finishRenamingThread(thread, save ? input.value.trim() : null);
+  };
+  input.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      finish(true);
+    } else if (event.key === 'Escape') {
+      event.preventDefault();
+      event.stopPropagation();
+      finish(false);
+    }
+  });
+  input.addEventListener('blur', () => finish(true));
+  link.parentElement.replaceChildren(input);
+  input.focus();
+  input.select();
+}
+
+async function finishRenamingThread(thread, newTitle) {
+  try {
+    if (newTitle && newTitle !== thread.title) {
+      const summary = await sendJson('PATCH', `/api/threads/${encodeURIComponent(thread.id)}`, { title: newTitle });
+      upsertThreadSummary(summary);
+      if (summary.id === state.threadId) {
+        state.thread = state.threads.find((candidate) => candidate.id === summary.id);
+      }
+    }
+  } catch (error) {
+    reportError('Could not rename the thread', error);
+  } finally {
+    state.renamingThreadId = null;
+    renderThreadList();
+    renderRoomMeta();
+  }
+}
+
+function threadIdFromEvent(event) {
+  const link = event.target.closest('.thread-item');
+  return link ? link.dataset.thread : null;
+}
+
+function bindThreadEvents() {
+  elements.threadNewForm.addEventListener('submit', createThread);
+  // Delegated, because the list is rebuilt between the two clicks of a double-click.
+  elements.threadList.addEventListener('click', (event) => {
+    const threadId = threadIdFromEvent(event);
+    if (!threadId) return;
+    // Let modified clicks open a new tab the browser's way.
+    if (event.ctrlKey || event.metaKey || event.shiftKey || event.button !== 0) return;
+    event.preventDefault();
+    if (threadId !== state.threadId) openThread(threadId, { pushHistory: true });
+  });
+  elements.threadList.addEventListener('dblclick', (event) => {
+    const threadId = threadIdFromEvent(event);
+    if (!threadId) return;
+    event.preventDefault();
+    startRenamingThread(threadId);
+  });
+  elements.threadList.addEventListener('keydown', (event) => {
+    const threadId = threadIdFromEvent(event);
+    if (threadId && event.key === 'F2') {
+      event.preventDefault();
+      startRenamingThread(threadId);
+    }
+  });
+  window.addEventListener('popstate', () => {
+    const { roomId, threadId } = parseRoomPath(location.pathname);
+    if (roomId !== state.roomId) {
+      location.reload();
+      return;
+    }
+    if (threadId && threadId !== state.threadId) openThread(threadId, { pushHistory: false });
+  });
+}
+
+// ---------------------------------------------------------------------------
+// 8. Memory drawer (SPEC v0.5 F3) and Open folder (F4)
+// ---------------------------------------------------------------------------
+
+function memoryTabId(tabKey) {
+  return `memory-tab-${tabKey}`;
+}
+
+function sortNotesNewestFirst(notes) {
+  // Notes written before v0.5 have no date; they go last, in file order.
+  return [...notes].sort((first, second) => {
+    const byDate = (second.written || '').localeCompare(first.written || '');
+    return byDate !== 0 ? byDate : first.file.localeCompare(second.file);
+  });
+}
+
+function personaBySlug(slug) {
+  return state.personas.find((persona) => persona.slug === slug) || null;
+}
+
+function openMemoryDrawer() {
+  if (!state.room) return;
+  const tabStillExists = state.memoryTab === THIS_ROOM_TAB || seatById(state.memoryTab);
+  if (!tabStillExists) {
+    const firstSeat = seatsOfRoom()[0];
+    state.memoryTab = firstSeat ? firstSeat.id : THIS_ROOM_TAB;
+  }
+  elements.memoryDialog.showModal();
+  selectMemoryTab(state.memoryTab, false);
+}
+
+function renderMemoryTabs() {
+  elements.memoryTabs.replaceChildren();
+  const tabs = seatsOfRoom().map((seat) => ({ key: seat.id, label: seat.name, color: seat.color }));
+  tabs.push({ key: THIS_ROOM_TAB, label: 'This room', color: null });
+  for (const tab of tabs) {
+    const selected = tab.key === state.memoryTab;
+    const button = createButton('', 'memory-tab', () => selectMemoryTab(tab.key, true));
+    button.id = memoryTabId(tab.key);
+    button.dataset.tab = tab.key;
+    button.setAttribute('role', 'tab');
+    button.setAttribute('aria-selected', String(selected));
+    button.setAttribute('aria-controls', 'memory-panel');
+    // Roving tabindex: Tab reaches the selected tab, the arrow keys move between tabs.
+    button.tabIndex = selected ? 0 : -1;
+    if (tab.color) {
+      setSeatColor(button, tab.color);
+      const swatch = createElement('span', 'dot');
+      swatch.setAttribute('aria-hidden', 'true');
+      button.append(swatch, ' ');
+    }
+    button.append(tab.label);
+    elements.memoryTabs.append(button);
+  }
+}
+
+function selectMemoryTab(tabKey, moveFocus) {
+  state.memoryTab = tabKey;
+  state.editingNoteFile = null;
+  renderMemoryTabs();
+  elements.memoryPanel.setAttribute('aria-labelledby', memoryTabId(tabKey));
+  if (moveFocus) document.getElementById(memoryTabId(tabKey)).focus();
+  loadMemoryTab();
+}
+
+function handleMemoryTabKeydown(event) {
+  if (event.key !== 'ArrowRight' && event.key !== 'ArrowLeft') return;
+  const keys = [...elements.memoryTabs.querySelectorAll('[role="tab"]')].map((tab) => tab.dataset.tab);
+  const step = event.key === 'ArrowRight' ? 1 : -1;
+  const nextIndex = (keys.indexOf(state.memoryTab) + step + keys.length) % keys.length;
+  event.preventDefault();
+  selectMemoryTab(keys[nextIndex], true);
+}
+
+/** Fetch the selected tab's notes and keep them, so edit mode can toggle without a refetch. */
+async function loadMemoryTab() {
+  memoryRequestCounter += 1;
+  const requestNumber = memoryRequestCounter;
+  const tabKey = state.memoryTab;
+  const seat = tabKey === THIS_ROOM_TAB ? null : seatById(tabKey);
+  if (seat && !seat.persona) {
+    state.memoryView = { kind: 'none', seat };
+    renderMemoryPanel();
+    return;
+  }
+  elements.memoryPanel.replaceChildren(createElement('p', 'small mute', 'Loading notes…'));
+  try {
+    if (seat) {
+      const notes = await fetchJson(`/api/personas/${encodeURIComponent(seat.persona)}/memory`);
+      if (requestNumber !== memoryRequestCounter) return;
+      state.memoryView = { kind: 'persona', seat, slug: seat.persona, notes: sortNotesNewestFirst(notes) };
+    } else {
+      const grouped = await fetchJson(`/api/rooms/${encodeURIComponent(state.roomId)}/memory`);
+      if (requestNumber !== memoryRequestCounter) return;
+      state.memoryView = { kind: 'room', grouped };
+    }
+    renderMemoryPanel();
+  } catch (error) {
+    if (requestNumber !== memoryRequestCounter) return;
+    elements.memoryPanel.replaceChildren(createElement('p', 'bad', 'Could not load the notes.'));
+    reportError('Could not load memory', error);
+  }
+}
+
+function renderMemoryPanel() {
+  const view = state.memoryView;
+  const panel = elements.memoryPanel;
+  panel.replaceChildren();
+  if (view.kind === 'none') {
+    panel.append(createElement('p', 'memory-empty', `${view.seat.name} has no persona, so no memory.`));
+    return;
+  }
+  if (view.kind === 'persona') {
+    const persona = personaBySlug(view.slug);
+    const countWord = view.notes.length === 1 ? 'note' : 'notes';
+    const personaName = persona ? `${persona.name} · ${persona.role}` : view.slug;
+    panel.append(createElement('p', 'small mute', `${view.seat.name} speaks as ${personaName} · ${view.notes.length} ${countWord}, newest first`));
+    if (view.notes.length === 0) panel.append(createElement('p', 'memory-empty', 'No notes yet. Notes are written when a thread ends.'));
+    for (const note of view.notes) panel.append(createNoteElement(view.slug, note));
+    return;
+  }
+  renderRoomMemoryGroups(panel, view.grouped);
+}
+
+/** One group per persona; the heading names the seats of this room that speak as it. */
+function renderRoomMemoryGroups(panel, grouped) {
+  const slugs = Object.keys(grouped).filter((slug) => grouped[slug].length > 0);
+  if (slugs.length === 0) {
+    panel.append(createElement('p', 'memory-empty', 'No notes were written from this room yet. Notes are written when a thread ends.'));
+    return;
+  }
+  for (const slug of slugs) {
+    const seats = seatsOfRoom().filter((seat) => seat.persona === slug);
+    const persona = personaBySlug(slug);
+    const section = createElement('section', 'memory-group');
+    if (seats[0]) setSeatColor(section, seats[0].color);
+    const seatNames = seats.length > 0 ? seats.map((seat) => seat.name).join(', ') : 'no seat now';
+    section.append(createElement('h3', '', `${seatNames} · ${persona ? persona.role : slug}`));
+    for (const note of sortNotesNewestFirst(grouped[slug])) section.append(createNoteElement(slug, note));
+    panel.append(section);
+  }
+}
+
+function noteKey(slug, note) {
+  return `${slug}/${note.file}`;
+}
+
+/** "Adda v0.5 · Crash recovery", linked to the thread it came from, or a plain line for old notes. */
+function createNoteSource(note) {
+  const source = createElement('span', 'memory-note-source');
+  if (!note.thread_id || !note.room_id) {
+    source.append('No source recorded');
+    return source;
+  }
+  const link = createElement('a', '', `${note.room_title || 'a room'} · ${note.thread_title || 'a thread'}`);
+  link.href = threadPath(note.room_id, note.thread_id);
+  if (note.room_id === state.roomId) {
+    link.addEventListener('click', (event) => {
+      event.preventDefault();
+      elements.memoryDialog.close();
+      if (note.thread_id !== state.threadId) openThread(note.thread_id, { pushHistory: true });
+    });
+  }
+  source.append('From ', link);
+  return source;
+}
+
+function createNoteElement(slug, note) {
+  const article = createElement('article', 'memory-note');
+  if (state.editingNoteFile === noteKey(slug, note)) {
+    article.append(createNoteEditor(slug, note));
+    return article;
+  }
+  article.append(createElement('h4', 'memory-note-title', note.title));
+  article.append(createElement('p', 'memory-note-body', note.body));
+  const meta = createElement('div', 'memory-note-meta small mute');
+  meta.append(createNoteSource(note));
+  if (note.written) meta.append(` · ${formatDay(note.written)} ${formatClock(note.written)}`);
+  const actions = createElement('div', 'memory-note-actions');
+  actions.append(
+    createButton('Edit', 'btn btn--ghost btn--tiny', () => {
+      state.editingNoteFile = noteKey(slug, note);
+      renderMemoryPanel();
+    }),
+    createButton('Delete', 'btn btn--ghost btn--tiny', () => deleteNote(slug, note)),
+  );
+  meta.append(actions);
+  article.append(meta);
+  return article;
+}
+
+function createNoteEditor(slug, note) {
+  const form = createElement('form', 'memory-note-editor');
+  const titleInput = document.createElement('input');
+  titleInput.type = 'text';
+  titleInput.value = note.title;
+  titleInput.required = true;
+  titleInput.maxLength = 200;
+  titleInput.setAttribute('aria-label', 'Note title');
+  const bodyInput = document.createElement('textarea');
+  bodyInput.rows = 4;
+  bodyInput.value = note.body;
+  bodyInput.setAttribute('aria-label', 'Note text');
+  const saveButton = createElement('button', 'btn btn--accent btn--small', 'Save');
+  saveButton.type = 'submit';
+  const cancelButton = createButton('Cancel', 'btn btn--ghost btn--small', () => {
+    state.editingNoteFile = null;
+    renderMemoryPanel();
+  });
+  const actions = createElement('div', 'side-actions');
+  actions.append(saveButton, cancelButton);
+  form.append(titleInput, bodyInput, actions);
+  form.addEventListener('submit', (event) => {
+    event.preventDefault();
+    saveNote(slug, note, titleInput.value.trim(), bodyInput.value.trim(), saveButton);
+  });
+  // Esc inside the editor cancels the edit instead of closing the whole drawer.
+  form.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') {
+      event.preventDefault();
+      cancelButton.click();
+    }
+  });
+  queueMicrotask(() => titleInput.focus());
+  return form;
+}
+
+function noteEndpoint(slug, note) {
+  return `/api/personas/${encodeURIComponent(slug)}/memory/${encodeURIComponent(note.file)}`;
+}
+
+async function saveNote(slug, note, title, body, saveButton) {
+  if (!title) {
+    showToast('A note needs a title.', true);
+    return;
+  }
+  saveButton.disabled = true;
+  try {
+    const saved = await sendJson('PUT', noteEndpoint(slug, note), { title, body });
+    // The PUT answers with the note; keep the local copy if a server answers with less.
+    Object.assign(note, { title, body }, saved && saved.file ? saved : {});
+    state.editingNoteFile = null;
+    renderMemoryPanel();
+    showToast('Note saved.');
+  } catch (error) {
+    saveButton.disabled = false;
+    reportError('Could not save the note', error);
+  }
+}
+
+async function deleteNote(slug, note) {
+  const persona = personaBySlug(slug);
+  const owner = persona ? `${persona.name}'s` : 'this persona’s';
+  if (!confirm(`Delete “${note.title}” from ${owner} memory? This removes the note file.`)) return;
+  try {
+    await fetchJson(noteEndpoint(slug, note), { method: 'DELETE' });
+    removeNoteFromView(slug, note);
+    renderMemoryPanel();
+    showToast('Note deleted.');
+  } catch (error) {
+    reportError('Could not delete the note', error);
+  }
+}
+
+function removeNoteFromView(slug, note) {
+  const view = state.memoryView;
+  if (view.kind === 'persona') {
+    view.notes = view.notes.filter((candidate) => candidate.file !== note.file);
+  } else if (view.kind === 'room' && view.grouped[slug]) {
+    view.grouped[slug] = view.grouped[slug].filter((candidate) => candidate.file !== note.file);
+  }
+}
+
+function bindMemoryEvents() {
+  elements.memoryButton.addEventListener('click', openMemoryDrawer);
+  elements.memoryCloseButton.addEventListener('click', () => elements.memoryDialog.close());
+  elements.memoryTabs.addEventListener('keydown', handleMemoryTabKeydown);
+  // A click on the backdrop lands on the dialog element itself, outside its content box.
+  elements.memoryDialog.addEventListener('click', (event) => {
+    if (event.target === elements.memoryDialog) elements.memoryDialog.close();
+  });
+}
+
+// ---------------------------------------------------------------------------
+// 9. Startup
 // ---------------------------------------------------------------------------
 
 function bindEvents() {
@@ -1462,8 +2111,12 @@ function bindEvents() {
   });
 
   elements.panelToggle.addEventListener('click', toggleDrawer);
-  elements.drawerScrim.addEventListener('click', () => setDrawer(false));
+  elements.threadsToggle.addEventListener('click', () => setThreadDrawer(!isThreadDrawerOpen()));
+  elements.drawerScrim.addEventListener('click', closeDrawers);
   document.addEventListener('keydown', handleDocumentKeydown);
+  bindThreadEvents();
+  bindMemoryEvents();
+  elements.openFolderButton.addEventListener('click', () => openRoomFolder(state.roomId));
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'visible' && socketClient) socketClient.reconnectNow();
   });
@@ -1490,12 +2143,47 @@ async function start() {
   const hashMatch = /^#m-(.+)$/.exec(location.hash);
   state.pendingHighlightId = hashMatch ? hashMatch[1] : null;
   await loadLibraries();
-  socketClient = createSocketClient({
-    url: `/ws/${encodeURIComponent(state.roomId)}`,
-    onFrame: handleFrame,
-    onStatus: handleStatus,
-  });
-  socketClient.connect();
+  const threadId = await chooseStartingThread();
+  if (threadId === null) {
+    showNoThreads();
+    return;
+  }
+  // The address names the thread, so a reload or a shared link opens the same one.
+  history.replaceState({ threadId }, '', threadPath(state.roomId, threadId) + location.hash);
+  openThread(threadId, { pushHistory: false });
+}
+
+/**
+ * The thread in the address if it exists in this room, else the newest open thread, else the
+ * newest thread. Returns null when the room has no thread at all or cannot be read.
+ */
+async function chooseStartingThread() {
+  const requestedThreadId = parseRoomPath(location.pathname).threadId;
+  try {
+    const { room } = await fetchJson(`/api/rooms/${encodeURIComponent(state.roomId)}`);
+    state.room = room;
+    state.threads = Array.isArray(room.threads) ? room.threads : [];
+  } catch (error) {
+    reportError('Could not load the room', error);
+    return null;
+  }
+  if (requestedThreadId && state.threads.some((thread) => thread.id === requestedThreadId)) {
+    return requestedThreadId;
+  }
+  if (requestedThreadId) {
+    showToast('That thread is not in this room; opening the newest one.', true);
+  }
+  const newestOpen = state.threads.find((thread) => !thread.ended_at);
+  const fallback = newestOpen || state.threads[0];
+  return fallback ? fallback.id : null;
+}
+
+function showNoThreads() {
+  renderRoomMeta();
+  renderThreadList();
+  renderPanel();
+  renderSeats(true);
+  elements.messageList.replaceChildren(createElement('li', 'msg msg--system', 'This room has no thread yet. Start one with New thread.'));
 }
 
 start();

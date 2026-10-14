@@ -15,10 +15,6 @@ THINKING_LEVELS: tuple[str, ...] = ("default", "low", "medium", "high")
 MessageRole = Literal["owner", "seat", "system"]
 Program = Literal["claude", "opencode", "pi", "codex"]
 
-# v0.1 names, kept so modules not yet adapted still import.
-ThreadMode = Mode
-THREAD_MODES = MODES
-
 
 def new_id() -> str:
     return uuid.uuid4().hex[:12]
@@ -70,6 +66,24 @@ class Seat(SeatConfig):
         )
 
 
+class Thread(BaseModel):
+    """One discussion inside a room. A seat's tool session lasts one thread."""
+
+    id: str = Field(default_factory=new_id)
+    room_id: str
+    title: str
+    created_at: datetime = Field(default_factory=utc_now)
+    ended_at: datetime | None = None  # set when the thread ends and memory notes are written
+
+
+class ThreadSummary(Thread):
+    """A thread with the facts the thread list shows. System messages are not counted."""
+
+    message_count: int = 0
+    last_author: str | None = None  # "owner" for the owner, else the seat's display name
+    last_line: str | None = None  # first non-empty line of the newest message, shortened
+
+
 class Room(BaseModel):
     id: str = Field(default_factory=new_id)
     title: str
@@ -81,17 +95,16 @@ class Room(BaseModel):
     # How many seats may compose a reply at the same time (1 reproduces strict turn-taking).
     max_concurrent: int = Field(default=2, ge=1, le=4)
     created_at: datetime = Field(default_factory=utc_now)
+    # Set when the room is archived. Threads end one by one; the room stays open meanwhile.
     ended_at: datetime | None = None
     seats: list[Seat] = Field(default_factory=list)
-
-
-# v0.1 name; untouched modules still import it.
-Thread = Room
+    threads: list[ThreadSummary] = Field(default_factory=list)  # newest first
 
 
 class Message(BaseModel):
     id: str = Field(default_factory=new_id)
     room_id: str
+    thread_id: str
     seat_id: str | None = None  # None for owner and system messages
     author: str  # display name at the time of writing; "owner" for the owner
     role: MessageRole
@@ -102,11 +115,6 @@ class Message(BaseModel):
     # bid_score, model, latency_ms, woken_by
     # ("mention"|"all"|"wake"|"bid"|"roundrobin"|"more"|"afterthought")
     meta: dict[str, Any] = Field(default_factory=dict)
-
-    @property
-    def thread_id(self) -> str:
-        """v0.1 name for `room_id`."""
-        return self.room_id
 
 
 class Bid(BaseModel):
@@ -147,3 +155,26 @@ class PersonaSummary(BaseModel):
     stance: str
     color: str
     note_count: int
+
+
+class MemoryNote(BaseModel):
+    """One file in a persona's memory folder. The source fields are None for notes written
+    before v0.5, which had no frontmatter."""
+
+    file: str  # e.g. "004-prefer-sqlite.md"
+    title: str
+    body: str
+    room_id: str | None = None
+    room_title: str | None = None
+    thread_id: str | None = None
+    thread_title: str | None = None
+    written: datetime | None = None
+
+
+class MemorySource(BaseModel):
+    """Where a memory note came from; written into the note's frontmatter."""
+
+    room_id: str
+    room_title: str
+    thread_id: str
+    thread_title: str
