@@ -571,3 +571,58 @@ it if missing; returns `{"opened": path}`; 400 if the folder is outside home. UI
 
 - **Opus A backend:** `adda/**`, `tests/**`, `README.md`.
 - **Opus B frontend:** `static/**`, `scripts/mock_server.py`.
+
+---
+
+# v0.6 delta (2026-10-14): access levels
+
+## G1. Model
+
+`Access = Literal["talk", "look", "work"]`. `Room.access: Access` (default "talk", guarded ALTER)
+and `SeatConfig.access: Access | None` (None = room level, guarded ALTER). Effective access for
+a seat = seat.access or room.access. Settings `[room_defaults] access = "talk"`.
+`POST /api/rooms`, room PATCH / `room` frame accept `access`; NewSeat and seat PATCH / `seat`
+frame accept `access` (null clears). Seat JSON carries `access` and `effective_access`.
+
+What each level means (the folder is the room folder; seats run with cwd = room folder):
+- **talk**: no tools. Today's behaviour.
+- **look**: read-only tools inside the room folder: read files, list, search. No shell, no
+  writes, no network, no MCP.
+- **work**: read, edit, write and run shell commands inside the room folder. No approval
+  prompts in v0.6: this is full trust inside that folder. No worktree yet. The UI says so
+  in red next to the control and in the new-room summary line.
+
+## G2. Harness flags (verify every flag with `--help`; record what was verified in each
+adapter's header; anything unverifiable is marked and falls back to talk)
+
+- claude: talk `--tools ""`; look `--tools Read,Grep,Glob,LS --add-dir <folder>
+  --permission-prompts none`; work `--allowedTools Read,Grep,Glob,LS,Edit,Write,MultiEdit,Bash
+  --permission-mode acceptEdits --permission-prompts none --add-dir <folder>`. Check the
+  exact tool names and whether `--tools` accepts a comma list or repeated values.
+- pi: talk `--no-tools --no-mcp --no-context-files --no-skills`; look `--tools read,grep,find,ls
+  --no-mcp`; work `--no-mcp` (all built-in tools). Check tool names via `pi --help`.
+- opencode: talk/look/work via a per-run config file passed with the `OPENCODE_CONFIG`
+  environment variable (check `opencode --help` and the installed docs for the variable name
+  and the `permission` block shape: edit/bash/webfetch allow|ask|deny). "ask" is impossible
+  headless, so look = deny edit/bash/webfetch; work = allow edit/bash, deny webfetch.
+- codex (not installed, unverified): look `--sandbox read-only --ask-for-approval never`;
+  work `--sandbox workspace-write --ask-for-approval never`.
+Each adapter's `build_command(prompt, system_prompt, session_id, access)` gains the access
+argument. The system prompt tells the seat its level in one sentence ("You may read files in
+<folder>" / "You may read, edit and run commands in <folder>" / "You have no tools").
+
+## G3. UI
+
+- Room panel: an "Access" select (Talk only / Look / Work) under "Voices at once", with a
+  one-line description and, for Work, a red warning "Seats may edit files and run commands in
+  <folder> without asking." Sends `room` patch.
+- New-room card: the same select next to Liveliness; per-seat rows get an Access select
+  (room level / Talk only / Look / Work); the summary line names the level and the folder.
+- Seat editor in the room: the same per-seat select. Seat cards show a small "look"/"work"
+  marker when the effective level is not talk.
+- Room cards on the rooms page show the level when not talk.
+
+## G4. Ownership
+
+- **S9 backend:** `adda/**`, `tests/**`, `README.md`.
+- **S10 frontend:** `static/**`, `scripts/mock_server.py`.
