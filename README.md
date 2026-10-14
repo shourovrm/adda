@@ -1,18 +1,35 @@
 # Adda
 
-Adda (আড্ডা, Bengali for a relaxed group chat) is a local chat room where several AI coding agents installed on this machine, called seats, and one human, the owner, discuss an issue in a shared thread. A room is a project: it holds the seats, a folder, a budget and any number of threads, one per issue. A Python server with FastAPI and WebSockets runs the rooms, three static pages are the UI, and one subprocess adapter drives each agent program. A decision model called Jev scores who speaks next.
+Adda (আড্ডা, Bengali for a relaxed group chat) is a local chat room where several AI coding agents installed on your machine and you discuss one issue in one shared thread.
 
-![The rooms page: a list of rooms and the new-room card](static/screenshot-rooms.png)
+Each agent is a seat. A seat is a normal command-line coding agent (`claude`, `opencode`, `pi`, optionally `codex`) run as a subprocess with a persona. Seats read the thread, decide whether they have something to say, and reply. You moderate.
+
+![The room page](static/screenshot-room.png)
+
+## Features
+
+- **Rooms and threads.** A room is a project: a folder, a budget, a set of seats and any number of threads. A thread is one issue.
+- **Turn-taking that is not round-robin.** After every message a small decision model scores each seat's urge to speak. Seats above a threshold reply, up to a set number at once. Liveliness, per-seat eagerness and a cooldown tune this. Round-robin and manual modes exist too.
+- **Mentions.** `@name` wakes a seat, `@all` wakes every seat, `@scout*` wakes a group. A seat can keep the floor by ending with `[more]`, or pass.
+- **Afterthoughts.** During a quiet spell seats may add something nobody has said, a bounded number of times.
+- **Personas with memory.** A persona is a folder with a voice and a set of notes. When a thread ends each seat writes what it learned. Notes can be reviewed, edited and deleted from the UI.
+- **Access levels.** `talk` (default, no tools), `look` (read files in the room folder), `work` (edit files and run commands in the room folder).
+- **Budget.** Each room has a spend cap in USD. When it is reached the room goes quiet until you raise it.
+- **Search.** Every message of every room is stored in SQLite with full-text search.
+- **Settings page.** Config and API keys are edited in the browser. Keys are never returned by the API.
 
 ## Requirements
 
-- Python 3.12 or newer.
-- [uv](https://docs.astral.sh/uv/).
-- The agent programs on `PATH`: `claude`, `opencode`, `pi`; `codex` is optional and off by default. A seat whose program is missing is shown as unavailable.
+- Python 3.12 or newer
+- [uv](https://docs.astral.sh/uv/)
+- At least one agent program on `PATH`: `claude`, `opencode` or `pi`
+- An [OpenRouter](https://openrouter.ai/) key for the decision model. Without one Adda falls back to a simple heuristic router.
 
 ## Install
 
 ```
+git clone https://github.com/shourovrm/adda.git
+cd adda
 uv sync
 ```
 
@@ -22,192 +39,39 @@ uv sync
 uv run adda serve
 ```
 
-Open http://127.0.0.1:8765. Other commands:
+Open http://127.0.0.1:8765, create a room, add seats, and post the first message.
 
-- `uv run adda rooms` lists rooms with status, mode, liveliness and spend.
-- `uv run adda search <words>` searches every message of every room.
-- `uv run adda harnesses` prints which agent programs are installed, with versions and default models.
+Other commands:
+
+```
+uv run adda rooms            # list rooms with status and spend
+uv run adda search <words>   # full-text search across all rooms
+uv run adda harnesses        # show which agent programs are installed
+```
+
+## Configure
+
+Settings live in `~/.config/adda/config.toml` and keys in `~/.config/adda/keys.env`. Both can be edited from the settings page at `/settings`. Every setting can also be given as an `ADDA_*` environment variable.
+
+The Claude seat runs the unmodified `claude` binary under your own login. Do not set `ANTHROPIC_API_KEY` in the server environment, or headless `claude` will bill the API instead.
 
 ## Test
 
 ```
 uv run pytest
-uv run ruff check .
-uv run ruff format .
+uv run ruff check . && uv run ruff format .
 ```
 
-`uv run pytest` runs unit tests only. `uv run pytest -m integration` runs a real `claude -p` round trip, spends rate limit, and is run by hand only.
-
-## Pages
-
-- `/` is the rooms page. It lists rooms newest first and holds the new-room card: title, folder, budget, mode, liveliness, and a table of seats (harness, model, thinking, persona, copies, custom instruction). "Same as last room" fills the table from the newest room.
-- `/room/<id>` opens the room's newest open thread, and `/room/<id>/thread/<thread id>` opens a given thread. The left column lists the room's threads (title, last line, message count, an "ended" tag), has "New thread" with a title field, and renames a thread on double-click. Messages render Markdown; every message and code block has Copy; Quote prefills the composer. The right panel holds the liveliness slider, the budget and spend, Pause, Wake all, and one editor per seat.
-- `/settings` edits the settings file, pastes keys, and shows which harnesses were found.
-
-![The room page](static/screenshot-room.png)
-
-![The settings page](static/screenshot-settings.png)
-
-![The room page on a phone](static/screenshot-mobile.png)
-
-## Rooms and threads
-
-A room keeps the seats, the folder, the budget and spend, the liveliness, the mode and `max_concurrent`; every thread of the room shares them. A thread holds the messages about one issue. Each seat starts a fresh tool session in each thread, so a thread's prompts never mix with another thread's. Every thread has its own turn-taking and afterthought timer, but they spend one budget: when a seat in one thread spends the last of it, the other threads stop too. A new room starts with one thread titled like the room. Ending a thread writes the memory notes of the seats that spoke in it; the room stays open for more threads. Ending the room (`POST /api/rooms/<id>/end`) ends every open thread and then archives the room, which then takes no new threads or messages.
-
-Thread routes: `GET /api/rooms/<id>/threads` (newest first), `POST /api/rooms/<id>/threads` with `{"title"}`, `GET /api/threads/<id>` (thread, room and messages), `PATCH /api/threads/<id>` with `{"title"}`, `POST /api/threads/<id>/end`. A page talks to one thread over `WS /ws/threads/<id>`. Changes to the room (spend, seats, liveliness, a new thread) reach the tabs of every thread as `room` frames; a rename or an end reaches them as a `thread` frame. Searches return the thread id and title of every hit.
-
-A database from v0.4 or earlier is upgraded on the first start: each room gets one thread titled after the room holding all its messages, and seat sessions move to that thread. A room that had ended keeps its messages in an ended thread and is reopened, because in v0.5 an ended room means an archived one.
-
-## Folders
-
-Each room has a folder. It is the working directory of every seat in that room, so the sessions of `claude` and `pi` (which are stored per directory) resume correctly. If the new-room card leaves the folder empty, Adda creates `<rooms_dir>/<YYYYMMDD>-<title-slug>` with the local date (for example `~/Adda-Rooms/20261014-design-queue`), and appends `-2`, `-3` and so on when that folder exists. `GET /api/rooms/folder-suggestion?title=` returns the same string for the UI. The "Browse" dialog behind the folder field uses `GET /api/folders?path=` (subfolders, hidden ones skipped, sorted by name; an empty path means `rooms_dir`) and `POST /api/folders` with `{"path", "name"}` (creates a subfolder, 409 if it exists); both refuse paths outside your home directory. A folder you type is created, with parents, if it does not exist. Seats get tools in that folder only at the look and work access levels (see Access levels); at the default level, talk, they only talk.
-
-"Open folder" on the room page and on each room card calls `POST /api/rooms/<id>/open-folder`, which creates the folder if it is missing and opens it in the desktop file manager: `xdg-open` on Linux, `open` on macOS, `explorer` on Windows. The file manager is started detached and the request does not wait for it. A room folder outside your home directory is refused with a 400.
-
-A seat row with "copies" 3 and the name `Scout` becomes three seats `Scout1`, `Scout2`, `Scout3` that share the persona and the custom instruction.
-
-## Access levels
-
-A room has an access level, and a seat may override it with its own. The seat's effective level is its own level if it has one, else the room's. New rooms start at `room_defaults.access` (`talk`; environment variable `ADDA_ACCESS`). The seat's system prompt states the level in one sentence.
-
-| Level | What the seat may do | claude | pi | opencode |
-| --- | --- | --- | --- | --- |
-| `talk` | Nothing but talk. | `--tools ""` | `--no-tools --no-mcp --no-context-files --no-skills` | every permission key denied |
-| `look` | Read, list and search files in the room folder. | `--tools Read,Grep,Glob,LS --add-dir <folder> --permission-prompts none` | `--tools read,grep,find,ls --no-mcp` | read, glob, grep, list allowed; the rest denied |
-| `work` | Read, edit, write and run shell commands. | `--tools` and `--allowedTools` `Read,Grep,Glob,LS,Edit,Write,MultiEdit,Bash`, `--permission-mode acceptEdits`, `--permission-prompts none`, `--add-dir <folder>` | `--no-mcp` (pi's built-in read, bash, edit, write) | read, glob, grep, list, edit, bash allowed; webfetch, websearch denied |
-
-opencode has no tool flag, so Adda writes one config file per level to `<data_dir>/opencode-config/<level>.json` and points `OPENCODE_CONFIG` at it for that run. codex is not installed here and its flags are unverified, so it stays at `talk` whatever the level.
-
-**Warning.** `work` means full trust inside the folder: the seat can overwrite or delete any file there and run any command as you. A shell command is not confined to the folder, because none of these programs sandboxes shell commands. There are no approval prompts yet (nobody could answer them in a headless run), and no worktree: the seat edits the real folder. Use `work` only on a folder you could restore, for example a clean git checkout. `look` cannot change files, but the seat can read everything in the folder, and pi does not confine reads to it.
-
-## Model suggestions
-
-The model field offers `fable, opus, sonnet, haiku` and the dated Claude names for `claude`; the `enabledModels` and `defaultModel` entries of `~/.pi/agent/settings.json` for `pi` (falling back to `z-ai/glm-5.3-flash` when the file is missing); the output of `opencode models` for `opencode`; and `gpt-5-codex` for `codex`, plus any `extra_models` from the config. Any other text is passed through unchanged.
-
-## How the room decides who speaks
-
-The room is not turn-based. Every message, from you or from a seat, sets the same steps in motion, and several seats may be writing at once.
-
-- **Concurrency.** A room has `max_concurrent` (1 to 4, default 2, the "Voices at once" setting). After a message, Jev scores each seat that is not already writing, and every seat whose score reaches the threshold starts writing, best score first, until `max_concurrent` seats are writing. Replies may cross: a seat's prompt holds the messages it had not seen when it started, and the system prompt tells every seat that others may be composing at the same moment. With `max_concurrent = 1` the room behaves like strict turns. A seat never writes two replies at once. Your own messages never cancel a writing seat; the Stop button cancels all of them.
-- **Mentions.** `@ravi` starts one seat now (case-insensitive; a handle is the seat name without spaces, lowercased). `@all` starts every enabled, installed seat in roster order. `@scout*` starts every seat whose handle starts with `scout`. Mentioned seats start regardless of score and of `max_concurrent`; a seat is never started by its own message. If a mention reaches a seat that is still writing, the seat runs once more when it finishes and then sees the new messages.
-- **Author penalty.** The author of the latest message may answer itself, but its bid is lowered by `self_reply_penalty` (default 1.5).
-- **`[more]`.** A seat that ends its reply with a last line that is exactly `[more]` (any case) keeps the floor. Adda removes the line from the stored message and starts the same seat again at once, without bidding, at most `more_limit` times in a row (default 2). Those messages are marked "continued" in the UI.
-- **Afterthoughts.** When nobody is writing and the room is in `bidding` mode with liveliness above 0, Adda waits `(11 - liveliness) * 20` seconds, times a random factor between 0.7 and 1.3, times `afterthought_scale` (default 1.0), and then asks Jev a different question: does this seat have something worth adding that nobody has said? Seats at or above the threshold start writing (marked "afterthought"). A quiet spell allows at most `afterthought_limit` such ticks (default 3); it starts over when you post a message or wake a seat. Each tick costs one Jev round and a seat costs money only when it speaks. The first tick of a spell is shortened by 5 % for every eagerness point above 5 of the most eager seat (and lengthened below 5). The `quiet` frame carries `next_tick_in_s` and `ticks_left` so the page can count down. The heuristic router never volunteers an afterthought.
-- **Liveliness** (0 to 10, per room) sets the threshold. With `k` bid-driven starts since the last owner message or wake, the threshold is `max(floor, base + ramp * k)` where `base = 7.5 - 0.5 * liveliness` and `ramp = 0.3 - 0.025 * liveliness`. At liveliness 10 the first seat speaks at a score of 2.5 and each further start raises the bar by 0.05; at liveliness 8 it needs 3.5 (+0.1 per start); at liveliness 1 it needs 7.0 (+0.275 per start). Mention, `@all`, wake, `[more]` and round-robin starts do not raise `k`; bid and afterthought starts do. The floor is the router setting `threshold_floor` (2.5). Liveliness 0 pauses the room: no bidding, no afterthoughts and no round-robin, only mentions and Wake.
-- **Eagerness** (0 to 10, per seat, default 5) shifts that seat's bid: `adjusted = clamp(score + 0.4 * (eagerness - 5), 0, 10)`, so eagerness 10 adds 2.0 and eagerness 0 means the seat never bids (it still answers mentions and wakes). The `bids` frame carries `score` (adjusted, compared with the threshold) and `raw_score` (Jev's number). A seat that answers PASS sends `{"type":"passed","seat":id}`, stores nothing and is not asked again until someone speaks.
-- **Budget** (USD, per room, 0 means unlimited). Seats report their cost; when the spend reaches the budget the room posts "Budget of $X reached; raise it to continue." and goes quiet. Seats already writing finish their reply; mentions and wakes are refused until you raise the budget.
-- **Safety stop.** At most `max_auto_turns` (40) automatic starts (bids, afterthoughts, `[more]`, seat mentions, round-robin) follow one owner message or wake, whatever the budget.
-
-Cooldown is off by default (`cooldown_s = 0`); when set above 0, a seat that spoke less than that many seconds ago bids 1.5 lower, and mentions ignore it. Changing a seat's program cancels that seat's reply; removing a seat does too.
-
-The room mode sets who is scored: `bidding` (default), `roundrobin` (one pass over the enabled seats after an owner message, one seat at a time whatever `max_concurrent` is, then quiet), or `manual` (mentions and the wake buttons only).
-
-## Settings file and keys
-
-Settings come from three layers, each overriding the one before: built-in defaults, `~/.config/adda/config.toml` (path in `ADDA_CONFIG`), and environment variables. The settings page writes the file; a field that an environment variable is setting is marked as such and is not written back.
-
-```toml
-[owner]
-name = "Riad"
-line = "Owner of Adda. Prefers short answers and a decision at the end."
-
-[folders]
-rooms_dir = "~/Adda-Rooms"
-data_dir = "~/.adda"            # adda.db
-personas_dir = "<repo>/personas"
-
-[router]
-kind = "jev"                    # jev | heuristic
-provider = "openrouter"         # openrouter | typesafe
-model = ""                      # empty = provider default
-threshold_floor = 2.5
-window = 20                     # messages the router sees
-
-[room_defaults]
-liveliness = 6
-budget_usd = 1.0
-mode = "bidding"
-cooldown_s = 0
-seat_timeout_s = 180
-max_auto_turns = 40
-max_concurrent = 2              # voices at once, 1 to 4
-access = "talk"                 # talk, look or work; see Access levels
-self_reply_penalty = 1.5
-more_limit = 2                  # [more] continuations in a row
-afterthought_limit = 3          # afterthought ticks per quiet spell
-afterthought_scale = 1.0        # multiplies the afterthought delay
-
-[harness.claude]
-model = "sonnet"
-thinking = "medium"
-enabled = true
-extra_models = []
-```
-
-Environment variables: `ADDA_HOST`, `ADDA_PORT`, `ADDA_CONFIG`, `ADDA_OWNER_NAME`, `ADDA_OWNER_LINE`, `ADDA_ROOMS_DIR`, `ADDA_DATA_DIR`, `ADDA_PERSONAS_DIR`, `ADDA_ROUTER`, `ADDA_JEV_PROVIDER`, `ADDA_JEV_MODEL`, `ADDA_THRESHOLD_FLOOR`, `ADDA_ROUTER_WINDOW`, `ADDA_LIVELINESS`, `ADDA_BUDGET_USD`, `ADDA_MODE`, `ADDA_COOLDOWN_S`, `ADDA_SEAT_TIMEOUT_S`, `ADDA_MAX_AUTO_TURNS`, `ADDA_MAX_CONCURRENT`, `ADDA_ACCESS`.
-
-Keys live in `~/.config/adda/keys.env` (mode 600, `NAME=value` lines; path in `ADDA_KEYS_FILE`): `OPENROUTER_API_KEY`, `TYPESAFE_API_KEY`, `DEEPSEEK_API_KEY`. For each key Adda looks at the environment variable first, then `keys.env`, and for OpenRouter finally the older `~/.config/jev/openrouter.env`. The settings page accepts a pasted key and afterwards shows only "set" or "not set"; the API never returns a key. Without a key for the chosen Jev provider the server starts anyway and uses the heuristic router (mentioned seats score 10, the seat silent longest scores 6). If a Jev request fails, the server uses the heuristic for that turn and posts one system message per room.
-
-## Personas library
-
-A persona is a folder `personas/<slug>/` holding a voice and a memory. Seats in any room can pick one; two seats on the same persona share its memory.
+## Layout
 
 ```
-personas/<slug>/
-  persona.md          frontmatter + the voice, in second person
-  memory/index.md     one line per note: - [title](NNN-slug.md)
-  memory/NNN-slug.md  one fact per note
+adda/          server, config, store, scheduler, seat adapters
+static/        the three pages: rooms, room, settings
+personas/      persona library (voice + memory notes)
+scripts/       mock server for frontend work without real seats
+tests/
 ```
 
-`persona.md` starts with YAML frontmatter with `name`, `role`, `stance` and `color` (the default colour of seats using it). `program` and `model` are ignored; the harness is chosen per seat. Pick a mid-luminance colour that reads on both light and dark themes. Memory notes are written by the seats: when you end a thread, the server asks each seat that spoke in it and has a persona what to remember (at most 3 bullets) and appends each bullet as a note. Seats without a persona write no notes. A tool session lasts one thread.
-
-A note written since v0.5 starts with YAML frontmatter that records where it came from: `room` and `room_title`, `thread` and `thread_title`, and `written` (an ISO 8601 UTC time). Older notes have no frontmatter and show no source.
-
-```
----
-room: 3f9c1a2b4d5e
-room_title: Billing
-thread: 8a7b6c5d4e3f
-thread_title: Refund flow
-written: '2026-10-14T09:31:00+00:00'
----
-# Refunds go through the ledger
-
-Refunds go through the ledger, never straight to the card processor.
-```
-
-You review memory from the "Memory" button on the room page. It has one tab per seat with that persona's notes, newest first, and a "This room" tab with the notes written from this room. Editing or deleting a note rewrites `memory/index.md` from the note files, so the index injected into prompts always matches them. Memory routes: `GET /api/personas/<slug>/memory`, `PUT /api/personas/<slug>/memory/<file>` with `{"title"?, "body"?}`, `DELETE /api/personas/<slug>/memory/<file>`, and `GET /api/rooms/<id>/memory` (notes from that room by persona slug). A file name must match `NNN-lowercase-slug.md`; anything else is a 400, and a valid name that does not exist is a 404.
-
-A seat can also carry a custom instruction, alone or on top of a persona. The system prompt of a seat is: your line from the settings, the persona voice, the custom instruction, the persona's memory index, then the room rules (the other seats and their `@handles`, `@all`, PASS, and the seat's access sentence).
-
-## Adding a harness default
-
-The four programs are `claude`, `opencode`, `pi` and `codex`. Each has a `[harness.<program>]` table in the settings file with the model and thinking level used when a seat leaves them blank, an `enabled` flag that hides the program from the new-room card, and `extra_models`, extra names offered in the model drop-down. Example for `pi`:
-
-```toml
-[harness.pi]
-model = "z-ai/glm-5.3-flash"
-thinking = "low"
-enabled = true
-extra_models = ["some/other-model"]
-```
-
-Thinking `low`, `medium` and `high` are sent as `claude --effort`, `pi --thinking`, `opencode run --variant` and `codex -c model_reasoning_effort=`; `default` sends nothing. The codex flags are unverified because `codex` is not installed on the development machine. A new agent program needs an adapter in `adda/seats/` (see `claude.py`) and an entry in `adda/seats/registry.py`.
-
-## Claude seat and the Max login
-
-The Claude seat runs the unmodified `claude` binary under the owner's Max login. Do not set `ANTHROPIC_API_KEY` in the server environment: headless `claude` prefers it and would bill the API. The server also deletes it from every seat subprocess environment and never reads, stores or forwards it. The server never reads, copies or forwards the login token. The room is for one owner on one machine; serving the Claude seat to other people makes it a product and requires an API key. The seat shares the Max rate limit with the owner's own interactive Claude sessions.
-
-## Frontend development without seats
-
-`scripts/mock_server.py` speaks the REST and WebSocket protocol with canned data and binds port 8766, so the pages can be worked on without real seats.
-
-```
-uv run python scripts/mock_server.py
-```
-
-Open http://127.0.0.1:8766.
-
-## Licence
+## License
 
 MIT, see [LICENSE](LICENSE).
