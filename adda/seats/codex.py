@@ -6,13 +6,18 @@ JSONL shapes are a best guess: {"type":"thread.started","thread_id":...},
 {"type":"error"|"turn.failed"} for failures. Verify with `codex exec --help` once installed.
 No system-prompt flag is assumed, so it is prepended on the first turn only. Sample:
 tests/fixtures/seat_outputs/codex_success.jsonl (hand-written, not recorded).
+
+Access levels: UNVERIFIED, so every level falls back to talk (the read-only sandbox below).
+SPEC G2 lists `--sandbox workspace-write --ask-for-approval never` for work and
+`--sandbox read-only --ask-for-approval never` for look; switch them on here only after
+`codex exec --help` confirms them on a machine that has codex.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-from adda.models import SeatReply
+from adda.models import Access, SeatReply
 from adda.seats.base import CommandSeat, SeatError, parse_json_lines
 
 
@@ -20,7 +25,10 @@ class CodexSeat(CommandSeat):
     program = "codex"
     binary = "codex"
 
-    def build_command(self, prompt: str, system_prompt: str, session_id: str | None) -> list[str]:
+    def build_command(
+        self, prompt: str, system_prompt: str, session_id: str | None, access: Access
+    ) -> list[str]:
+        # `access` is ignored on purpose: the flags for look and work are unverified.
         if session_id:
             command = [self.binary, "exec", "resume", session_id, "--json"]
             message = prompt

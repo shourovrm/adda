@@ -60,11 +60,25 @@ A database from v0.4 or earlier is upgraded on the first start: each room gets o
 
 ## Folders
 
-Each room has a folder. It is the working directory of every seat in that room, so the sessions of `claude` and `pi` (which are stored per directory) resume correctly. If the new-room card leaves the folder empty, Adda creates `<rooms_dir>/<YYYYMMDD>-<title-slug>` with the local date (for example `~/Adda-Rooms/20261014-design-queue`), and appends `-2`, `-3` and so on when that folder exists. `GET /api/rooms/folder-suggestion?title=` returns the same string for the UI. The "Browse" dialog behind the folder field uses `GET /api/folders?path=` (subfolders, hidden ones skipped, sorted by name; an empty path means `rooms_dir`) and `POST /api/folders` with `{"path", "name"}` (creates a subfolder, 409 if it exists); both refuse paths outside your home directory. A folder you type is created, with parents, if it does not exist. Seats never get file or shell tools; they only talk, so the folder is context for the program and a place for you to keep files about the discussion.
+Each room has a folder. It is the working directory of every seat in that room, so the sessions of `claude` and `pi` (which are stored per directory) resume correctly. If the new-room card leaves the folder empty, Adda creates `<rooms_dir>/<YYYYMMDD>-<title-slug>` with the local date (for example `~/Adda-Rooms/20261014-design-queue`), and appends `-2`, `-3` and so on when that folder exists. `GET /api/rooms/folder-suggestion?title=` returns the same string for the UI. The "Browse" dialog behind the folder field uses `GET /api/folders?path=` (subfolders, hidden ones skipped, sorted by name; an empty path means `rooms_dir`) and `POST /api/folders` with `{"path", "name"}` (creates a subfolder, 409 if it exists); both refuse paths outside your home directory. A folder you type is created, with parents, if it does not exist. Seats get tools in that folder only at the look and work access levels (see Access levels); at the default level, talk, they only talk.
 
 "Open folder" on the room page and on each room card calls `POST /api/rooms/<id>/open-folder`, which creates the folder if it is missing and opens it in the desktop file manager: `xdg-open` on Linux, `open` on macOS, `explorer` on Windows. The file manager is started detached and the request does not wait for it. A room folder outside your home directory is refused with a 400.
 
 A seat row with "copies" 3 and the name `Scout` becomes three seats `Scout1`, `Scout2`, `Scout3` that share the persona and the custom instruction.
+
+## Access levels
+
+A room has an access level, and a seat may override it with its own. The seat's effective level is its own level if it has one, else the room's. New rooms start at `room_defaults.access` (`talk`; environment variable `ADDA_ACCESS`). The seat's system prompt states the level in one sentence.
+
+| Level | What the seat may do | claude | pi | opencode |
+| --- | --- | --- | --- | --- |
+| `talk` | Nothing but talk. | `--tools ""` | `--no-tools --no-mcp --no-context-files --no-skills` | every permission key denied |
+| `look` | Read, list and search files in the room folder. | `--tools Read,Grep,Glob,LS --add-dir <folder> --permission-prompts none` | `--tools read,grep,find,ls --no-mcp` | read, glob, grep, list allowed; the rest denied |
+| `work` | Read, edit, write and run shell commands. | `--tools` and `--allowedTools` `Read,Grep,Glob,LS,Edit,Write,MultiEdit,Bash`, `--permission-mode acceptEdits`, `--permission-prompts none`, `--add-dir <folder>` | `--no-mcp` (pi's built-in read, bash, edit, write) | read, glob, grep, list, edit, bash allowed; webfetch, websearch denied |
+
+opencode has no tool flag, so Adda writes one config file per level to `<data_dir>/opencode-config/<level>.json` and points `OPENCODE_CONFIG` at it for that run. codex is not installed here and its flags are unverified, so it stays at `talk` whatever the level.
+
+**Warning.** `work` means full trust inside the folder: the seat can overwrite or delete any file there and run any command as you. A shell command is not confined to the folder, because none of these programs sandboxes shell commands. There are no approval prompts yet (nobody could answer them in a headless run), and no worktree: the seat edits the real folder. Use `work` only on a folder you could restore, for example a clean git checkout. `look` cannot change files, but the seat can read everything in the folder, and pi does not confine reads to it.
 
 ## Model suggestions
 
@@ -117,6 +131,7 @@ cooldown_s = 0
 seat_timeout_s = 180
 max_auto_turns = 40
 max_concurrent = 2              # voices at once, 1 to 4
+access = "talk"                 # talk, look or work; see Access levels
 self_reply_penalty = 1.5
 more_limit = 2                  # [more] continuations in a row
 afterthought_limit = 3          # afterthought ticks per quiet spell
@@ -129,7 +144,7 @@ enabled = true
 extra_models = []
 ```
 
-Environment variables: `ADDA_HOST`, `ADDA_PORT`, `ADDA_CONFIG`, `ADDA_OWNER_NAME`, `ADDA_OWNER_LINE`, `ADDA_ROOMS_DIR`, `ADDA_DATA_DIR`, `ADDA_PERSONAS_DIR`, `ADDA_ROUTER`, `ADDA_JEV_PROVIDER`, `ADDA_JEV_MODEL`, `ADDA_THRESHOLD_FLOOR`, `ADDA_ROUTER_WINDOW`, `ADDA_LIVELINESS`, `ADDA_BUDGET_USD`, `ADDA_MODE`, `ADDA_COOLDOWN_S`, `ADDA_SEAT_TIMEOUT_S`, `ADDA_MAX_AUTO_TURNS`, `ADDA_MAX_CONCURRENT`.
+Environment variables: `ADDA_HOST`, `ADDA_PORT`, `ADDA_CONFIG`, `ADDA_OWNER_NAME`, `ADDA_OWNER_LINE`, `ADDA_ROOMS_DIR`, `ADDA_DATA_DIR`, `ADDA_PERSONAS_DIR`, `ADDA_ROUTER`, `ADDA_JEV_PROVIDER`, `ADDA_JEV_MODEL`, `ADDA_THRESHOLD_FLOOR`, `ADDA_ROUTER_WINDOW`, `ADDA_LIVELINESS`, `ADDA_BUDGET_USD`, `ADDA_MODE`, `ADDA_COOLDOWN_S`, `ADDA_SEAT_TIMEOUT_S`, `ADDA_MAX_AUTO_TURNS`, `ADDA_MAX_CONCURRENT`, `ADDA_ACCESS`.
 
 Keys live in `~/.config/adda/keys.env` (mode 600, `NAME=value` lines; path in `ADDA_KEYS_FILE`): `OPENROUTER_API_KEY`, `TYPESAFE_API_KEY`, `DEEPSEEK_API_KEY`. For each key Adda looks at the environment variable first, then `keys.env`, and for OpenRouter finally the older `~/.config/jev/openrouter.env`. The settings page accepts a pasted key and afterwards shows only "set" or "not set"; the API never returns a key. Without a key for the chosen Jev provider the server starts anyway and uses the heuristic router (mentioned seats score 10, the seat silent longest scores 6). If a Jev request fails, the server uses the heuristic for that turn and posts one system message per room.
 
@@ -163,7 +178,7 @@ Refunds go through the ledger, never straight to the card processor.
 
 You review memory from the "Memory" button on the room page. It has one tab per seat with that persona's notes, newest first, and a "This room" tab with the notes written from this room. Editing or deleting a note rewrites `memory/index.md` from the note files, so the index injected into prompts always matches them. Memory routes: `GET /api/personas/<slug>/memory`, `PUT /api/personas/<slug>/memory/<file>` with `{"title"?, "body"?}`, `DELETE /api/personas/<slug>/memory/<file>`, and `GET /api/rooms/<id>/memory` (notes from that room by persona slug). A file name must match `NNN-lowercase-slug.md`; anything else is a 400, and a valid name that does not exist is a 404.
 
-A seat can also carry a custom instruction, alone or on top of a persona. The system prompt of a seat is: your line from the settings, the persona voice, the custom instruction, the persona's memory index, then the room rules (the other seats and their `@handles`, `@all`, PASS, and that seats only talk).
+A seat can also carry a custom instruction, alone or on top of a persona. The system prompt of a seat is: your line from the settings, the persona voice, the custom instruction, the persona's memory index, then the room rules (the other seats and their `@handles`, `@all`, PASS, and the seat's access sentence).
 
 ## Adding a harness default
 

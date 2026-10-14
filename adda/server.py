@@ -40,6 +40,7 @@ from adda.folders import (
 )
 from adda.harnesses import clear_model_cache, detect_harnesses
 from adda.models import (
+    Access,
     Harness,
     MemoryNote,
     Mode,
@@ -101,6 +102,7 @@ class NewSeat(BaseModel):
     instruction: str | None = None
     color: str | None = None
     eagerness: int = Field(default=5, ge=0, le=10)
+    access: Access | None = None  # None = the room's level
     copies: int = Field(default=1, ge=1, le=MAX_COPIES)
 
     @field_validator("name")
@@ -136,6 +138,7 @@ class NewRoom(BaseModel):
     liveliness: int | None = Field(default=None, ge=0, le=10)
     budget_usd: float | None = Field(default=None, ge=0)
     max_concurrent: int | None = Field(default=None, ge=1, le=4)
+    access: Access | None = None
     seats: list[NewSeat] = Field(default_factory=list)
 
 
@@ -330,7 +333,13 @@ class Hub:
         else:
             folder = self._make_folder(self.suggest_folder(title))
         room = self.store.create_room(
-            title, str(folder), mode, liveliness, budget_usd, max_concurrent
+            title,
+            str(folder),
+            mode,
+            liveliness,
+            budget_usd,
+            max_concurrent,
+            body.access or self.settings.access,
         )
         for new_seat in body.seats:
             self._add_seats(room.id, new_seat)
@@ -382,6 +391,7 @@ class Hub:
                     instruction=(new_seat.instruction or "").strip() or None,
                     color=color,
                     eagerness=new_seat.eagerness,
+                    access=new_seat.access,
                 )
             )
         return added
@@ -647,6 +657,7 @@ def create_app(
                 "instruction": seat.instruction,
                 "color": seat.color,
                 "eagerness": seat.eagerness,
+                "access": seat.access,
             }
             for seat in store.last_room_seats()
         ]

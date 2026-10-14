@@ -3,10 +3,12 @@
 Public API (all methods are thread-safe; ids are 12-char hex strings):
 
     Rooms    create_room(title, folder="", mode="bidding", liveliness=6, budget_usd=0.0,
-                         max_concurrent=2) -> Room   (with a first thread titled like the room)
+                         max_concurrent=2, access="talk") -> Room
+                         (with a first thread titled like the room)
              get_room(room_id) -> Room            (seats in position order, threads newest first)
              list_rooms() -> list[Room]           (newest first, seats and threads included)
-             update_room(room_id, **fields) -> Room   (title, folder, mode, liveliness, budget_usd)
+             update_room(room_id, **fields) -> Room   (title, folder, mode, liveliness, budget_usd,
+                      max_concurrent, access)
              end_room(room_id) -> Room            (archives the room; threads are not touched)
              add_spend(room_id, usd) -> Room      (atomic increment of spent_usd)
     Threads  create_thread(room_id, title) -> Thread
@@ -47,6 +49,7 @@ from pathlib import Path
 from typing import Any
 
 from adda.models import (
+    ACCESS_LEVELS,
     MODES,
     THINKING_LEVELS,
     Message,
@@ -71,7 +74,8 @@ CREATE TABLE IF NOT EXISTS rooms (
     liveliness INTEGER NOT NULL DEFAULT 6,
     budget_usd REAL NOT NULL DEFAULT 0,
     spent_usd REAL NOT NULL DEFAULT 0,
-    max_concurrent INTEGER NOT NULL DEFAULT 2
+    max_concurrent INTEGER NOT NULL DEFAULT 2,
+    access TEXT NOT NULL DEFAULT 'talk'
 );
 CREATE TABLE IF NOT EXISTS room_seats (
     id TEXT PRIMARY KEY,
@@ -85,7 +89,8 @@ CREATE TABLE IF NOT EXISTS room_seats (
     color TEXT NOT NULL,
     enabled INTEGER NOT NULL DEFAULT 1,
     position INTEGER NOT NULL DEFAULT 0,
-    eagerness INTEGER NOT NULL DEFAULT 5
+    eagerness INTEGER NOT NULL DEFAULT 5,
+    access TEXT
 );
 CREATE INDEX IF NOT EXISTS room_seats_by_room ON room_seats(room_id, position);
 CREATE TABLE IF NOT EXISTS threads (
@@ -139,7 +144,15 @@ CREATE TABLE IF NOT EXISTS threads (
 # The thread list shows the newest message's first line, cut to this many characters.
 LAST_LINE_LENGTH = 140
 
-ROOM_UPDATABLE_FIELDS = ("title", "folder", "mode", "liveliness", "budget_usd", "max_concurrent")
+ROOM_UPDATABLE_FIELDS = (
+    "title",
+    "folder",
+    "mode",
+    "liveliness",
+    "budget_usd",
+    "max_concurrent",
+    "access",
+)
 SEAT_UPDATABLE_FIELDS = (
     "name",
     "program",
@@ -151,6 +164,7 @@ SEAT_UPDATABLE_FIELDS = (
     "enabled",
     "position",
     "eagerness",
+    "access",
 )
 PROGRAM_NAMES = ("claude", "opencode", "pi", "codex")
 
@@ -291,6 +305,14 @@ class Store:
                 self._connection.execute(
                     "ALTER TABLE room_seats ADD COLUMN eagerness INTEGER NOT NULL DEFAULT 5"
                 )
+        if "access" not in room_columns:
+            with self._connection:
+                self._connection.execute(
+                    "ALTER TABLE rooms ADD COLUMN access TEXT NOT NULL DEFAULT 'talk'"
+                )
+        if "access" not in seat_columns:
+            with self._connection:
+                self._connection.execute("ALTER TABLE room_seats ADD COLUMN access TEXT")
 
     def close(self) -> None:
         with self._lock:
@@ -306,9 +328,14 @@ class Store:
         liveliness: int = 6,
         budget_usd: float = 0.0,
         max_concurrent: int = 2,
+        access: str = "talk",
     ) -> Room:
         _check_room_fields(
-            mode=mode, liveliness=liveliness, budget_usd=budget_usd, max_concurrent=max_concurrent
+            mode=mode,
+            liveliness=liveliness,
+            budget_usd=budget_usd,
+            max_concurrent=max_concurrent,
+            access=access,
         )
         room = Room(
             title=title,
@@ -317,12 +344,14 @@ class Store:
             liveliness=liveliness,
             budget_usd=budget_usd,
             max_concurrent=max_concurrent,
+            access=access,
         )
         first_thread = Thread(room_id=room.id, title=title, created_at=room.created_at)
         with self._lock, self._connection:
             self._connection.execute(
                 "INSERT INTO rooms (id, title, created_at, ended_at, mode, folder, liveliness,"
-                " budget_usd, spent_usd, max_concurrent) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, 0, ?)",
+                " budget_usd, spent_usd, max_concurrent, access)"
+                " VALUES (?, ?, ?, NULL, ?, ?, ?, ?, 0, ?, ?)",
                 (
                     room.id,
                     room.title,
@@ -332,6 +361,7 @@ class Store:
                     room.liveliness,
                     room.budget_usd,
                     room.max_concurrent,
+                    room.access,
                 ),
             )
             # Every room has at least one thread, so a room page always has one to open.
@@ -401,9 +431,10 @@ class Store:
             budget_usd=room_row["budget_usd"],
             spent_usd=room_row["spent_usd"],
             max_concurrent=room_row["max_concurrent"],
+            access=room_row["access"],
             created_at=datetime.fromisoformat(room_row["created_at"]),
             ended_at=None if ended_at is None else datetime.fromisoformat(ended_at),
-            seats=[_seat_from_row(seat_row) for seat_row in seat_rows],
+            seats=[_seat_from_row(seat_row, room_row["access"]) for seat_row in seat_rows],
             threads=self._thread_summaries(room_row["id"]),
         )
 
@@ -524,10 +555,11 @@ class Store:
         enabled: bool = True,
         position: int | None = None,
         eagerness: int = 5,
+        access: str | None = None,
     ) -> Seat:
-        _check_seat_fields(program=program, thinking=thinking, eagerness=eagerness)
+        _check_seat_fields(program=program, thinking=thinking, eagerness=eagerness, access=access)
         with self._lock:
-            self._load_room(room_id)
+            room = self._load_room(room_id)
             self._check_name_free(room_id, name, ignoring_seat_id=None)
             if position is None:
                 highest = self._connection.execute(
@@ -546,12 +578,13 @@ class Store:
                 enabled=enabled,
                 position=position,
                 eagerness=eagerness,
+                access=access,
             )
             with self._connection:
                 self._connection.execute(
                     "INSERT INTO room_seats (id, room_id, name, program, model, thinking, persona,"
-                    " instruction, color, enabled, position, eagerness)"
-                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    " instruction, color, enabled, position, eagerness, access)"
+                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     (
                         config.id,
                         config.room_id,
@@ -565,9 +598,10 @@ class Store:
                         int(config.enabled),
                         config.position,
                         config.eagerness,
+                        config.access,
                     ),
                 )
-        return Seat.from_config(config)
+        return Seat.from_config(config, room_access=room.access)
 
     def get_seat(self, seat_id: str) -> Seat:
         with self._lock:
@@ -643,7 +677,10 @@ class Store:
         ).fetchone()
         if row is None:
             raise NotFoundError(f"seat {seat_id!r} not found")
-        return _seat_from_row(row)
+        room_access = self._connection.execute(
+            "SELECT access FROM rooms WHERE id = ?", (row["room_id"],)
+        ).fetchone()["access"]
+        return _seat_from_row(row, room_access)
 
     def _check_name_free(self, room_id: str, name: str, ignoring_seat_id: str | None) -> None:
         """Mentions use the handle, so two seats whose handles match would be ambiguous."""
@@ -785,6 +822,8 @@ def _check_room_fields(**fields: Any) -> None:
             or not 1 <= max_concurrent <= 4
         ):
             raise ValueError(f"max_concurrent must be 1..4, got {max_concurrent!r}")
+    if "access" in fields and fields["access"] not in ACCESS_LEVELS:
+        raise ValueError(f"access must be one of {ACCESS_LEVELS}, got {fields['access']!r}")
 
 
 def _check_seat_fields(**fields: Any) -> None:
@@ -800,6 +839,9 @@ def _check_seat_fields(**fields: Any) -> None:
             or not 0 <= eagerness <= 10
         ):
             raise ValueError(f"eagerness must be a whole number 0..10, got {eagerness!r}")
+    # A seat's access may be None (use the room's level); a room's may not.
+    if fields.get("access") is not None and fields["access"] not in ACCESS_LEVELS:
+        raise ValueError(f"access must be one of {ACCESS_LEVELS}, got {fields['access']!r}")
 
 
 def _seat_fields(row: sqlite3.Row) -> dict[str, Any]:
@@ -816,11 +858,12 @@ def _seat_fields(row: sqlite3.Row) -> dict[str, Any]:
         "enabled": bool(row["enabled"]),
         "position": row["position"],
         "eagerness": row["eagerness"],
+        "access": row["access"],
     }
 
 
-def _seat_from_row(row: sqlite3.Row) -> Seat:
-    return Seat.from_config(SeatConfig(**_seat_fields(row)))
+def _seat_from_row(row: sqlite3.Row, room_access: str) -> Seat:
+    return Seat.from_config(SeatConfig(**_seat_fields(row)), room_access=room_access)
 
 
 def _thread_from_row(row: sqlite3.Row) -> Thread:

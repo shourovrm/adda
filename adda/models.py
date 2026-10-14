@@ -14,6 +14,10 @@ Thinking = Literal["default", "low", "medium", "high"]
 THINKING_LEVELS: tuple[str, ...] = ("default", "low", "medium", "high")
 MessageRole = Literal["owner", "seat", "system"]
 Program = Literal["claude", "opencode", "pi", "codex"]
+# What a seat may do in the room folder: talk = no tools, look = read-only tools,
+# work = read, edit, write and run commands (no approval prompts in v0.6).
+Access = Literal["talk", "look", "work"]
+ACCESS_LEVELS: tuple[str, ...] = ("talk", "look", "work")
 
 
 def new_id() -> str:
@@ -45,6 +49,7 @@ class SeatConfig(BaseModel):
     position: int = 0
     # 0..10; shifts every bid by 0.4 * (eagerness - 5); 0 means the seat never bids.
     eagerness: int = Field(default=5, ge=0, le=10)
+    access: Access | None = None  # None = the room's level
 
 
 class Seat(SeatConfig):
@@ -53,13 +58,20 @@ class Seat(SeatConfig):
     handle: str = ""
     available: bool = False
     harness_version: str | None = None
+    # The seat's own level, else the room's. Filled in by the store, which knows the room.
+    effective_access: Access = "talk"
 
     @classmethod
     def from_config(
-        cls, config: SeatConfig, available: bool = False, harness_version: str | None = None
+        cls,
+        config: SeatConfig,
+        available: bool = False,
+        harness_version: str | None = None,
+        room_access: Access = "talk",
     ) -> Seat:
         return cls(
             **config.model_dump(),
+            effective_access=config.access or room_access,
             handle=seat_handle(config.name),
             available=available,
             harness_version=harness_version,
@@ -94,6 +106,7 @@ class Room(BaseModel):
     spent_usd: float = 0.0
     # How many seats may compose a reply at the same time (1 reproduces strict turn-taking).
     max_concurrent: int = Field(default=2, ge=1, le=4)
+    access: Access = "talk"  # the level of every seat that has none of its own
     created_at: datetime = Field(default_factory=utc_now)
     # Set when the room is archived. Threads end one by one; the room stays open meanwhile.
     ended_at: datetime | None = None

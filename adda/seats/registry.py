@@ -22,12 +22,18 @@ ADAPTER_CLASSES: dict[str, type[CommandSeat]] = {
 
 
 def build_adapter(
-    config: SeatConfig, harness_settings: HarnessSettings | None, working_directory: Path
+    config: SeatConfig,
+    harness_settings: HarnessSettings | None,
+    working_directory: Path,
+    data_dir: Path | None = None,
 ) -> SeatAdapter:
     """Adapter for `config`. A seat that leaves model or thinking unset gets the harness default.
 
     "default" thinking on the seat means "use the harness default" (which itself may be
     "default", meaning no flag at all).
+
+    The seat's access is its effective level when `config` is a Seat (room level applied), else
+    its own level, else talk. `working_directory` is the room folder the tools may touch.
     """
     adapter_class = ADAPTER_CLASSES.get(config.program)
     if adapter_class is None:
@@ -39,9 +45,12 @@ def build_adapter(
     thinking = config.thinking
     if thinking == "default" and harness_settings is not None:
         thinking = harness_settings.thinking
+    access = getattr(config, "effective_access", None) or config.access or "talk"
     return adapter_class(
         name=config.name,
         model=model,
         working_directory=working_directory,
         thinking_arguments=thinking_arguments(config.program, thinking),
+        access=access,
+        data_dir=data_dir,
     )

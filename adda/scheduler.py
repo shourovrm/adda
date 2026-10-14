@@ -24,7 +24,17 @@ from pathlib import Path
 from typing import Any
 
 from adda.config import Settings
-from adda.models import MODES, THINKING_LEVELS, Bid, MemorySource, Message, Room, Seat, Thread
+from adda.models import (
+    ACCESS_LEVELS,
+    MODES,
+    THINKING_LEVELS,
+    Bid,
+    MemorySource,
+    Message,
+    Room,
+    Seat,
+    Thread,
+)
 from adda.personas import Persona, PersonaError, load_persona, load_personas, write_memory_note
 from adda.prompts import (
     END_OF_DISCUSSION_PROMPT,
@@ -76,7 +86,7 @@ AFTERTHOUGHT_JITTER_HIGH = 1.3
 # The first tick of a quiet spell is shortened by 5 % per eagerness point above 5.
 AFTERTHOUGHT_EAGERNESS_STEP = 0.05
 
-ROOM_PATCH_FIELDS = ("title", "mode", "liveliness", "budget_usd", "max_concurrent")
+ROOM_PATCH_FIELDS = ("title", "mode", "liveliness", "budget_usd", "max_concurrent", "access")
 SEAT_PATCH_FIELDS = (
     "name",
     "program",
@@ -88,6 +98,7 @@ SEAT_PATCH_FIELDS = (
     "enabled",
     "position",
     "eagerness",
+    "access",
 )
 # Text fields where the UI sends "" to mean "unset".
 EMPTY_MEANS_NONE_FIELDS = ("model", "persona", "instruction")
@@ -272,8 +283,9 @@ class Scheduler:
         return Path(room.folder) if room.folder else self.settings.seat_workdir
 
     def _sync_adapters(self, room: Room) -> None:
-        """Build adapters for new seats, rebuild those whose program, model or thinking changed
-        (or whose harness defaults changed), and drop those of removed seats."""
+        """Build adapters for new seats, rebuild those whose program, model, thinking or
+        effective access changed (or whose harness defaults changed), and drop those of removed
+        seats."""
         working_directory = self._working_directory(room)
         live_ids = {seat.id for seat in room.seats}
         for seat_id in list(self.adapters):
@@ -286,12 +298,13 @@ class Scheduler:
                 seat.program,
                 seat.model,
                 seat.thinking,
+                seat.effective_access,
                 str(working_directory),
                 harness_settings,
             )
             if self._adapter_signatures.get(seat.id) != signature:
                 self.adapters[seat.id] = self.adapter_builder(
-                    seat, harness_settings, working_directory
+                    seat, harness_settings, working_directory, self.settings.data_dir
                 )
                 self._adapter_signatures[seat.id] = signature
 
@@ -337,6 +350,10 @@ class Scheduler:
             if patch["mode"] not in MODES:
                 raise ValueError(f"mode must be one of {MODES}, got {patch['mode']!r}")
             fields["mode"] = patch["mode"]
+        if "access" in patch:
+            if patch["access"] not in ACCESS_LEVELS:
+                raise ValueError(f"access must be one of {ACCESS_LEVELS}, got {patch['access']!r}")
+            fields["access"] = patch["access"]
         if "liveliness" in patch:
             fields["liveliness"] = _whole_number(patch["liveliness"], "liveliness")
         if "budget_usd" in patch:
@@ -372,6 +389,8 @@ class Scheduler:
                     raise ValueError("enabled must be true or false")
             elif field_name == "position":
                 value = _whole_number(value, "position")
+            elif field_name == "access" and value is not None and value not in ACCESS_LEVELS:
+                raise ValueError(f"access must be one of {ACCESS_LEVELS} or null, got {value!r}")
             elif field_name == "thinking" and value not in THINKING_LEVELS:
                 raise ValueError(f"thinking must be one of {THINKING_LEVELS}, got {value!r}")
             fields[field_name] = value
@@ -951,7 +970,12 @@ class Scheduler:
         )
         other_seats = [other for other in room.seats if other.id != seat.id and other.enabled]
         seat_system_prompt = system_prompt(
-            seat, persona, other_seats, self.settings.owner_name, self.settings.owner_line
+            seat,
+            persona,
+            other_seats,
+            self.settings.owner_name,
+            self.settings.owner_line,
+            str(self._working_directory(room)),
         )
         session_id = self.store.get_session(self.thread_id, seat.id)
 
@@ -1043,7 +1067,12 @@ class Scheduler:
             reply = await adapter.run(
                 prompt,
                 system_prompt(
-                    seat, persona, other_seats, self.settings.owner_name, self.settings.owner_line
+                    seat,
+                    persona,
+                    other_seats,
+                    self.settings.owner_name,
+                    self.settings.owner_line,
+                    str(self._working_directory(room)),
                 ),
                 session_id,
                 self.settings.seat_timeout_s,

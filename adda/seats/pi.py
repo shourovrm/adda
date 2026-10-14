@@ -8,11 +8,20 @@ may provide model providers. The prompt goes last after "--". Output is JSONL: a
 {"type":"session","id":...} header, then events; `message_end` with message.role "assistant"
 carries content blocks, stopReason, errorMessage and usage.cost.total. Pi exits 0 even when the
 model call failed, so stopReason is checked here. Samples: tests/fixtures/seat_outputs/pi_*.jsonl.
+
+Access levels, verified 2026-10-14 from `pi --help` and docs/cli.md (example
+`pi --tools read,grep,find,ls --print ...`; no prompt run): --tools is a comma-separated
+allowlist, --no-tools disables all tools, --no-mcp disables MCP.
+- talk: --no-tools --no-mcp --no-context-files --no-skills
+- look: --tools read,grep,find,ls --no-mcp
+- work: --no-mcp (the built-in read, bash, edit, write)
+Look and work leave context files and skills on so the seat sees the project's AGENTS.md.
+Pi has no sandbox or folder confinement: look and work rely on the tool set alone.
 """
 
 from __future__ import annotations
 
-from adda.models import SeatReply
+from adda.models import Access, SeatReply
 from adda.seats.base import CommandSeat, SeatError, parse_json_lines
 
 FAILED_STOP_REASONS = ("error", "aborted")
@@ -22,16 +31,15 @@ class PiSeat(CommandSeat):
     program = "pi"
     binary = "pi"
 
-    def build_command(self, prompt: str, system_prompt: str, session_id: str | None) -> list[str]:
+    def build_command(
+        self, prompt: str, system_prompt: str, session_id: str | None, access: Access
+    ) -> list[str]:
         command = [
             self.binary,
             "-p",
             "--mode",
             "json",
-            "--no-tools",
-            "--no-mcp",
-            "--no-context-files",
-            "--no-skills",
+            *self._access_arguments(access),
             "--system-prompt",
             system_prompt,
         ]
@@ -41,6 +49,14 @@ class PiSeat(CommandSeat):
         if session_id:
             command += ["--session-id", session_id]
         return command + ["--", prompt]
+
+    @staticmethod
+    def _access_arguments(access: Access) -> list[str]:
+        if access == "look":
+            return ["--tools", "read,grep,find,ls", "--no-mcp"]
+        if access == "work":
+            return ["--no-mcp"]
+        return ["--no-tools", "--no-mcp", "--no-context-files", "--no-skills"]
 
     def parse_output(self, stdout: str, session_id: str | None) -> SeatReply:
         events = parse_json_lines(self.name, stdout)

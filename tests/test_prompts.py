@@ -117,7 +117,7 @@ def test_system_prompt_order_and_content(tmp_path):
     assert "PASS" in prompt
     assert "at the same moment" in prompt  # others compose at the same time; replies can cross
     assert "[more]" in prompt
-    assert "no files, no shell, no tools" in prompt
+    assert "You have no tools." in prompt
     assert "Riad" in prompt
 
 
@@ -205,3 +205,18 @@ def test_turn_prompt_names_the_thread_when_it_differs_from_the_room():
     seat = make_seat("Ravi")
     assert "Thread: Refund flow" in turn_prompt(room, [], seat, "Riad", thread_title="Refund flow")
     assert "Thread:" not in turn_prompt(room, [], seat, "Riad", thread_title="Billing")
+
+
+@pytest.mark.parametrize(
+    ("access", "sentence"),
+    [
+        ("talk", "You have no tools."),
+        ("look", "You may read files in /rooms/project."),
+        ("work", "You may read, edit and run commands in /rooms/project."),
+    ],
+)
+def test_system_prompt_states_the_effective_access_in_one_sentence(access, sentence):
+    seat = make_seat("Ravi").model_copy(update={"effective_access": access})
+    prompt = system_prompt(seat, None, [], "Riad", "", "/rooms/project")
+    assert sentence in prompt
+    assert "no files, no shell" not in prompt

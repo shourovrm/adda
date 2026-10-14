@@ -542,3 +542,59 @@ def test_sessions_are_per_thread(store):
     assert store.get_session(second.id, seat.id) is None
     store.set_session(second.id, seat.id, "session-two")
     assert store.get_session(first_id, seat.id) == "session-one"
+
+
+# Access levels (SPEC v0.6 G1) -----------------------------------------------------------------
+
+
+def test_database_from_version_five_gets_access_columns_in_place(tmp_path):
+    database_path = tmp_path / "v05.db"
+    first_store = Store(database_path)
+    room = first_store.create_room("old")
+    seat = first_store.add_seat(room.id, name="Ada", program="claude")
+    first_store.close()
+    # Turn it back into a v0.5 database: no access column on either table.
+    connection = sqlite3.connect(database_path)
+    connection.execute("ALTER TABLE rooms DROP COLUMN access")
+    connection.execute("ALTER TABLE room_seats DROP COLUMN access")
+    connection.commit()
+    connection.close()
+
+    store = Store(database_path)
+    upgraded_room = store.get_room(room.id)
+    assert upgraded_room.access == "talk"
+    assert upgraded_room.seats[0].access is None
+    assert upgraded_room.seats[0].effective_access == "talk"
+    store.update_room(room.id, access="work")
+    assert store.get_seat(seat.id).effective_access == "work"
+    store.close()
+    Store(database_path).close()  # a second open must not add the columns again
+
+
+def test_effective_access_is_the_seat_level_else_the_room_level(store):
+    room = store.create_room("project", access="look")
+    inheriting = store.add_seat(room.id, name="A", program="claude")
+    explicit = store.add_seat(room.id, name="B", program="pi", access="work")
+    assert (inheriting.access, inheriting.effective_access) == (None, "look")
+    assert (explicit.access, explicit.effective_access) == ("work", "work")
+
+    store.update_room(room.id, access="talk")
+    seats = {seat.name: seat for seat in store.get_room(room.id).seats}
+    assert seats["A"].effective_access == "talk"
+    assert seats["B"].effective_access == "work"
+
+    store.update_seat(explicit.id, access=None)  # null clears the seat's own level
+    assert store.get_seat(explicit.id).effective_access == "talk"
+
+
+def test_access_values_are_checked_for_rooms_and_seats(store):
+    with pytest.raises(ValueError, match="access"):
+        store.create_room("bad", access="root")
+    room = store.create_room("ok")
+    with pytest.raises(ValueError, match="access"):
+        store.update_room(room.id, access=None)
+    with pytest.raises(ValueError, match="access"):
+        store.add_seat(room.id, name="A", program="claude", access="root")
+    seat = store.add_seat(room.id, name="B", program="claude")
+    with pytest.raises(ValueError, match="access"):
+        store.update_seat(seat.id, access="root")

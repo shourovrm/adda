@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
 
 from adda.config import HarnessSettings
-from adda.models import SeatConfig
-from adda.seats.base import SeatError
+from adda.models import Seat, SeatConfig
+from adda.seats.base import SeatError, seat_environment
 from adda.seats.claude import ClaudeSeat
 from adda.seats.codex import CodexSeat
 from adda.seats.opencode import OpenCodeSeat
@@ -31,7 +32,7 @@ def make_config(name: str, program: str, **fields) -> SeatConfig:
 
 
 def test_claude_first_turn_command():
-    command = ClaudeSeat("ada").build_command("hi", SYSTEM, None)
+    command = ClaudeSeat("ada").build_command("hi", SYSTEM, None, "talk")
     assert command[:3] == ["claude", "-p", "hi"]
     assert command[command.index("--tools") + 1] == ""
     assert command[command.index("--append-system-prompt") + 1] == SYSTEM
@@ -41,7 +42,7 @@ def test_claude_first_turn_command():
 
 
 def test_claude_resume_and_model():
-    command = ClaudeSeat("ada", model="haiku").build_command("hi", SYSTEM, "sess-1")
+    command = ClaudeSeat("ada", model="haiku").build_command("hi", SYSTEM, "sess-1", "talk")
     assert command[command.index("--resume") + 1] == "sess-1"
     assert command[command.index("--model") + 1] == "haiku"
     assert command[command.index("--append-system-prompt") + 1] == SYSTEM
@@ -68,7 +69,7 @@ def test_claude_garbage():
 
 
 def test_opencode_first_turn_prepends_system_prompt():
-    command = OpenCodeSeat("bo").build_command("hi", SYSTEM, None)
+    command = OpenCodeSeat("bo").build_command("hi", SYSTEM, None, "talk")
     assert command[:2] == ["opencode", "run"]
     assert command[-2] == "--"
     assert command[-1] == f"{SYSTEM}\n\nhi"
@@ -76,7 +77,9 @@ def test_opencode_first_turn_prepends_system_prompt():
 
 
 def test_opencode_resume_does_not_repeat_system_prompt():
-    command = OpenCodeSeat("bo", model="anthropic/haiku").build_command("- hi", SYSTEM, "ses_1")
+    command = OpenCodeSeat("bo", model="anthropic/haiku").build_command(
+        "- hi", SYSTEM, "ses_1", "talk"
+    )
     assert command[command.index("--session") + 1] == "ses_1"
     assert command[command.index("--model") + 1] == "anthropic/haiku"
     assert command[-2:] == ["--", "- hi"]
@@ -103,7 +106,7 @@ def test_opencode_garbage():
 
 
 def test_pi_first_turn_command():
-    command = PiSeat("cy").build_command("hi", SYSTEM, None)
+    command = PiSeat("cy").build_command("hi", SYSTEM, None, "talk")
     assert command[:4] == ["pi", "-p", "--mode", "json"]
     for flag in ("--no-tools", "--no-mcp", "--no-context-files", "--no-skills"):
         assert flag in command
@@ -114,7 +117,7 @@ def test_pi_first_turn_command():
 
 
 def test_pi_resume_and_model():
-    command = PiSeat("cy", model="some/model").build_command("hi", SYSTEM, "abc")
+    command = PiSeat("cy", model="some/model").build_command("hi", SYSTEM, "abc", "talk")
     assert command[command.index("--session-id") + 1] == "abc"
     assert command[command.index("--model") + 1] == "some/model"
 
@@ -146,7 +149,7 @@ def test_pi_garbage():
 
 
 def test_codex_first_turn_command():
-    command = CodexSeat("di", model="m").build_command("hi", SYSTEM, None)
+    command = CodexSeat("di", model="m").build_command("hi", SYSTEM, None, "talk")
     assert command[:3] == ["codex", "exec", "--json"]
     assert command[command.index("--sandbox") + 1] == "read-only"
     assert command[command.index("--model") + 1] == "m"
@@ -154,7 +157,7 @@ def test_codex_first_turn_command():
 
 
 def test_codex_resume_command():
-    command = CodexSeat("di").build_command("hi", SYSTEM, "thread-1")
+    command = CodexSeat("di").build_command("hi", SYSTEM, "thread-1", "talk")
     assert command[:4] == ["codex", "exec", "resume", "thread-1"]
     assert command[-1] == "hi"
 
@@ -181,18 +184,18 @@ def test_codex_garbage():
 
 def test_claude_thinking_flag_comes_before_resume():
     seat = ClaudeSeat("ada", thinking_arguments=["--effort", "high"])
-    command = seat.build_command("hi", SYSTEM, "sess-1")
+    command = seat.build_command("hi", SYSTEM, "sess-1", "talk")
     assert command[command.index("--effort") + 1] == "high"
 
 
 def test_opencode_and_pi_thinking_flags_stay_before_the_prompt_separator():
     opencode = OpenCodeSeat("bo", thinking_arguments=["--variant", "low"])
-    command = opencode.build_command("hi", SYSTEM, None)
+    command = opencode.build_command("hi", SYSTEM, None, "talk")
     assert command.index("--variant") < command.index("--")
     assert command[command.index("--variant") + 1] == "low"
 
     pi = PiSeat("cy", thinking_arguments=["--thinking", "medium"])
-    command = pi.build_command("hi", SYSTEM, None)
+    command = pi.build_command("hi", SYSTEM, None, "talk")
     assert command.index("--thinking") < command.index("--")
     assert command[command.index("--thinking") + 1] == "medium"
 
@@ -200,13 +203,13 @@ def test_opencode_and_pi_thinking_flags_stay_before_the_prompt_separator():
 def test_codex_thinking_flag_precedes_the_message():
     command = CodexSeat(
         "di", thinking_arguments=["-c", "model_reasoning_effort=high"]
-    ).build_command("hi", SYSTEM, None)
+    ).build_command("hi", SYSTEM, None, "talk")
     assert command[-3:-1] == ["-c", "model_reasoning_effort=high"]
 
 
 def test_no_thinking_arguments_means_no_flag():
     for seat_class in (ClaudeSeat, OpenCodeSeat, PiSeat, CodexSeat):
-        command = seat_class("x").build_command("hi", SYSTEM, None)
+        command = seat_class("x").build_command("hi", SYSTEM, None, "talk")
         assert not {"--effort", "--variant", "--thinking"} & set(command)
 
 
@@ -263,3 +266,147 @@ def test_registry_unknown_program(tmp_path):
     config = make_config("x", "claude").model_copy(update={"program": "emacs"})
     with pytest.raises(ValueError, match="unknown program"):
         build_adapter(config, None, tmp_path)
+
+
+# --- access levels (SPEC v0.6 G2) -----------------------------------------------------------
+
+ROOM_FOLDER = Path("/work/room")
+READ_ONLY_CLAUDE_TOOLS = "Read,Grep,Glob,LS"
+WORK_CLAUDE_TOOLS = "Read,Grep,Glob,LS,Edit,Write,MultiEdit,Bash"
+
+
+def claude_command(access: str) -> list[str]:
+    seat = ClaudeSeat("ada", working_directory=ROOM_FOLDER)
+    return seat.build_command("hi", SYSTEM, None, access)
+
+
+def test_claude_talk_sends_no_tools_and_no_folder():
+    command = claude_command("talk")
+    assert command[command.index("--tools") + 1] == ""
+    assert "--add-dir" not in command
+    assert "--allowedTools" not in command
+    assert "--permission-prompts" not in command
+
+
+def test_claude_look_allows_only_read_tools_in_the_room_folder():
+    command = claude_command("look")
+    assert command[command.index("--tools") + 1] == READ_ONLY_CLAUDE_TOOLS
+    assert command[command.index("--add-dir") + 1] == str(ROOM_FOLDER)
+    assert command[command.index("--permission-prompts") + 1] == "none"
+    assert "--allowedTools" not in command
+    assert "--permission-mode" not in command
+    assert not {"Edit", "Write", "Bash"} & set(command[command.index("--tools") + 1].split(","))
+
+
+def test_claude_work_allows_edit_write_and_shell_without_prompts():
+    command = claude_command("work")
+    assert command[command.index("--tools") + 1] == WORK_CLAUDE_TOOLS
+    assert command[command.index("--allowedTools") + 1] == WORK_CLAUDE_TOOLS
+    assert command[command.index("--permission-mode") + 1] == "acceptEdits"
+    assert command[command.index("--permission-prompts") + 1] == "none"
+    assert command[command.index("--add-dir") + 1] == str(ROOM_FOLDER)
+
+
+@pytest.mark.parametrize("access", ["talk", "look", "work"])
+def test_claude_variadic_flags_never_swallow_the_next_argument(access):
+    command = claude_command(access)
+    for flag in ("--tools", "--allowedTools", "--add-dir"):
+        if flag in command:
+            following = command[command.index(flag) + 2]
+            assert following.startswith("--"), (flag, following)
+    assert command[command.index("--append-system-prompt") + 1] == SYSTEM
+
+
+def test_pi_commands_per_access_level():
+    pi = PiSeat("cy")
+    talk = pi.build_command("hi", SYSTEM, None, "talk")
+    for flag in ("--no-tools", "--no-mcp", "--no-context-files", "--no-skills"):
+        assert flag in talk
+    look = pi.build_command("hi", SYSTEM, None, "look")
+    assert look[look.index("--tools") + 1] == "read,grep,find,ls"
+    assert "--no-mcp" in look
+    assert "--no-tools" not in look
+    work = pi.build_command("hi", SYSTEM, None, "work")
+    assert "--no-mcp" in work
+    assert "--tools" not in work
+    assert "--no-tools" not in work
+    for command in (talk, look, work):
+        assert command[-2:] == ["--", "hi"]
+
+
+def test_opencode_command_has_no_permission_flag_at_any_level():
+    opencode = OpenCodeSeat("bo")
+    commands = {level: opencode.build_command("hi", SYSTEM, None, level) for level in LEVELS}
+    assert commands["talk"] == commands["look"] == commands["work"]
+    assert "--dangerously-skip-permissions" not in commands["work"]
+
+
+LEVELS = ("talk", "look", "work")
+
+
+@pytest.mark.parametrize(
+    ("access", "allowed", "denied"),
+    [
+        ("talk", set(), {"read", "glob", "grep", "list", "edit", "bash", "webfetch"}),
+        ("look", {"read", "glob", "grep", "list"}, {"edit", "bash", "webfetch", "websearch"}),
+        (
+            "work",
+            {"read", "glob", "grep", "list", "edit", "bash"},
+            {"webfetch", "websearch", "external_directory"},
+        ),
+    ],
+)
+def test_opencode_writes_one_config_file_per_level(tmp_path, access, allowed, denied):
+    seat = OpenCodeSeat("bo", data_dir=tmp_path)
+    environment = seat.extra_environment(access)
+    config_path = tmp_path / "opencode-config" / f"{access}.json"
+    assert environment == {"OPENCODE_CONFIG": str(config_path)}
+    permission = json.loads(config_path.read_text(encoding="utf-8"))["permission"]
+    assert {key for key, value in permission.items() if value == "allow"} == allowed
+    assert denied <= {key for key, value in permission.items() if value == "deny"}
+    assert "ask" not in permission.values()  # nobody can answer headless
+
+
+def test_other_harnesses_need_no_extra_environment():
+    for seat_class in (ClaudeSeat, PiSeat, CodexSeat):
+        assert seat_class("x").extra_environment("work") == {}
+
+
+def test_seat_environment_adds_extra_variables_and_still_drops_billing_keys(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "must-not-leak")
+    environment = seat_environment({"OPENCODE_CONFIG": "/x.json"})
+    assert environment["OPENCODE_CONFIG"] == "/x.json"
+    assert "ANTHROPIC_API_KEY" not in environment
+
+
+@pytest.mark.parametrize("access", LEVELS)
+def test_codex_falls_back_to_talk_because_its_flags_are_unverified(access):
+    codex = CodexSeat("di")
+    assert codex.build_command("hi", SYSTEM, None, access) == codex.build_command(
+        "hi", SYSTEM, None, "talk"
+    )
+
+
+def test_registry_gives_the_adapter_the_effective_access_and_data_dir(tmp_path):
+    seat = Seat.from_config(make_config("Ada", "opencode", access="look"), room_access="work")
+    adapter = build_adapter(seat, None, tmp_path, tmp_path / "data")
+    assert adapter.access == "look"
+    assert adapter.data_dir == tmp_path / "data"
+    inherited = Seat.from_config(make_config("Bo", "pi"), room_access="work")
+    assert build_adapter(inherited, None, tmp_path).access == "work"
+    assert build_adapter(make_config("Cy", "pi"), None, tmp_path).access == "talk"
+
+
+async def test_run_builds_the_command_with_the_adapters_access(tmp_path, monkeypatch):
+    seen = {}
+
+    async def fake_run_command(seat, command, timeout_s, working_directory, extra_variables):
+        seen.update(command=command, extra_variables=extra_variables)
+        return fixture_text("opencode_success.jsonl")
+
+    monkeypatch.setattr("adda.seats.base.run_command", fake_run_command)
+    adapter = OpenCodeSeat("bo", working_directory=tmp_path, access="look", data_dir=tmp_path)
+    await adapter.run("hi", SYSTEM, None, 5)
+    assert seen["extra_variables"] == {
+        "OPENCODE_CONFIG": str(tmp_path / "opencode-config" / "look.json")
+    }

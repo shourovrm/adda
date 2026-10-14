@@ -4,16 +4,16 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light dark">
-  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v=0.5">
-  <link rel="stylesheet" href="/static/style.css?v=0.5">
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v=0.6">
+  <link rel="stylesheet" href="/static/style.css?v=0.6">
   <title>Room · Adda</title>
-  <script src="/static/common.js?v=0.5" defer></script>
-  <script src="/static/markdown.js?v=0.5" defer></script>
-  <script src="/static/room.js?v=0.5" defer></script>
+  <script src="/static/common.js?v=0.6" defer></script>
+  <script src="/static/markdown.js?v=0.6" defer></script>
+  <script src="/static/room.js?v=0.6" defer></script>
 </head>
 <body class="page-room">
   <header class="top">
-    <a class="brand" href="/"><img class="brand-mark" src="/static/logo.svg?v=0.5" width="28" height="28" alt="">Adda <small lang="bn">আড্ডা</small></a>
+    <a class="brand" href="/"><img class="brand-mark" src="/static/logo.svg?v=0.6" width="28" height="28" alt="">Adda <small lang="bn">আড্ডা</small></a>
     <nav aria-label="Pages">
       <a href="/">Rooms</a>
       <a href="/settings">Settings</a>
@@ -90,6 +90,10 @@
           <option value="4">4</option>
         </select>
         <div class="field-hint">How many seats may write a reply at the same time.</div>
+        <label for="access-select">Access</label>
+        <select id="access-select"></select>
+        <div class="field-hint" id="access-description"></div>
+        <div class="field-hint access-warning" id="access-warning" hidden></div>
         <label for="budget-input">Budget</label>
         <div class="row">
           <input type="number" id="budget-input" min="0" step="0.25">

@@ -685,7 +685,7 @@ th {
 
 .seat-row {
   display: grid;
-  grid-template-columns: 30px 1.1fr 1.15fr 1.3fr 1.15fr 1.3fr 1.5fr 34px;
+  grid-template-columns: 30px 1.1fr 1.15fr 1.3fr 1.15fr 1.3fr 1.1fr 1.5fr 34px;
   gap: 10px;
   align-items: center;
   padding: 10px 0;
@@ -1886,6 +1886,28 @@ dialog.memory-drawer {
 
 .seat-eagerness {
   white-space: nowrap;
+}
+
+/* Work access is full trust inside the folder, so its warning is red and never muted. */
+.access-warning {
+  color: var(--stop);
+  font-weight: 600;
+  margin-top: 4px;
+}
+
+.access-marker {
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 1px 7px;
+  border: 1px solid var(--mute);
+  border-radius: 999px;
+  color: var(--mute);
+  white-space: nowrap;
+}
+
+.access-marker--work {
+  border-color: var(--stop);
+  color: var(--stop);
 }
 
 /* Three columns get tight between the narrow-screen breakpoint and a full desktop width. */

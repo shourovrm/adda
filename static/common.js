@@ -295,6 +295,45 @@ function describeLiveliness(liveliness, automaticTurns) {
 }
 
 // ---------------------------------------------------------------------------
+// Access levels (SPEC v0.6 G3)
+// ---------------------------------------------------------------------------
+
+const ACCESS_LABELS = { talk: 'Talk only', look: 'Look', work: 'Work' };
+const ACCESS_DESCRIPTIONS = {
+  talk: 'Seats have no tools. They only talk.',
+  look: 'Seats may read, list and search files in the room folder. They cannot change anything.',
+  work: 'Seats may read, edit and write files and run shell commands in the room folder.',
+};
+
+function describeAccessWarning(folder) {
+  return `Seats may edit files and run commands in ${folder || 'the room folder'} without asking.`;
+}
+
+/**
+ * `roomLevelLabel` adds a first option with the empty value, meaning "follow the room"; the
+ * panel select has no such option because a room always has a level of its own.
+ */
+function fillAccessSelect(select, selectedAccess, roomLevelLabel = null) {
+  select.replaceChildren();
+  if (roomLevelLabel) {
+    const roomOption = createElement('option', '', roomLevelLabel);
+    roomOption.value = '';
+    select.append(roomOption);
+  }
+  for (const level of Object.keys(ACCESS_LABELS)) {
+    const option = createElement('option', '', ACCESS_LABELS[level]);
+    option.value = level;
+    select.append(option);
+  }
+  select.value = selectedAccess || '';
+}
+
+/** The value a seat or room sends: null when the select says "room level". */
+function readAccessSelect(select) {
+  return select.value || null;
+}
+
+// ---------------------------------------------------------------------------
 // Eagerness (SPEC v0.3 D2)
 // ---------------------------------------------------------------------------
 

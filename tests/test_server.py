@@ -228,6 +228,8 @@ def test_create_room_uses_and_creates_an_explicit_folder(client, tmp_path):
         ({"title": "x", "liveliness": 11}, "liveliness"),
         ({"title": "x", "max_concurrent": 0}, "max_concurrent"),
         ({"title": "x", "max_concurrent": 5}, "max_concurrent"),
+        ({"title": "x", "access": "root"}, "access"),
+        ({"title": "x", "seats": [{"name": "A", "program": "pi", "access": "root"}]}, "access"),
         ({"title": "x", "seats": [{"name": "A", "program": "emacs"}]}, "program"),
         ({"title": "x", "seats": [{"name": "A", "program": "pi", "persona": "nobody"}]}, "nobody"),
         ({"title": "x", "seats": [{"name": "A", "program": "pi", "copies": 0}]}, "copies"),
@@ -284,6 +286,7 @@ def test_last_seats_returns_new_seat_shaped_dicts(client):
             "instruction": "Be brief.",
             "color": "#D9480F",
             "eagerness": 5,
+            "access": None,
         }
     ]
 
@@ -484,6 +487,7 @@ def test_settings_put_keeps_env_overridden_fields_out_of_the_file(client, enviro
     [
         lambda view: view["room_defaults"].update(liveliness=99),
         lambda view: view["room_defaults"].update(max_concurrent=5),
+        lambda view: view["room_defaults"].update(access="root"),
         lambda view: view["room_defaults"].update(afterthought_scale=0),
         lambda view: view["room_defaults"].update(more_limit=-1),
         lambda view: view["router"].update(provider="carrier-pigeon"),
@@ -588,6 +592,7 @@ def test_room_and_seat_frames_patch_the_room_and_reach_every_tab(client):
         ({"type": "say", "text": "   "}, "non-empty"),
         ({"type": "room", "patch": {"liveliness": 99}}, "liveliness"),
         ({"type": "room", "patch": {"max_concurrent": 9}}, "max_concurrent"),
+        ({"type": "room", "patch": {"access": "root"}}, "access"),
         ({"type": "room"}, "patch"),
         ({"type": "seat", "seat": "nope", "patch": {"color": "#000"}}, "nope"),
         ({"type": "seat", "seat": "x", "patch": []}, "patch"),
@@ -1077,3 +1082,109 @@ def test_open_folder_refuses_a_folder_outside_home(client, store, opened_folders
 
 def test_open_folder_of_an_unknown_room_is_404(client):
     assert client.post("/api/rooms/nope/open-folder").status_code == 404
+
+
+# Access levels (SPEC v0.6 G1) -----------------------------------------------------------------
+
+
+def test_a_new_room_gets_the_settings_default_access_and_seats_report_effective_access(client):
+    room = make_room(client)
+    assert room["access"] == "talk"
+    assert [seat["access"] for seat in room["seats"]] == [None, None, None]
+    assert [seat["effective_access"] for seat in room["seats"]] == ["talk"] * 3
+
+
+def test_room_and_seat_access_are_accepted_when_creating_a_room(client):
+    room = make_room(
+        client,
+        access="look",
+        seats=[
+            {"name": "Ravi", "program": "claude"},
+            {"name": "Tuli", "program": "pi", "access": "work"},
+        ],
+    )
+    assert room["access"] == "look"
+    by_name = {seat["name"]: seat for seat in room["seats"]}
+    assert (by_name["Ravi"]["access"], by_name["Ravi"]["effective_access"]) == (None, "look")
+    assert (by_name["Tuli"]["access"], by_name["Tuli"]["effective_access"]) == ("work", "work")
+
+
+def test_the_settings_default_access_is_used_when_the_request_names_none(
+    environment, static_directory, factory, store, tmp_path
+):
+    environment["ADDA_ACCESS"] = "look"
+    app = create_app(
+        load_settings(environment),
+        store=store,
+        router=HeuristicRouter(),
+        adapter_builder=factory,
+        detect=fake_harnesses,
+        environment=environment,
+        static_directory=static_directory,
+        home=tmp_path,
+        today=lambda: TODAY,
+    )
+    with TestClient(app) as client_with_default:
+        assert client_with_default.get("/api/settings").json()["room_defaults"]["access"] == "look"
+        assert make_room(client_with_default)["access"] == "look"
+
+
+def test_patching_access_over_rest_changes_effective_access_and_rebuilds_adapters(client, factory):
+    room = make_room(client)
+    ravi = seat_id(room, "Ravi")
+    tuli = seat_id(room, "Tuli")
+    response = client.patch(f"/api/rooms/{room['id']}", json={"access": "work"})
+    assert response.status_code == 200, response.text
+    assert {seat["effective_access"] for seat in response.json()["seats"]} == {"work"}
+    assert factory.by_name["Ravi"].access == "work"
+
+    response = client.patch(f"/api/rooms/{room['id']}/seats/{ravi}", json={"access": "look"})
+    assert response.status_code == 200, response.text
+    by_id = {seat["id"]: seat for seat in response.json()["seats"]}
+    assert (by_id[ravi]["access"], by_id[ravi]["effective_access"]) == ("look", "look")
+    assert by_id[tuli]["effective_access"] == "work"
+    assert factory.by_name["Ravi"].access == "look"
+
+    response = client.patch(f"/api/rooms/{room['id']}/seats/{ravi}", json={"access": None})
+    by_id = {seat["id"]: seat for seat in response.json()["seats"]}
+    assert (by_id[ravi]["access"], by_id[ravi]["effective_access"]) == (None, "work")
+
+
+@pytest.mark.parametrize("bad_value", ["root", "", 3, None])
+def test_an_invalid_room_access_patch_is_a_400(client, bad_value):
+    room = make_room(client)
+    response = client.patch(f"/api/rooms/{room['id']}", json={"access": bad_value})
+    assert response.status_code == 400, response.text
+    assert client.get(f"/api/rooms/{room['id']}").json()["room"]["access"] == "talk"
+
+
+def test_an_invalid_seat_access_patch_is_a_400(client):
+    room = make_room(client)
+    ravi = seat_id(room, "Ravi")
+    for bad_value in ("root", "", 3):
+        response = client.patch(f"/api/rooms/{room['id']}/seats/{ravi}", json={"access": bad_value})
+        assert response.status_code == 400, response.text
+
+
+def test_new_seat_access_is_accepted_when_adding_a_seat(client):
+    room = make_room(client, access="look")
+    response = client.post(
+        f"/api/rooms/{room['id']}/seats", json={"name": "Neo", "program": "pi", "access": "work"}
+    )
+    assert response.status_code == 200, response.text
+    neo = next(seat for seat in response.json()["seats"] if seat["name"] == "Neo")
+    assert (neo["access"], neo["effective_access"]) == ("work", "work")
+
+
+def test_access_patches_over_the_websocket_reach_every_tab(client):
+    room = make_room(client)
+    ravi = seat_id(room, "Ravi")
+    with client.websocket_connect(f"/ws/{room['id']}") as tab:
+        tab.receive_json()
+        tab.send_json({"type": "room", "patch": {"access": "look"}})
+        frame = tab.receive_json()
+        assert frame["room"]["access"] == "look"
+        tab.send_json({"type": "seat", "seat": ravi, "patch": {"access": "work"}})
+        frame = tab.receive_json()
+        changed = next(seat for seat in frame["room"]["seats"] if seat["id"] == ravi)
+        assert (changed["access"], changed["effective_access"]) == ("work", "work")

@@ -48,6 +48,9 @@ const elements = {
   liveliness: document.getElementById('room-liveliness-input'),
   livelinessValue: document.getElementById('room-liveliness-value'),
   livelinessSentence: document.getElementById('room-liveliness-sentence'),
+  access: document.getElementById('room-access-select'),
+  accessDescription: document.getElementById('room-access-description'),
+  accessWarning: document.getElementById('room-access-warning'),
   seatTable: document.getElementById('seat-table'),
   addSeatButton: document.getElementById('add-seat-button'),
   lastSeatsButton: document.getElementById('last-seats-button'),
@@ -74,6 +77,11 @@ function describeRoomSpend(room) {
   return `${formatMoney(room.spent_usd)}${budgetText}`;
 }
 
+/** Empty for talk, the default, so only rooms with tools carry the extra words. */
+function describeRoomAccessSuffix(room) {
+  return room.access && room.access !== 'talk' ? ` · access ${room.access}` : '';
+}
+
 function createRoomCard(room) {
   const card = createElement('article', room.ended_at || room.liveliness === 0 ? 'card room-card' : 'card room-card room-card--live');
 
@@ -82,7 +90,7 @@ function createRoomCard(room) {
   left.append(describeRoomTag(room), ' ');
   const details = room.ended_at
     ? ''
-    : `started ${formatClock(room.created_at)} · ${MODE_LABELS[room.mode] || room.mode} · liveliness ${room.liveliness}`;
+    : `started ${formatClock(room.created_at)} · ${MODE_LABELS[room.mode] || room.mode} · liveliness ${room.liveliness}${describeRoomAccessSuffix(room)}`;
   left.append(createElement('span', 'small mute', details));
   const right = createElement('div', 'small mute row-fixed', describeRoomSpend(room));
   right.dataset.role = 'counts';
@@ -173,6 +181,7 @@ function createDraftRow(overrides = {}) {
     instruction: '',
     instructionOpen: false,
     eagerness: EAGERNESS_DEFAULT,
+    access: null,
     color: paletteColor(state.draft ? state.draft.seats.length : 0),
     nameEdited: false,
     colorEdited: false,
@@ -200,6 +209,7 @@ function createDraft() {
     mode: defaults.mode,
     liveliness: defaults.liveliness,
     maxConcurrent: defaults.max_concurrent ?? 2,
+    access: defaults.access || 'talk',
     seats: [],
   };
   state.draft = draft;
@@ -240,10 +250,12 @@ async function refreshFolderSuggestion() {
   }
   if (requestNumber !== folderSuggestionRequestCounter || state.draft.folderEdited) return;
   elements.folder.value = suggestion || suggestFolderLocally();
+  renderFolderDependentText();
 }
 
 function scheduleFolderSuggestion() {
   elements.folder.value = suggestFolderLocally();
+  renderFolderDependentText();
   clearTimeout(folderSuggestionTimerId);
   folderSuggestionTimerId = setTimeout(refreshFolderSuggestion, FOLDER_SUGGESTION_DEBOUNCE_MS);
 }
@@ -260,6 +272,8 @@ function renderDraftFields() {
   elements.liveliness.value = draft.liveliness;
   elements.maxConcurrent.value = String(draft.maxConcurrent);
   renderDraftLiveliness();
+  fillAccessSelect(elements.access, draft.access);
+  renderDraftAccess();
   renderSeatTable();
 }
 
@@ -268,12 +282,40 @@ function renderDraftLiveliness() {
   elements.livelinessSentence.textContent = describeLiveliness(state.draft.liveliness, 0);
 }
 
+function renderDraftAccess() {
+  const access = state.draft.access;
+  elements.accessDescription.textContent = ACCESS_DESCRIPTIONS[access];
+  elements.accessWarning.hidden = access !== 'work';
+  elements.accessWarning.textContent = describeAccessWarning(elements.folder.value.trim());
+}
+
+/** The access warning and the summary line both name the folder, so they follow it. */
+function renderFolderDependentText() {
+  renderDraftAccess();
+  renderSummary();
+}
+
+function describeSummaryAccess() {
+  const folder = elements.folder.value.trim() || 'the rooms folder';
+  const overrides = state.draft.seats.filter((row) => row.access).map((row) => `${row.name} ${row.access}`);
+  const overrideText = overrides.length > 0 ? ` (${overrides.join(', ')})` : '';
+  return `Access: ${ACCESS_LABELS[state.draft.access]} in ${folder}${overrideText}`;
+}
+
+function summaryHasWork() {
+  return state.draft.access === 'work' || state.draft.seats.some((row) => row.access === 'work');
+}
+
 function renderSummary() {
   const seatCount = state.draft.seats.length;
   const harnessCount = new Set(state.draft.seats.map((row) => row.program)).size;
   const seatWord = seatCount === 1 ? 'seat' : 'seats';
   const harnessWord = harnessCount === 1 ? 'harness' : 'harnesses';
-  elements.summary.textContent = `${seatCount} ${seatWord} · ${harnessCount} ${harnessWord}`;
+  elements.summary.textContent = `${seatCount} ${seatWord} · ${harnessCount} ${harnessWord} · ${describeSummaryAccess()}`;
+  if (summaryHasWork()) {
+    const warning = createElement('div', 'access-warning', describeAccessWarning(elements.folder.value.trim()));
+    elements.summary.append(warning);
+  }
   elements.openButton.disabled = seatCount === 0;
 }
 
@@ -281,7 +323,7 @@ function renderSummary() {
 // Seat table
 // ---------------------------------------------------------------------------
 
-const SEAT_TABLE_COLUMNS = ['', 'Name', 'Harness', 'Model', 'Thinking', 'Persona', 'Eagerness', ''];
+const SEAT_TABLE_COLUMNS = ['', 'Name', 'Harness', 'Model', 'Thinking', 'Persona', 'Access', 'Eagerness', ''];
 
 function renderSeatTable() {
   elements.seatTable.replaceChildren();
@@ -365,6 +407,13 @@ function appendSeatRow(row) {
     renderSeatTable();
   });
 
+  const accessSelect = labelled(document.createElement('select'), `Access for ${row.name}`);
+  fillAccessSelect(accessSelect, row.access, 'Room level');
+  accessSelect.addEventListener('change', () => {
+    row.access = readAccessSelect(accessSelect);
+    renderSummary();
+  });
+
   const eagerness = createEagernessControl(row.eagerness, (value) => {
     row.eagerness = value;
   });
@@ -376,7 +425,7 @@ function appendSeatRow(row) {
   });
   removeButton.setAttribute('aria-label', `Remove ${row.name}`);
 
-  rowElement.append(colorInput, nameInput, harnessSelect, modelInput, thinkingSelect, personaSelect, eagerness.element, removeButton, datalist);
+  rowElement.append(colorInput, nameInput, harnessSelect, modelInput, thinkingSelect, personaSelect, accessSelect, eagerness.element, removeButton, datalist);
   container.append(rowElement);
 
   // The instruction control and card sit under the row, aligned with the name column.
@@ -441,6 +490,7 @@ async function fillFromLastRoom() {
         instruction: seat.instruction || '',
         instructionOpen: Boolean(seat.instruction) || !seat.persona,
         eagerness: seat.eagerness ?? EAGERNESS_DEFAULT,
+        access: seat.access || null,
         color: seat.color || paletteColor(state.draft.seats.length),
         colorEdited: true,
       }),
@@ -462,6 +512,7 @@ function buildNewSeat(row) {
     thinking: row.thinking,
     color: row.color,
     eagerness: row.eagerness,
+    access: row.access,
   };
   if (row.model.trim()) seat.model = row.model.trim();
   if (row.persona) seat.persona = row.persona;
@@ -481,6 +532,7 @@ async function openRoom(event) {
     mode: draft.mode,
     liveliness: draft.liveliness,
     max_concurrent: draft.maxConcurrent,
+    access: draft.access,
     budget_usd: Number(draft.budget) || 0,
     seats: draft.seats.map(buildNewSeat),
   };
@@ -573,6 +625,7 @@ function chooseCurrentFolder() {
   state.draft.folderEdited = true;
   state.draft.folder = state.folderPicker.path;
   elements.folder.value = state.folderPicker.path;
+  renderFolderDependentText();
   elements.folderDialog.close();
   elements.folder.focus();
 }
@@ -616,6 +669,7 @@ function bindEvents() {
   elements.folder.addEventListener('input', () => {
     state.draft.folderEdited = true;
     state.draft.folder = elements.folder.value;
+    renderFolderDependentText();
   });
   elements.budget.addEventListener('input', () => {
     state.draft.budget = elements.budget.value;
@@ -629,6 +683,11 @@ function bindEvents() {
   });
   elements.maxConcurrent.addEventListener('change', () => {
     state.draft.maxConcurrent = Number(elements.maxConcurrent.value);
+  });
+  elements.access.addEventListener('change', () => {
+    state.draft.access = elements.access.value;
+    renderDraftAccess();
+    renderSummary();
   });
   elements.addSeatButton.addEventListener('click', () => {
     state.draft.seats.push(createDraftRow({ instructionOpen: true }));

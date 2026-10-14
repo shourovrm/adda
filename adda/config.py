@@ -10,7 +10,7 @@ View shape (key values never appear, only booleans):
      "folders": {"rooms_dir", "data_dir", "personas_dir"},
      "router": {"kind", "provider", "model", "threshold_floor", "window"},
      "room_defaults": {"liveliness", "budget_usd", "mode", "cooldown_s",
-                       "seat_timeout_s", "max_auto_turns", "max_concurrent",
+                       "seat_timeout_s", "max_auto_turns", "max_concurrent", "access",
                        "self_reply_penalty", "more_limit", "afterthought_limit",
                        "afterthought_scale"},
      "harness": {"claude": {"model", "thinking", "enabled", "extra_models"}, ...},
@@ -51,6 +51,7 @@ KEY_VARIABLES = {
 
 PROGRAMS = ("claude", "opencode", "pi", "codex")
 MODES = ("bidding", "roundrobin", "manual")
+ACCESS_LEVELS = ("talk", "look", "work")
 THINKING_LEVELS = ("default", "low", "medium", "high")
 ROUTER_KINDS = ("jev", "heuristic")
 
@@ -81,6 +82,7 @@ DEFAULT_VALUES: dict[str, Any] = {
         "seat_timeout_s": 180.0,
         "max_auto_turns": 40,
         "max_concurrent": 2,
+        "access": "talk",
         "self_reply_penalty": 1.5,
         "more_limit": 2,
         "afterthought_limit": 3,
@@ -123,6 +125,7 @@ ENVIRONMENT_FIELDS: dict[str, tuple[str, str, str]] = {
     "ADDA_SEAT_TIMEOUT_S": ("room_defaults", "seat_timeout_s", "float"),
     "ADDA_MAX_AUTO_TURNS": ("room_defaults", "max_auto_turns", "int"),
     "ADDA_MAX_CONCURRENT": ("room_defaults", "max_concurrent", "int"),
+    "ADDA_ACCESS": ("room_defaults", "access", "str"),
 }
 
 
@@ -161,6 +164,7 @@ class Settings:
     seat_timeout_s: float = 180.0
     max_auto_turns: int = 40
     max_concurrent: int = 2
+    access: str = "talk"
     self_reply_penalty: float = 1.5
     more_limit: int = 2
     afterthought_limit: int = 3
@@ -235,6 +239,7 @@ def _validate_values(values: dict[str, Any]) -> None:
     _validate_choice(values["router"]["kind"], ROUTER_KINDS, "router.kind")
     _validate_choice(values["router"]["provider"], tuple(JEV_DEFAULT_MODELS), "router.provider")
     _validate_choice(values["room_defaults"]["mode"], MODES, "room_defaults.mode")
+    _validate_choice(values["room_defaults"]["access"], ACCESS_LEVELS, "room_defaults.access")
     liveliness = values["room_defaults"]["liveliness"]
     if not 0 <= liveliness <= 10:
         raise ConfigError(f"room_defaults.liveliness must be 0..10, got {liveliness}")
@@ -474,6 +479,7 @@ def _settings_from_values(
         seat_timeout_s=values["room_defaults"]["seat_timeout_s"],
         max_auto_turns=values["room_defaults"]["max_auto_turns"],
         max_concurrent=values["room_defaults"]["max_concurrent"],
+        access=values["room_defaults"]["access"],
         self_reply_penalty=values["room_defaults"]["self_reply_penalty"],
         more_limit=values["room_defaults"]["more_limit"],
         afterthought_limit=values["room_defaults"]["afterthought_limit"],
@@ -548,6 +554,7 @@ def settings_view(settings: Settings) -> dict[str, Any]:
             "seat_timeout_s": settings.seat_timeout_s,
             "max_auto_turns": settings.max_auto_turns,
             "max_concurrent": settings.max_concurrent,
+            "access": settings.access,
             "self_reply_penalty": settings.self_reply_penalty,
             "more_limit": settings.more_limit,
             "afterthought_limit": settings.afterthought_limit,

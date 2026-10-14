@@ -199,6 +199,7 @@ SETTINGS: dict[str, Any] = {
         "budget_usd": 1.0,
         "mode": "bidding",
         "max_concurrent": 2,
+        "access": "talk",
         "cooldown_s": 0,
         "seat_timeout_s": 180,
         "max_auto_turns": 40,
@@ -289,6 +290,8 @@ def build_seat(room_id: str, position: int, spec: dict[str, Any]) -> dict[str, A
         "color": spec.get("color") or SEAT_COLORS[position % len(SEAT_COLORS)],
         "eagerness": int(spec.get("eagerness", NEUTRAL_EAGERNESS)),
         "enabled": spec.get("enabled", True),
+        "access": spec.get("access"),
+        "effective_access": spec.get("access") or "talk",
         "position": position,
         "handle": make_handle(name),
         "available": harness["found"],
@@ -384,6 +387,7 @@ def make_room(title: str, seat_specs: list[dict[str, Any]], **fields: Any) -> di
         "mode": fields.get("mode", "bidding"),
         "liveliness": fields.get("liveliness", 6),
         "max_concurrent": fields.get("max_concurrent", 2),
+        "access": fields.get("access") or "talk",
         "budget_usd": fields.get("budget_usd", 1.0),
         "spent_usd": fields.get("spent_usd", 0.0),
         "created_at": iso(fields.get("created_at", now())),
@@ -391,6 +395,7 @@ def make_room(title: str, seat_specs: list[dict[str, Any]], **fields: Any) -> di
         "seats": [],
     }
     room["seats"] = expand_new_seats(room_id, seat_specs, 0)
+    refresh_effective_access(room)
     rooms[room_id] = room
     return room
 
@@ -978,7 +983,8 @@ def stop_everything(thread_id: str) -> bool:
 # Mutations shared by REST and WebSocket
 # ---------------------------------------------------------------------------
 
-ROOM_PATCH_KEYS = {"title", "mode", "liveliness", "budget_usd", "max_concurrent"}
+ACCESS_LEVELS = ("talk", "look", "work")
+ROOM_PATCH_KEYS = {"title", "mode", "liveliness", "budget_usd", "max_concurrent", "access"}
 SEAT_PATCH_KEYS = {
     "name",
     "model",
@@ -989,7 +995,21 @@ SEAT_PATCH_KEYS = {
     "eagerness",
     "enabled",
     "position",
+    "access",
 }
+
+
+def refresh_effective_access(room: dict[str, Any]) -> None:
+    """A seat's own level wins; a seat with none follows the room (SPEC v0.6 G1)."""
+    for seat in room["seats"]:
+        seat["effective_access"] = seat.get("access") or room["access"]
+
+
+def check_access(value: Any, allow_null: bool) -> None:
+    if value is None and allow_null:
+        return
+    if value not in ACCESS_LEVELS:
+        raise HTTPException(422, "access must be talk, look or work")
 
 
 def get_room(room_id: str) -> dict[str, Any]:
@@ -1014,7 +1034,10 @@ def apply_room_patch(room: dict[str, Any], patch: dict[str, Any]) -> None:
         raise HTTPException(422, "liveliness must be 0..10")
     if "max_concurrent" in patch and not 1 <= int(patch["max_concurrent"]) <= 4:
         raise HTTPException(422, "max_concurrent must be 1..4")
+    if "access" in patch:
+        check_access(patch["access"], allow_null=False)
     room.update(patch)
+    refresh_effective_access(room)
 
 
 def apply_seat_patch(room: dict[str, Any], seat_id: str, patch: dict[str, Any]) -> None:
@@ -1026,6 +1049,8 @@ def apply_seat_patch(room: dict[str, Any], seat_id: str, patch: dict[str, Any]) 
         raise HTTPException(422, f"cannot patch {sorted(unknown)}")
     if "eagerness" in patch and not 0 <= int(patch["eagerness"]) <= 10:
         raise HTTPException(422, "eagerness must be 0..10")
+    if "access" in patch:
+        check_access(patch["access"], allow_null=True)
     if "name" in patch:
         new_name = patch["name"].strip()
         if not new_name:
@@ -1039,6 +1064,7 @@ def apply_seat_patch(room: dict[str, Any], seat_id: str, patch: dict[str, Any]) 
         patch = {**patch, "name": new_name}
         seat["handle"] = make_handle(new_name)
     seat.update(patch)
+    refresh_effective_access(room)
 
 
 def clean_thread_title(body: dict[str, Any]) -> str:
@@ -1211,6 +1237,7 @@ async def create_room(request: Request) -> dict[str, Any]:
         liveliness=body.get("liveliness", defaults["liveliness"]),
         budget_usd=body.get("budget_usd", defaults["budget_usd"]),
         max_concurrent=body.get("max_concurrent", defaults["max_concurrent"]),
+        access=body.get("access", defaults["access"]),
     )
     first_thread = make_thread(room["id"], title)
     add_message(first_thread, "system", "system", f"Room opened in {room['folder']}.")
@@ -1240,6 +1267,7 @@ async def patch_room(room_id: str, request: Request) -> dict[str, Any]:
 async def add_seat(room_id: str, request: Request) -> dict[str, Any]:
     room = get_room(room_id)
     room["seats"].extend(expand_new_seats(room_id, [await request.json()], len(room["seats"])))
+    refresh_effective_access(room)
     await broadcast_room(room)
     return room_view(room)
 

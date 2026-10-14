@@ -126,6 +126,9 @@ const elements = {
   stopButton: document.getElementById('stop-button'),
   sendButton: document.getElementById('send-button'),
   maxConcurrent: document.getElementById('max-concurrent-select'),
+  access: document.getElementById('access-select'),
+  accessDescription: document.getElementById('access-description'),
+  accessWarning: document.getElementById('access-warning'),
   liveliness: document.getElementById('liveliness-input'),
   livelinessValue: document.getElementById('liveliness-value'),
   livelinessSentence: document.getElementById('liveliness-sentence'),
@@ -722,6 +725,7 @@ function renderPanel() {
     elements.maxConcurrent.value = String(room.max_concurrent ?? DEFAULT_MAX_CONCURRENT);
   }
   elements.maxConcurrent.disabled = isRoomArchived();
+  renderRoomAccess(room);
   elements.livelinessValue.textContent = room.liveliness;
   elements.livelinessSentence.textContent = describeLiveliness(room.liveliness, countAutomaticTurns());
   if (document.activeElement !== elements.budget) elements.budget.value = room.budget_usd;
@@ -734,6 +738,15 @@ function renderPanel() {
   elements.pauseButton.disabled = isRoomArchived();
   elements.wakeAllButton.disabled = isThreadClosed() || !isConnected();
   elements.addSeatButton.disabled = isRoomArchived();
+}
+
+function renderRoomAccess(room) {
+  const access = room.access || 'talk';
+  if (document.activeElement !== elements.access) elements.access.value = access;
+  elements.access.disabled = isRoomArchived();
+  elements.accessDescription.textContent = ACCESS_DESCRIPTIONS[access];
+  elements.accessWarning.hidden = access !== 'work';
+  elements.accessWarning.textContent = describeAccessWarning(room.folder);
 }
 
 function renderRouterName() {
@@ -844,6 +857,7 @@ function renderSeats(forceEditorSync = false) {
     references.eagernessText.textContent = `eagerness ${seat.eagerness}`;
     references.eagernessText.title = describeEagerness(seat.eagerness);
     references.statusText.textContent = describeSeatState(seat, seatState);
+    renderAccessMarker(references.accessMarker, seat);
     references.wakeButton.disabled = seatState === 'unavailable' || seatState === 'disabled' || !isConnected() || ended;
     references.editor.hidden = !state.expandedSeatIds.has(seat.id);
     references.editButton.setAttribute('aria-expanded', String(!references.editor.hidden));
@@ -858,6 +872,15 @@ function renderSeats(forceEditorSync = false) {
     setSeatColor(chip.element, seat.color);
     chip.fill.style.transform = `scaleX(${scoreFraction})`;
   }
+}
+
+/** A seat that only talks needs no marker; look and work show up so the owner sees who has tools. */
+function renderAccessMarker(marker, seat) {
+  const level = seat.effective_access || 'talk';
+  marker.hidden = level === 'talk';
+  marker.textContent = level;
+  marker.className = `access-marker access-marker--${level}`;
+  marker.title = `${ACCESS_LABELS[level]}${seat.access ? ' (set on this seat)' : ' (room level)'}`;
 }
 
 function buildSeatCards() {
@@ -885,11 +908,12 @@ function buildSeatCards() {
     const scoreText = createElement('span', 'seat-score', '–');
     const statusText = createElement('span', 'seat-status');
     const eagernessText = createElement('span', 'seat-eagerness small mute');
+    const accessMarker = createElement('span', 'access-marker');
     const wakeButton = createButton('Wake', 'btn btn--ghost btn--small', () => sendFrame({ type: 'wake', seat: seat.id }));
     const editButton = createButton('Edit', 'btn btn--ghost btn--small', () => toggleSeatEditor(seat.id));
     editButton.setAttribute('aria-expanded', 'false');
     const foot = createElement('div', 'seat-foot');
-    foot.append(scoreText, statusText, eagernessText, wakeButton, editButton);
+    foot.append(scoreText, statusText, eagernessText, accessMarker, wakeButton, editButton);
 
     const { editor, fields } = buildSeatEditor(seat);
     card.append(head, meter, foot, editor);
@@ -906,7 +930,7 @@ function buildSeatCards() {
     chipElement.addEventListener('click', () => toggleDrawer());
     elements.seatStrip.append(chipElement);
 
-    seatCardReferences[seat.id] = { card, nameText, programText, meter, scoreText, statusText, eagernessText, wakeButton, editButton, editor, fields };
+    seatCardReferences[seat.id] = { card, nameText, programText, meter, scoreText, statusText, eagernessText, accessMarker, wakeButton, editButton, editor, fields };
     seatChipReferences[seat.id] = { element: chipElement, nameText: chipName, fill: chipFill };
   }
 }
@@ -983,6 +1007,10 @@ function buildSeatEditor(seat) {
     (value) => sendSeatPatch(seat.id, { eagerness: value }),
   );
 
+  const accessSelect = document.createElement('select');
+  fillAccessSelect(accessSelect, seat.access, 'Room level');
+  accessSelect.addEventListener('change', () => sendSeatPatch(seat.id, { access: readAccessSelect(accessSelect) }));
+
   const colorInput = document.createElement('input');
   colorInput.type = 'color';
   colorInput.addEventListener('change', () => sendSeatPatch(seat.id, { color: colorInput.value }));
@@ -1008,6 +1036,7 @@ function buildSeatEditor(seat) {
     labelledField('Thinking', thinkingSelect),
     labelledField('Persona', personaSelect),
     labelledField('Eagerness', eagerness.element, eagerness.input),
+    labelledField('Access', accessSelect),
     instructionToggle,
     instruction.card,
     toggles,
@@ -1016,7 +1045,7 @@ function buildSeatEditor(seat) {
   );
   editor.hidden = true;
 
-  const fields = { eagerness, nameInput, modelInput, thinkingSelect, personaSelect, instruction, instructionToggle, colorInput, enabledInput, programNote };
+  const fields = { eagerness, accessSelect, nameInput, modelInput, thinkingSelect, personaSelect, instruction, instructionToggle, colorInput, enabledInput, programNote };
   return { editor, fields };
 }
 
@@ -1031,6 +1060,7 @@ function syncSeatEditor(seat, fields, force) {
   setIfIdle(fields.personaSelect, () => (fields.personaSelect.value = seat.persona || ''));
   setIfIdle(fields.instruction.textarea, () => (fields.instruction.textarea.value = seat.instruction || ''));
   setIfIdle(fields.eagerness.input, () => fields.eagerness.setValue(seat.eagerness));
+  setIfIdle(fields.accessSelect, () => (fields.accessSelect.value = seat.access || ''));
   setIfIdle(fields.colorInput, () => (fields.colorInput.value = safeColor(seat.color)));
   setIfIdle(fields.enabledInput, () => (fields.enabledInput.checked = seat.enabled));
 
@@ -2080,6 +2110,8 @@ function bindEvents() {
     elements.livelinessSentence.textContent = describeLiveliness(value, countAutomaticTurns());
   });
   elements.maxConcurrent.addEventListener('change', () => sendRoomPatch({ max_concurrent: Number(elements.maxConcurrent.value) }));
+  fillAccessSelect(elements.access, 'talk');
+  elements.access.addEventListener('change', () => sendRoomPatch({ access: elements.access.value }));
   elements.liveliness.addEventListener('change', () => sendRoomPatch({ liveliness: Number(elements.liveliness.value) }));
   elements.budget.addEventListener('change', () => {
     const budget = Math.max(0, Number(elements.budget.value) || 0);

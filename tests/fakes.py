@@ -114,7 +114,7 @@ class FakeAdapterFactory:
         self.builds: list[tuple[str, str, str | None, str]] = []
         self.unavailable_names: set[str] = set()
 
-    def __call__(self, config, harness_settings, working_directory) -> FakeAdapter:
+    def __call__(self, config, harness_settings, working_directory, data_dir=None) -> FakeAdapter:
         adapter = FakeAdapter(
             config.name,
             config.program,
@@ -127,6 +127,7 @@ class FakeAdapterFactory:
         adapter.working_directory = working_directory
         adapter.model = config.model
         adapter.thinking = config.thinking
+        adapter.access = config.effective_access
         self.by_name[config.name] = adapter
         self.builds.append((config.name, config.program, config.model, config.thinking))
         return adapter

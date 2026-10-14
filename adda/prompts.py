@@ -104,8 +104,10 @@ def system_prompt(
     other_seats: list[Seat],
     owner_name: str,
     owner_line: str,
+    folder: str = "",
 ) -> str:
-    """Owner line, persona, custom instruction, memory index, then the room rules."""
+    """Owner line, persona, custom instruction, memory index, then the room rules.
+    `folder` is the room folder, named in the access sentence when the seat has tools."""
     sections: list[str] = []
     if owner_line.strip():
         sections.append(f"About the owner, {owner_name}: {owner_line.strip()}")
@@ -121,18 +123,27 @@ def system_prompt(
         memory = memory_index(persona)
         if memory:
             sections.append(f"What you remember from earlier discussions:\n{memory}")
-    sections.append(_room_rules(seat, other_seats, owner_name))
+    sections.append(_room_rules(seat, other_seats, owner_name, folder))
     return "\n\n".join(section for section in sections if section)
 
 
-def _room_rules(seat: Seat, other_seats: list[Seat], owner_name: str) -> str:
+def access_sentence(access: str, folder: str) -> str:
+    """The one sentence that tells a seat which tools it has (SPEC G2)."""
+    if access == "look":
+        return f"You may read files in {folder}."
+    if access == "work":
+        return f"You may read, edit and run commands in {folder}."
+    return "You have no tools."
+
+
+def _room_rules(seat: Seat, other_seats: list[Seat], owner_name: str, folder: str) -> str:
     other_handles = ", ".join(f"@{other.handle} ({other.name})" for other in other_seats)
     return (
         f"You are the seat {seat.name} (@{seat.handle}) in Adda, a chat room where AI agents and "
         f"one human, the owner {owner_name}, discuss one issue in one shared thread.\n"
         f"Other seats: {other_handles or 'none'}.\n"
-        "You only talk: no files, no shell, no tools. Address a seat with @handle, everyone with "
-        "@all, or a group with @prefix*. "
+        f"{access_sentence(seat.effective_access, folder)} "
+        "Address a seat with @handle, everyone with @all, or a group with @prefix*. "
         "Keep messages short and conversational. "
         "Other seats may be composing a reply at the same moment as you, so replies can cross: "
         "a message may appear that you have not seen when you started. "

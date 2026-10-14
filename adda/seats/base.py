@@ -10,7 +10,7 @@ from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any, Protocol
 
-from adda.models import SeatReply
+from adda.models import Access, SeatReply
 
 # Headless `claude -p` prefers this variable over the owner's Max login and would bill the API.
 BILLING_VARIABLES_TO_STRIP = ("ANTHROPIC_API_KEY",)
@@ -47,10 +47,13 @@ def is_pass(reply_text: str) -> bool:
     return reply_text.strip() == PASS_REPLY
 
 
-def seat_environment() -> dict[str, str]:
+def seat_environment(extra_variables: dict[str, str] | None = None) -> dict[str, str]:
+    """The environment of a seat process: ours, minus billing keys, plus `extra_variables`
+    (for example the config file an adapter wants its harness to read)."""
     environment = dict(os.environ)
     for variable in BILLING_VARIABLES_TO_STRIP:
         environment.pop(variable, None)
+    environment.update(extra_variables or {})
     return environment
 
 
@@ -79,7 +82,11 @@ def parse_json_lines(seat: str, stdout: str) -> list[dict[str, Any]]:
 
 
 async def run_command(
-    seat: str, command: list[str], timeout_s: float, working_directory: Path | None = None
+    seat: str,
+    command: list[str],
+    timeout_s: float,
+    working_directory: Path | None = None,
+    extra_variables: dict[str, str] | None = None,
 ) -> str:
     """Run one seat command without a shell and return its stdout.
 
@@ -93,7 +100,7 @@ async def run_command(
         stdin=asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
-        env=seat_environment(),
+        env=seat_environment(extra_variables),
         cwd=None if working_directory is None else str(working_directory),
     )
     try:
@@ -174,20 +181,31 @@ class CommandSeat(ABC):
         model: str | None = None,
         working_directory: Path | None = None,
         thinking_arguments: list[str] | None = None,
+        access: Access = "talk",
+        data_dir: Path | None = None,
     ):
         self.name = name
         self.model = model
         self.working_directory = working_directory
         # Ready-made flags from harnesses.thinking_arguments(); empty means "send nothing".
         self.thinking_arguments = list(thinking_arguments or [])
+        # What the seat may do in the room folder (talk, look or work); see each adapter's
+        # build_command for the flags it becomes.
+        self.access = access
+        # Where adapters may keep generated files (opencode's per-level config).
+        self.data_dir = data_dir
 
     def available(self) -> bool:
         return shutil.which(self.binary) is not None
 
     @abstractmethod
     def build_command(
-        self, prompt: str, system_prompt: str, session_id: str | None
+        self, prompt: str, system_prompt: str, session_id: str | None, access: Access
     ) -> list[str]: ...
+
+    def extra_environment(self, access: Access) -> dict[str, str]:
+        """Environment variables this harness needs for `access`; most need none."""
+        return {}
 
     @abstractmethod
     def parse_output(self, stdout: str, session_id: str | None) -> SeatReply:
@@ -196,6 +214,12 @@ class CommandSeat(ABC):
     async def run(
         self, prompt: str, system_prompt: str, session_id: str | None, timeout_s: float
     ) -> SeatReply:
-        command = self.build_command(prompt, system_prompt, session_id)
-        stdout = await run_command(self.name, command, timeout_s, self.working_directory)
+        command = self.build_command(prompt, system_prompt, session_id, self.access)
+        stdout = await run_command(
+            self.name,
+            command,
+            timeout_s,
+            self.working_directory,
+            self.extra_environment(self.access),
+        )
         return self.parse_output(stdout, session_id)

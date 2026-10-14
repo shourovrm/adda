@@ -45,6 +45,7 @@ def test_defaults(isolated):
     assert settings.budget_usd == 1.0
     assert settings.max_auto_turns == 40
     assert (settings.max_concurrent, settings.self_reply_penalty) == (2, 1.5)
+    assert settings.access == "talk"
     assert (settings.more_limit, settings.afterthought_limit) == (2, 3)
     assert settings.afterthought_scale == 1.0
     assert settings.harnesses["claude"].model == "sonnet"
@@ -197,3 +198,14 @@ def test_save_settings_rejects_invalid_values_and_writes_nothing(isolated):
     with pytest.raises(ConfigError):
         save_settings(view, isolated["config_path"])
     assert not isolated["config_path"].exists()
+
+
+def test_access_default_comes_from_toml_then_environment_and_is_validated(isolated):
+    isolated["config_path"].write_text('[room_defaults]\naccess = "look"\n', encoding="utf-8")
+    assert load(isolated).access == "look"
+    settings = load(isolated, {"ADDA_ACCESS": "work"})
+    assert settings.access == "work"
+    assert "room_defaults.access" in settings_view(settings)["env_overrides"]
+    with pytest.raises(ConfigError, match="access"):
+        load(isolated, {"ADDA_ACCESS": "root"})
+    assert settings_view(load(isolated))["room_defaults"]["access"] == "look"

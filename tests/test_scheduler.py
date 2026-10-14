@@ -531,6 +531,53 @@ async def test_program_model_and_thinking_changes_rebuild_the_adapter(harness):
     )  # new program, new session
 
 
+async def test_access_changes_rebuild_the_adapter_and_seat_access_beats_room_access(harness):
+    ravi_id = harness.seat_id("Ravi")
+    harness.adapter("Ravi")
+    assert harness.adapter("Ravi").access == "talk"
+    assert harness.factory.build_count("Ravi") == 1
+
+    await harness.scheduler.apply_room_patch({"access": "look"})
+    assert harness.adapter("Ravi").access == "look"
+    assert harness.factory.build_count("Ravi") == 2
+
+    await harness.scheduler.apply_seat_patch(ravi_id, {"access": "work"})
+    assert harness.adapter("Ravi").access == "work"
+    assert harness.adapter("Tuli").access == "look"  # no seat level, so the room's
+    assert harness.factory.build_count("Ravi") == 3
+
+    await harness.scheduler.apply_room_patch({"access": "talk"})
+    assert harness.adapter("Ravi").access == "work"  # the seat's own level still wins
+    assert harness.factory.build_count("Ravi") == 3  # its effective access did not change
+
+    await harness.scheduler.apply_seat_patch(ravi_id, {"access": None})
+    assert harness.adapter("Ravi").access == "talk"
+    assert harness.factory.build_count("Ravi") == 4
+
+
+async def test_the_system_prompt_names_the_effective_access_and_the_room_folder(harness):
+    await harness.scheduler.apply_room_patch({"access": "work"})
+    harness.adapter("Ravi").script(SeatReply(text="hello", session_id="session-1"))
+    await harness.scheduler.say("@ravi hi")
+    await harness.settle()
+    system_prompt = harness.adapter("Ravi").calls[0]["system_prompt"]
+    room_folder = harness.store.get_room(harness.room_id).folder
+    assert f"You may read, edit and run commands in {room_folder}." in system_prompt
+
+
+@pytest.mark.parametrize("bad_value", ["root", "", None, 3])
+async def test_invalid_room_access_patches_fail_loudly(harness, bad_value):
+    with pytest.raises(ValueError, match="access"):
+        await harness.scheduler.apply_room_patch({"access": bad_value})
+    assert harness.store.get_room(harness.room_id).access == "talk"
+
+
+@pytest.mark.parametrize("bad_value", ["root", "", 3])
+async def test_invalid_seat_access_patches_fail_loudly(harness, bad_value):
+    with pytest.raises(ValueError, match="access"):
+        await harness.scheduler.apply_seat_patch(harness.seat_id("Ravi"), {"access": bad_value})
+
+
 async def test_empty_strings_in_a_seat_patch_clear_optional_fields(harness):
     ravi_id = harness.seat_id("Ravi")
     room = await harness.scheduler.apply_seat_patch(ravi_id, {"model": "haiku", "persona": ""})
