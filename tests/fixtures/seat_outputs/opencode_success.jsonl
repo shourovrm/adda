@@ -1,0 +1,4 @@
+{"type":"step_start","timestamp":1760400000000,"sessionID":"ses_abc123","part":{"type":"step-start"}}
+{"type":"text","timestamp":1760400001000,"sessionID":"ses_abc123","part":{"type":"text","text":"First point."}}
+{"type":"text","timestamp":1760400002000,"sessionID":"ses_abc123","part":{"type":"text","text":"Second point."}}
+{"type":"step_finish","timestamp":1760400003000,"sessionID":"ses_abc123","part":{"type":"step-finish","cost":0.004,"tokens":{"input":100,"output":20}}}

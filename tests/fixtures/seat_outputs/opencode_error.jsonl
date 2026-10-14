@@ -1,0 +1,2 @@
+{"type":"step_start","timestamp":1760400000000,"sessionID":"ses_abc123","part":{"type":"step-start"}}
+{"type":"error","timestamp":1760400001000,"sessionID":"ses_abc123","error":{"name":"APIError","data":{"message":"model not found: nope/none"}}}

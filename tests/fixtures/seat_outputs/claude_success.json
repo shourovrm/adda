@@ -1,0 +1,1 @@
+{"type":"result","subtype":"success","is_error":false,"duration_ms":2310,"num_turns":1,"result":"I would keep the queue in SQLite.","session_id":"5f0c1d7e-2b44-4c1e-9a53-0d9f6a1b7c10","total_cost_usd":0.0123,"usage":{"input_tokens":4,"output_tokens":12}}

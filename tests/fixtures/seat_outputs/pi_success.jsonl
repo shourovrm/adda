@@ -1,0 +1,5 @@
+{"type":"session","version":3,"id":"0b1f6c52-7d5a-4e0e-8a3b-111122223333","timestamp":"2026-10-14T10:00:00.000Z","cwd":"/tmp"}
+{"type":"agent_start"}
+{"type":"message_end","message":{"role":"user","content":[{"type":"text","text":"hello"}]}}
+{"type":"message_end","message":{"role":"assistant","content":[{"type":"thinking","thinking":"hmm"},{"type":"text","text":"Pi says hello."}],"stopReason":"stop","usage":{"cost":{"total":0.002}}}}
+{"type":"agent_end"}

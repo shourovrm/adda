@@ -1,0 +1,2 @@
+{"type":"session","version":3,"id":"0b1f6c52-7d5a-4e0e-8a3b-111122223333","timestamp":"2026-10-14T10:00:00.000Z","cwd":"/tmp"}
+{"type":"message_end","message":{"role":"assistant","content":[],"stopReason":"error","errorMessage":"401 invalid credentials","usage":{"cost":{"total":0}}}}
