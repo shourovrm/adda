@@ -108,9 +108,48 @@ async def run_command(
     stdout_text = stdout_bytes.decode("utf-8", errors="replace")
     stderr_text = stderr_bytes.decode("utf-8", errors="replace")
     if process.returncode != 0:
-        detail = tail(stderr_text) or tail(stdout_text) or "(no output)"
+        detail = describe_failure(stdout_text, stderr_text)
         raise SeatError(seat, f"exit code {process.returncode}: {detail}")
     return stdout_text
+
+
+def describe_failure(stdout_text: str, stderr_text: str) -> str:
+    """Pick the shortest useful explanation of a failed run.
+
+    Tools that emit JSON (opencode, pi) put the real reason inside an error object on stdout
+    and exit non-zero; the raw line is hundreds of characters of headers. Prefer that nested
+    message, then the stderr tail, then the stdout tail.
+    """
+    for line in reversed(stdout_text.splitlines()):
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        message = _nested_error_message(event)
+        if message:
+            return message
+    return tail(stderr_text) or tail(stdout_text) or "(no output)"
+
+
+def _nested_error_message(event: object) -> str | None:
+    """Find a human message in shapes like {"error": {"data": {"message": ...}}}."""
+    if not isinstance(event, dict):
+        return None
+    error = event.get("error", event)
+    if isinstance(error, str):
+        return error
+    if not isinstance(error, dict):
+        return None
+    for container in (error.get("data"), error):
+        if isinstance(container, dict):
+            for key in ("message", "errorMessage"):
+                value = container.get(key)
+                if isinstance(value, str) and value:
+                    return value
+    return None
 
 
 async def _kill(process: asyncio.subprocess.Process) -> None:

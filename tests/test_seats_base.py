@@ -103,3 +103,21 @@ def test_is_pass():
     assert is_pass("  PASS \n") is True
     assert is_pass("PASS.") is False
     assert is_pass("pass") is False
+
+
+async def test_nonzero_exit_prefers_nested_json_error_message(fake_spawn):
+    # opencode prints one JSON error event on stdout and exits 1; the raw line is long.
+    stdout = (
+        b'{"type":"error","sessionID":"ses_1","error":{"name":"APIError","data":{"message":'
+        b'"OpenCode 1.18.0 or newer is required to use the free tier","statusCode":426,'
+        b'"responseHeaders":{"cf-ray":"abc","date":"Wed"}}}}\n'
+    )
+    fake_spawn["process"] = FakeProcess(stdout=stdout, returncode=1)
+
+    with pytest.raises(SeatError) as caught:
+        await run_command("seat", ["tool"], timeout_s=5)
+
+    assert str(caught.value).endswith(
+        "exit code 1: OpenCode 1.18.0 or newer is required to use the free tier"
+    )
+    assert "cf-ray" not in str(caught.value)

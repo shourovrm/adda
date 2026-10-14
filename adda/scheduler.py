@@ -83,6 +83,15 @@ class Scheduler:
     def seat_names(self) -> list[str]:
         return [seat.name for seat in self.seats]
 
+    @property
+    def active_seats(self) -> list[Seat]:
+        """Seats whose program is installed: the only ones bidding and round-robin may pick.
+
+        A mention of an absent seat still reaches _run_seat_turn, which posts a clear system
+        message; but the router should not spend tokens scoring a seat that cannot speak.
+        """
+        return [seat for seat in self.seats if seat.available]
+
     # Owner actions
 
     async def say(self, text: str) -> Message:
@@ -168,7 +177,7 @@ class Scheduler:
         thread = self.store.get_thread(self.thread_id)
         roundrobin_queue: list[str] = []
         if thread.mode == "roundrobin" and trigger is not None and trigger.role == "owner":
-            roundrobin_queue = list(self.seat_names)
+            roundrobin_queue = [seat.name for seat in self.active_seats]
         passed_seats: set[str] = set()
 
         while True:
@@ -214,7 +223,7 @@ class Scheduler:
         transcript = render_transcript(window)
         router = self.router
         try:
-            bids = await router.bids(transcript, self.seats, self.personas)
+            bids = await router.bids(transcript, self.active_seats, self.personas)
         except RouterError as error:
             logger.warning(
                 "router %s failed, using %s: %s", router.name, self.fallback_router.name, error
@@ -225,12 +234,14 @@ class Scheduler:
                     f"Router {router.name} failed ({error}); using {self.fallback_router.name}."
                 )
             router = self.fallback_router
-            bids = await router.bids(transcript, self.seats, self.personas)
+            bids = await router.bids(transcript, self.active_seats, self.personas)
 
         now = self.clock()
+        active_names = {seat.name for seat in self.active_seats}
         eligible_bids = []
         for bid in bids:
-            if bid.seat not in self.seat_names or bid.seat == latest_message.author:
+            # A router may answer for seats it was not asked about; only installed ones count.
+            if bid.seat not in active_names or bid.seat == latest_message.author:
                 continue
             if bid.seat in passed_seats:
                 continue
@@ -247,7 +258,7 @@ class Scheduler:
         await self.broadcast(
             {
                 "type": "bids",
-                "bids": [bid.model_dump(mode="json") for bid in bids],
+                "bids": [bid.model_dump(mode="json") for bid in bids if bid.seat in active_names],
                 "chosen": None if chosen is None else chosen.seat,
                 "router": router.name,
             }

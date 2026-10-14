@@ -120,5 +120,5 @@ def write_memory_note(persona: Persona, title: str, body: str) -> Path:
     existing_index = index_file.read_text(encoding="utf-8") if index_file.is_file() else ""
     if existing_index and not existing_index.endswith("\n"):
         existing_index += "\n"
-    index_file.write_text(existing_index + f"- {note_name}: {title}\n", encoding="utf-8")
+    index_file.write_text(existing_index + f"- [{title}]({note_name})\n", encoding="utf-8")
     return note_path

@@ -176,7 +176,7 @@ class Store:
         with self._lock:
             rows = self._connection.execute(
                 "SELECT messages.*, threads.title AS thread_title,"
-                " snippet(messages_fts, 0, '[', ']', '…', 12) AS snippet"
+                " snippet(messages_fts, 0, '', '', '…', 12) AS snippet"
                 " FROM messages_fts"
                 " JOIN messages ON messages.rowid = messages_fts.rowid"
                 " JOIN threads ON threads.id = messages.thread_id"

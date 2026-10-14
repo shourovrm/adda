@@ -770,3 +770,29 @@ async def test_end_cancels_a_running_seat_first(make_room):
 
     assert alpha.was_cancelled
     assert notes == {}
+
+
+async def test_unavailable_seat_is_not_scored_or_chosen(make_room):
+    room = make_room()
+    room.scheduler.seats[2].available = False  # gamma's program is not installed
+    room.router.script({"alpha": 3.0, "beta": 4.0, "gamma": 9.0})
+    room.adapters["gamma"].script(SeatReply(text="gamma speaks"))
+
+    await room.say("who wants it?")
+
+    assert room.adapters["gamma"].calls == []
+    assert room.seat_texts() == []
+    scored_seats = {bid["seat"] for bid in room.frames_of_type("bids")[0]["bids"]}
+    assert "gamma" not in scored_seats
+
+
+async def test_roundrobin_skips_unavailable_seat(make_room):
+    room = make_room(mode="roundrobin")
+    room.scheduler.seats[1].available = False  # beta's program is not installed
+    room.adapters["alpha"].script(SeatReply(text="alpha"))
+    room.adapters["gamma"].script(SeatReply(text="gamma"))
+
+    await room.say("everyone, once")
+
+    assert room.seat_texts() == ["alpha", "gamma"]
+    assert room.adapters["beta"].calls == []

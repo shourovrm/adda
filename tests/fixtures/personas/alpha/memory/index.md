@@ -1,1 +1,1 @@
-- 001-first-fact.md: First fact
+- [First fact](001-first-fact.md)

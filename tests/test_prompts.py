@@ -40,7 +40,7 @@ def test_system_prompt_contains_body_other_seats_and_memory():
     assert "Other seats: @beta, @gamma." in prompt
     assert "Your role: Architecture" in prompt
     assert "Your stance: Keep it small." in prompt
-    assert "- 001-first-fact.md: First fact" in prompt
+    assert "- [First fact](001-first-fact.md)" in prompt
     assert "PASS" in prompt
 
 

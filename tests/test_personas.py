@@ -62,7 +62,7 @@ def test_missing_frontmatter_raises(tmp_path):
 
 def test_memory_index_returns_index_text(personas_directory):
     alpha = load_personas(personas_directory)["alpha"]
-    assert memory_index(alpha) == "- 001-first-fact.md: First fact"
+    assert memory_index(alpha) == "- [First fact](001-first-fact.md)"
 
 
 def test_memory_index_empty_when_no_file(tmp_path):
@@ -76,8 +76,8 @@ def test_write_memory_note_numbers_and_indexes(personas_directory):
     assert note_path.name == "002-owner-prefers-sqlite.md"
     assert note_path.read_text() == "# Owner prefers SQLite!\n\nUse stdlib sqlite3.\n"
     assert memory_index(alpha).splitlines() == [
-        "- 001-first-fact.md: First fact",
-        "- 002-owner-prefers-sqlite.md: Owner prefers SQLite!",
+        "- [First fact](001-first-fact.md)",
+        "- [Owner prefers SQLite!](002-owner-prefers-sqlite.md)",
     ]
     third = write_memory_note(alpha, "Another", "text")
     assert third.name == "003-another.md"
@@ -88,4 +88,4 @@ def test_write_memory_note_creates_missing_memory_directory(tmp_path):
     gamma = load_personas(tmp_path)["gamma"]
     note_path = write_memory_note(gamma, "First", "body")
     assert note_path.name == "001-first.md"
-    assert memory_index(gamma) == "- 001-first.md: First"
+    assert memory_index(gamma) == "- [First](001-first.md)"
