@@ -8,6 +8,7 @@ from __future__ import annotations
 from adda.models import Bid, Seat
 from adda.personas import Persona
 from adda.prompts import find_mentions
+from adda.routers.base import AFTERTHOUGHT_QUESTION, MESSAGE_QUESTION
 
 MENTIONED_SCORE = 10.0
 LONGEST_SILENT_SCORE = 6.0
@@ -22,10 +23,18 @@ class HeuristicRouter:
     name = "heuristic"
 
     async def bids(
-        self, transcript: str, seats: list[Seat], personas: dict[str, Persona]
+        self,
+        transcript: str,
+        seats: list[Seat],
+        personas: dict[str, Persona],
+        question_kind: str = MESSAGE_QUESTION,
     ) -> list[Bid]:
         if not seats:
             return []
+        if question_kind == AFTERTHOUGHT_QUESTION:
+            # Without a model there is no way to tell whether a seat has something new to add,
+            # and every afterthought start costs a real reply, so nobody volunteers.
+            return [Bid(seat=seat.id, score=0.0) for seat in seats]
         lines = [line for line in transcript.splitlines() if line.strip()]
         last_line = lines[-1] if lines else ""
         mentioned = find_mentions(last_line.partition(":")[2], seats)

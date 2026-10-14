@@ -41,6 +41,9 @@ EAGERNESS_BID_PER_STEP = 0.4
 NEUTRAL_EAGERNESS = 5
 PASS_PROBABILITY = 0.4
 THRESHOLD_FLOOR = 2.5
+MORE_PROBABILITY = 0.3
+AFTERTHOUGHT_DELAY_SECONDS = 25
+AFTERTHOUGHT_TICKS = 3
 
 SEAT_COLORS = ["#CF5A26", "#2A8F5E", "#D6409F", "#3E7FD6", "#8A6BD1", "#B08900"]
 
@@ -195,6 +198,7 @@ SETTINGS: dict[str, Any] = {
         "liveliness": 6,
         "budget_usd": 1.0,
         "mode": "bidding",
+        "max_concurrent": 2,
         "cooldown_s": 0,
         "seat_timeout_s": 180,
         "max_auto_turns": 40,
@@ -219,6 +223,10 @@ SETTINGS: dict[str, Any] = {
     "env_overrides": ["folders.data_dir"],
 }
 
+CANNED_MORE = [
+    "One more thing on that: whatever we pick, write the decision down before we move on.",
+    "Continuing: the cheapest check is a ten-line script, so run it before we argue further.",
+]
 CANNED_REPLIES = [
     "I agree with the direction, and the cost is lower than it looks. "
     "The thread is already in SQLite, "
@@ -253,7 +261,8 @@ CANNED_REPLIES = [
 rooms: dict[str, dict[str, Any]] = {}
 messages_by_room: dict[str, list[dict[str, Any]]] = {}
 sockets_by_room: dict[str, set[WebSocket]] = {}
-turn_tasks: dict[str, asyncio.Task] = {}
+turn_tasks: dict[str, set[asyncio.Task]] = {}
+afterthought_tasks: dict[str, asyncio.Task] = {}
 message_counter = 0
 
 
@@ -322,6 +331,7 @@ def make_room(title: str, seat_specs: list[dict[str, Any]], **fields: Any) -> di
         "folder": fields.get("folder") or f"/home/riad/Adda-Rooms/{slugify(title)}-{room_id[:4]}",
         "mode": fields.get("mode", "bidding"),
         "liveliness": fields.get("liveliness", 6),
+        "max_concurrent": fields.get("max_concurrent", 2),
         "budget_usd": fields.get("budget_usd", 1.0),
         "spent_usd": fields.get("spent_usd", 0.0),
         "created_at": iso(fields.get("created_at", now())),
@@ -513,15 +523,32 @@ def over_budget(room: dict[str, Any]) -> bool:
 async def seat_speaks(
     room: dict[str, Any], seat: dict[str, Any], woken_by: str, bid_score: float | None
 ) -> None:
+    """One reply from one seat; several of these run at once, so replies may cross."""
     room_id = room["id"]
     await broadcast(room_id, {"type": "typing", "seat": seat["id"], "state": "start"})
     try:
-        await asyncio.sleep(REPLY_DELAY_SECONDS)
+        # A small random spread makes concurrent seats finish in a varying order.
+        await asyncio.sleep(REPLY_DELAY_SECONDS + random.uniform(0, 0.8))
     finally:
         await broadcast(room_id, {"type": "typing", "seat": seat["id"], "state": "stop"})
     others = [s for s in room["seats"] if s["id"] != seat["id"]]
     other_name = others[0]["name"] if others else "everyone"
     text = random.choice(CANNED_REPLIES).replace("{other}", f"@{other_name}")
+    await post_seat_message(room, seat, text, woken_by, bid_score)
+    if random.random() < MORE_PROBABILITY and not over_budget(room):
+        # The real scheduler strips a trailing [more] line and restarts the seat without a bid.
+        await broadcast(room_id, {"type": "typing", "seat": seat["id"], "state": "start"})
+        try:
+            await asyncio.sleep(REPLY_DELAY_SECONDS)
+        finally:
+            await broadcast(room_id, {"type": "typing", "seat": seat["id"], "state": "stop"})
+        await post_seat_message(room, seat, random.choice(CANNED_MORE), "more", None)
+
+
+async def post_seat_message(
+    room: dict[str, Any], seat: dict[str, Any], text: str, woken_by: str, bid_score: float | None
+) -> None:
+    room_id = room["id"]
     message = add_message(
         room_id,
         "seat",
@@ -541,51 +568,73 @@ async def seat_speaks(
     await broadcast(room_id, {"type": "room", "room": room})
 
 
-async def run_turns(room: dict[str, Any], queued: list[dict[str, Any]], woken_by: str) -> None:
-    """One owner message or wake: mentioned seats first, then bidding rounds until quiet."""
+async def run_bidding_round(
+    room: dict[str, Any], kind: str, automatic_turns: int, guarantee_speakers: int
+) -> bool:
+    """Broadcast one bids frame and let the chosen seats speak at once. True if anyone spoke."""
     room_id = room["id"]
-    for seat in queued:
-        if over_budget(room):
-            break
-        await seat_speaks(room, seat, woken_by, None)
-
-    automatic_turns = 0
-    while room["mode"] == "bidding" and room["liveliness"] > 0 and not over_budget(room):
-        eligible = [s for s in room["seats"] if s["enabled"] and s["available"]]
-        if not eligible:
-            break
-        bids = []
-        for seat_candidate in eligible:
-            raw_score = round(random.uniform(2, 9), 1)
-            bids.append(
-                {
-                    "seat": seat_candidate["id"],
-                    "score": adjust_for_eagerness(raw_score, seat_candidate["eagerness"]),
-                    "raw_score": raw_score,
-                    "confidence": 0.7,
-                }
-            )
-        threshold = threshold_for(room["liveliness"], automatic_turns)
-        top = max(bids, key=lambda bid: bid["score"])
-        chosen = top["seat"] if top["score"] >= threshold else None
-        await broadcast(
-            room_id,
+    eligible = [s for s in room["seats"] if s["enabled"] and s["available"]]
+    if not eligible:
+        return False
+    bids = []
+    for seat_candidate in eligible:
+        raw_score = round(random.uniform(2, 9), 1)
+        bids.append(
             {
-                "type": "bids",
-                "bids": bids,
-                "chosen": chosen,
-                "threshold": threshold,
-                "router": "jev",
-            },
+                "seat": seat_candidate["id"],
+                "score": adjust_for_eagerness(raw_score, seat_candidate["eagerness"]),
+                "raw_score": raw_score,
+                "confidence": 0.7,
+            }
         )
-        await asyncio.sleep(BID_DELAY_SECONDS)
-        if chosen is None:
-            await broadcast(room_id, {"type": "quiet", "reason": "nobody"})
-            return
-        seat = next(s for s in eligible if s["id"] == chosen)
-        await announce_pass(room, [s for s in eligible if s["id"] != chosen])
-        await seat_speaks(room, seat, "bid", top["score"])
-        automatic_turns += 1
+    threshold = threshold_for(room["liveliness"], automatic_turns)
+    ranked = sorted(bids, key=lambda bid: bid["score"], reverse=True)
+    limit = max(1, int(room.get("max_concurrent", 2)))
+    chosen_bids = [bid for bid in ranked if bid["score"] >= threshold][:limit]
+    # The demo needs a visible pair of speakers after an owner message, so lift the top scores.
+    for bid in ranked[: min(guarantee_speakers, limit)]:
+        if bid not in chosen_bids:
+            bid["score"] = max(bid["score"], round(threshold + 0.5, 1))
+            chosen_bids.append(bid)
+    await broadcast(
+        room_id,
+        {
+            "type": "bids",
+            "bids": bids,
+            "chosen": [bid["seat"] for bid in chosen_bids],
+            "threshold": threshold,
+            "router": "jev",
+            "kind": kind,
+        },
+    )
+    await asyncio.sleep(BID_DELAY_SECONDS)
+    if not chosen_bids:
+        return False
+    chosen_ids = {bid["seat"] for bid in chosen_bids}
+    await announce_pass(room, [s for s in eligible if s["id"] not in chosen_ids])
+    woken_by = "afterthought" if kind == "afterthought" else "bid"
+    speaking = [
+        seat_speaks(
+            room, next(s for s in eligible if s["id"] == bid["seat"]), woken_by, bid["score"]
+        )
+        for bid in chosen_bids
+    ]
+    await asyncio.gather(*speaking)
+    return True
+
+
+async def run_turns(room: dict[str, Any], queued: list[dict[str, Any]], woken_by: str) -> None:
+    """One owner message or wake: mentioned seats at once, a bidding round, then quiet."""
+    room_id = room["id"]
+    mentioned = [] if over_budget(room) else queued
+    await asyncio.gather(*(seat_speaks(room, seat, woken_by, None) for seat in mentioned))
+
+    if room["mode"] == "bidding" and room["liveliness"] > 0 and not over_budget(room):
+        # The first round after an owner message always seats two voices; the second is random.
+        guaranteed = 0 if queued else 2
+        await run_bidding_round(room, "message", 0, guaranteed)
+        if not over_budget(room):
+            await run_bidding_round(room, "message", 1, 0)
 
     if over_budget(room):
         add_budget_notice = add_message(
@@ -595,11 +644,52 @@ async def run_turns(room: dict[str, Any], queued: list[dict[str, Any]], woken_by
             f"Budget of ${room['budget_usd']:.2f} reached; raise it to continue.",
         )
         await broadcast(room_id, {"type": "message", "message": add_budget_notice})
-        await broadcast(room_id, {"type": "quiet", "reason": "budget"})
-    elif room["liveliness"] == 0:
-        await broadcast(room_id, {"type": "quiet", "reason": "paused"})
+        await broadcast(
+            room_id, {"type": "quiet", "reason": "budget", "next_tick_in_s": None, "ticks_left": 0}
+        )
+    elif room["liveliness"] == 0 or room["mode"] != "bidding":
+        await broadcast(
+            room_id, {"type": "quiet", "reason": "paused", "next_tick_in_s": None, "ticks_left": 0}
+        )
     else:
-        await broadcast(room_id, {"type": "quiet", "reason": "nobody"})
+        start_afterthoughts(room)
+        await broadcast_quiet_with_tick(room, AFTERTHOUGHT_TICKS)
+
+
+async def broadcast_quiet_with_tick(room: dict[str, Any], ticks_left: int) -> None:
+    next_tick = AFTERTHOUGHT_DELAY_SECONDS if ticks_left > 0 else None
+    await broadcast(
+        room["id"],
+        {
+            "type": "quiet",
+            "reason": "nobody",
+            "next_tick_in_s": next_tick,
+            "ticks_left": ticks_left,
+        },
+    )
+
+
+async def run_afterthoughts(room: dict[str, Any]) -> None:
+    """Wait out each quiet delay, then hold an afterthought round; stops after the tick cap."""
+    ticks_left = AFTERTHOUGHT_TICKS
+    while ticks_left > 0:
+        await asyncio.sleep(AFTERTHOUGHT_DELAY_SECONDS)
+        if room["mode"] != "bidding" or room["liveliness"] == 0 or over_budget(room):
+            return
+        ticks_left -= 1
+        await run_bidding_round(room, "afterthought", 0, 1)
+        await broadcast_quiet_with_tick(room, ticks_left)
+
+
+def start_afterthoughts(room: dict[str, Any]) -> None:
+    cancel_afterthoughts(room["id"])
+    afterthought_tasks[room["id"]] = asyncio.create_task(run_afterthoughts(room))
+
+
+def cancel_afterthoughts(room_id: str) -> None:
+    task = afterthought_tasks.pop(room_id, None)
+    if task and not task.done():
+        task.cancel()
 
 
 async def announce_pass(room: dict[str, Any], candidates: list[dict[str, Any]]) -> None:
@@ -610,17 +700,27 @@ async def announce_pass(room: dict[str, Any], candidates: list[dict[str, Any]]) 
 
 
 def start_turns(room: dict[str, Any], queued: list[dict[str, Any]], woken_by: str) -> None:
-    previous = turn_tasks.get(room["id"])
-    if previous and not previous.done():
-        previous.cancel()
-    turn_tasks[room["id"]] = asyncio.create_task(run_turns(room, queued, woken_by))
+    """Owner messages do not cancel speakers (v0.4); they only reset the afterthought spell."""
+    cancel_afterthoughts(room["id"])
+    task = asyncio.create_task(run_turns(room, queued, woken_by))
+    running = turn_tasks.setdefault(room["id"], set())
+    running.add(task)
+    task.add_done_callback(running.discard)
+
+
+def stop_everything(room_id: str) -> bool:
+    cancel_afterthoughts(room_id)
+    running = [task for task in turn_tasks.get(room_id, ()) if not task.done()]
+    for task in running:
+        task.cancel()
+    return bool(running)
 
 
 # ---------------------------------------------------------------------------
 # Mutations shared by REST and WebSocket
 # ---------------------------------------------------------------------------
 
-ROOM_PATCH_KEYS = {"title", "mode", "liveliness", "budget_usd"}
+ROOM_PATCH_KEYS = {"title", "mode", "liveliness", "budget_usd", "max_concurrent"}
 SEAT_PATCH_KEYS = {
     "name",
     "model",
@@ -647,6 +747,8 @@ def apply_room_patch(room: dict[str, Any], patch: dict[str, Any]) -> None:
         raise HTTPException(422, f"cannot patch {sorted(unknown)}")
     if "liveliness" in patch and not 0 <= int(patch["liveliness"]) <= 10:
         raise HTTPException(422, "liveliness must be 0..10")
+    if "max_concurrent" in patch and not 1 <= int(patch["max_concurrent"]) <= 4:
+        raise HTTPException(422, "max_concurrent must be 1..4")
     room.update(patch)
 
 
@@ -827,6 +929,7 @@ async def create_room(request: Request) -> dict[str, Any]:
         mode=body.get("mode") or defaults["mode"],
         liveliness=body.get("liveliness", defaults["liveliness"]),
         budget_usd=body.get("budget_usd", defaults["budget_usd"]),
+        max_concurrent=body.get("max_concurrent", defaults["max_concurrent"]),
     )
     add_message(room["id"], "system", "system", f"Room opened in {room['folder']}.")
     return room
@@ -877,6 +980,7 @@ async def end_room(room_id: str) -> dict[str, Any]:
 
 
 async def finish_room(room: dict[str, Any]) -> dict[str, list[str]]:
+    stop_everything(room["id"])
     room["ended_at"] = iso(now())
     spoke = {m["seat_id"] for m in messages_by_room[room["id"]] if m["seat_id"]}
     notes = {
@@ -921,10 +1025,10 @@ async def handle_client_frame(room: dict[str, Any], frame: dict[str, Any]) -> No
         refuse_if_unavailable(room)
         start_turns(room, [s for s in room["seats"] if s["enabled"] and s["available"]], "wake")
     elif kind == "stop":
-        task = turn_tasks.get(room_id)
-        if task and not task.done():
-            task.cancel()
-            await broadcast(room_id, {"type": "quiet", "reason": "nobody"})
+        stop_everything(room_id)
+        await broadcast(
+            room_id, {"type": "quiet", "reason": "nobody", "next_tick_in_s": None, "ticks_left": 0}
+        )
     elif kind == "end":
         await finish_room(room)
     elif kind == "room":

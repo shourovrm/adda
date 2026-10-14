@@ -2,7 +2,8 @@
 
 Public API (all methods are thread-safe; ids are 12-char hex strings):
 
-    Rooms    create_room(title, folder="", mode="bidding", liveliness=6, budget_usd=0.0) -> Room
+    Rooms    create_room(title, folder="", mode="bidding", liveliness=6, budget_usd=0.0,
+                         max_concurrent=2) -> Room
              get_room(room_id) -> Room            (seats included, in position order)
              list_rooms() -> list[Room]           (newest first, seats included)
              update_room(room_id, **fields) -> Room   (title, folder, mode, liveliness, budget_usd)
@@ -58,7 +59,8 @@ CREATE TABLE IF NOT EXISTS rooms (
     folder TEXT NOT NULL DEFAULT '',
     liveliness INTEGER NOT NULL DEFAULT 6,
     budget_usd REAL NOT NULL DEFAULT 0,
-    spent_usd REAL NOT NULL DEFAULT 0
+    spent_usd REAL NOT NULL DEFAULT 0,
+    max_concurrent INTEGER NOT NULL DEFAULT 2
 );
 CREATE TABLE IF NOT EXISTS room_seats (
     id TEXT PRIMARY KEY,
@@ -103,7 +105,7 @@ CREATE TABLE IF NOT EXISTS seat_sessions (
 );
 """
 
-ROOM_UPDATABLE_FIELDS = ("title", "folder", "mode", "liveliness", "budget_usd")
+ROOM_UPDATABLE_FIELDS = ("title", "folder", "mode", "liveliness", "budget_usd", "max_concurrent")
 SEAT_UPDATABLE_FIELDS = (
     "name",
     "program",
@@ -190,6 +192,12 @@ class Store:
 
     def _add_missing_columns(self) -> None:
         """Columns added after v0.2 shipped; CREATE TABLE IF NOT EXISTS leaves old tables as is."""
+        room_columns = {row["name"] for row in self._connection.execute("PRAGMA table_info(rooms)")}
+        if "max_concurrent" not in room_columns:
+            with self._connection:
+                self._connection.execute(
+                    "ALTER TABLE rooms ADD COLUMN max_concurrent INTEGER NOT NULL DEFAULT 2"
+                )
         seat_columns = {
             row["name"] for row in self._connection.execute("PRAGMA table_info(room_seats)")
         }
@@ -212,15 +220,23 @@ class Store:
         mode: str = "bidding",
         liveliness: int = 6,
         budget_usd: float = 0.0,
+        max_concurrent: int = 2,
     ) -> Room:
-        _check_room_fields(mode=mode, liveliness=liveliness, budget_usd=budget_usd)
+        _check_room_fields(
+            mode=mode, liveliness=liveliness, budget_usd=budget_usd, max_concurrent=max_concurrent
+        )
         room = Room(
-            title=title, folder=folder, mode=mode, liveliness=liveliness, budget_usd=budget_usd
+            title=title,
+            folder=folder,
+            mode=mode,
+            liveliness=liveliness,
+            budget_usd=budget_usd,
+            max_concurrent=max_concurrent,
         )
         with self._lock, self._connection:
             self._connection.execute(
                 "INSERT INTO rooms (id, title, created_at, ended_at, mode, folder, liveliness,"
-                " budget_usd, spent_usd) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, 0)",
+                " budget_usd, spent_usd, max_concurrent) VALUES (?, ?, ?, NULL, ?, ?, ?, ?, 0, ?)",
                 (
                     room.id,
                     room.title,
@@ -229,6 +245,7 @@ class Store:
                     room.folder,
                     room.liveliness,
                     room.budget_usd,
+                    room.max_concurrent,
                 ),
             )
         return room
@@ -295,6 +312,7 @@ class Store:
             liveliness=room_row["liveliness"],
             budget_usd=room_row["budget_usd"],
             spent_usd=room_row["spent_usd"],
+            max_concurrent=room_row["max_concurrent"],
             created_at=datetime.fromisoformat(room_row["created_at"]),
             ended_at=None if ended_at is None else datetime.fromisoformat(ended_at),
             seats=[_seat_from_row(seat_row) for seat_row in seat_rows],
@@ -544,6 +562,14 @@ def _check_room_fields(**fields: Any) -> None:
         raise ValueError(f"liveliness must be 0..10, got {fields['liveliness']!r}")
     if "budget_usd" in fields and fields["budget_usd"] < 0:
         raise ValueError(f"budget_usd must not be negative, got {fields['budget_usd']!r}")
+    if "max_concurrent" in fields:
+        max_concurrent = fields["max_concurrent"]
+        if (
+            isinstance(max_concurrent, bool)
+            or not isinstance(max_concurrent, int)
+            or not 1 <= max_concurrent <= 4
+        ):
+            raise ValueError(f"max_concurrent must be 1..4, got {max_concurrent!r}")
 
 
 def _check_seat_fields(**fields: Any) -> None:

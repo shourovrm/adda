@@ -93,6 +93,7 @@ class NewRoom(BaseModel):
     mode: Mode | None = None
     liveliness: int | None = Field(default=None, ge=0, le=10)
     budget_usd: float | None = Field(default=None, ge=0)
+    max_concurrent: int | None = Field(default=None, ge=1, le=4)
     seats: list[NewSeat] = Field(default_factory=list)
 
 
@@ -197,12 +198,16 @@ class Hub:
         mode = body.mode or self.settings.mode
         liveliness = self.settings.liveliness if body.liveliness is None else body.liveliness
         budget_usd = self.settings.budget_usd if body.budget_usd is None else body.budget_usd
+        max_concurrent = (
+            self.settings.max_concurrent if body.max_concurrent is None else body.max_concurrent
+        )
         if body.folder and body.folder.strip():
             folder = self._make_folder(Path(body.folder.strip()).expanduser())
-            room = self.store.create_room(title, str(folder), mode, liveliness, budget_usd)
         else:
             folder = self._make_folder(self.suggest_folder(title))
-            room = self.store.create_room(title, str(folder), mode, liveliness, budget_usd)
+        room = self.store.create_room(
+            title, str(folder), mode, liveliness, budget_usd, max_concurrent
+        )
         for new_seat in body.seats:
             self._add_seats(room.id, new_seat)
         return self.store.get_room(room.id)

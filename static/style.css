@@ -1056,9 +1056,16 @@ body.page-room {
 
 .typing {
   display: inline-flex;
-  gap: 8px;
+  flex-wrap: wrap;
+  gap: 0 0.3em;
   align-items: center;
   margin-right: 18px;
+}
+
+.typing-seat {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
 }
 
 .typing-name {

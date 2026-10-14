@@ -10,7 +10,9 @@ View shape (key values never appear, only booleans):
      "folders": {"rooms_dir", "data_dir", "personas_dir"},
      "router": {"kind", "provider", "model", "threshold_floor", "window"},
      "room_defaults": {"liveliness", "budget_usd", "mode", "cooldown_s",
-                       "seat_timeout_s", "max_auto_turns"},
+                       "seat_timeout_s", "max_auto_turns", "max_concurrent",
+                       "self_reply_penalty", "more_limit", "afterthought_limit",
+                       "afterthought_scale"},
      "harness": {"claude": {"model", "thinking", "enabled", "extra_models"}, ...},
      "keys": {"openrouter": bool, "typesafe": bool, "deepseek": bool},
      "env_overrides": ["router.kind", ...]}   # dotted paths of fields an env var is setting
@@ -78,6 +80,11 @@ DEFAULT_VALUES: dict[str, Any] = {
         "cooldown_s": 0.0,
         "seat_timeout_s": 180.0,
         "max_auto_turns": 40,
+        "max_concurrent": 2,
+        "self_reply_penalty": 1.5,
+        "more_limit": 2,
+        "afterthought_limit": 3,
+        "afterthought_scale": 1.0,
     },
     "harness": {
         "claude": {"model": "sonnet", "thinking": "medium", "enabled": True, "extra_models": []},
@@ -115,6 +122,7 @@ ENVIRONMENT_FIELDS: dict[str, tuple[str, str, str]] = {
     "ADDA_COOLDOWN_S": ("room_defaults", "cooldown_s", "float"),
     "ADDA_SEAT_TIMEOUT_S": ("room_defaults", "seat_timeout_s", "float"),
     "ADDA_MAX_AUTO_TURNS": ("room_defaults", "max_auto_turns", "int"),
+    "ADDA_MAX_CONCURRENT": ("room_defaults", "max_concurrent", "int"),
 }
 
 
@@ -152,6 +160,11 @@ class Settings:
     cooldown_s: float = 0.0
     seat_timeout_s: float = 180.0
     max_auto_turns: int = 40
+    max_concurrent: int = 2
+    self_reply_penalty: float = 1.5
+    more_limit: int = 2
+    afterthought_limit: int = 3
+    afterthought_scale: float = 1.0
     harnesses: dict[str, HarnessSettings] = field(default_factory=dict)
     jev_api_key: str | None = field(default=None, repr=False)
     # Which keys exist (never their values), for the settings view.
@@ -227,6 +240,14 @@ def _validate_values(values: dict[str, Any]) -> None:
         raise ConfigError(f"room_defaults.liveliness must be 0..10, got {liveliness}")
     if values["room_defaults"]["budget_usd"] < 0:
         raise ConfigError("room_defaults.budget_usd must not be negative")
+    max_concurrent = values["room_defaults"]["max_concurrent"]
+    if not 1 <= max_concurrent <= 4:
+        raise ConfigError(f"room_defaults.max_concurrent must be 1..4, got {max_concurrent}")
+    for field_name in ("self_reply_penalty", "more_limit", "afterthought_limit"):
+        if values["room_defaults"][field_name] < 0:
+            raise ConfigError(f"room_defaults.{field_name} must not be negative")
+    if values["room_defaults"]["afterthought_scale"] <= 0:
+        raise ConfigError("room_defaults.afterthought_scale must be above 0")
     for program, harness_values in values["harness"].items():
         _validate_choice(harness_values["thinking"], THINKING_LEVELS, f"harness.{program}.thinking")
 
@@ -452,6 +473,11 @@ def _settings_from_values(
         cooldown_s=values["room_defaults"]["cooldown_s"],
         seat_timeout_s=values["room_defaults"]["seat_timeout_s"],
         max_auto_turns=values["room_defaults"]["max_auto_turns"],
+        max_concurrent=values["room_defaults"]["max_concurrent"],
+        self_reply_penalty=values["room_defaults"]["self_reply_penalty"],
+        more_limit=values["room_defaults"]["more_limit"],
+        afterthought_limit=values["room_defaults"]["afterthought_limit"],
+        afterthought_scale=values["room_defaults"]["afterthought_scale"],
         harnesses=harnesses,
         jev_api_key=jev_api_key,
         keys_set=keys_set,
@@ -521,6 +547,11 @@ def settings_view(settings: Settings) -> dict[str, Any]:
             "cooldown_s": settings.cooldown_s,
             "seat_timeout_s": settings.seat_timeout_s,
             "max_auto_turns": settings.max_auto_turns,
+            "max_concurrent": settings.max_concurrent,
+            "self_reply_penalty": settings.self_reply_penalty,
+            "more_limit": settings.more_limit,
+            "afterthought_limit": settings.afterthought_limit,
+            "afterthought_scale": settings.afterthought_scale,
         },
         "harness": {
             program: {

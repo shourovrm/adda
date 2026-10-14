@@ -45,3 +45,9 @@ async def test_empty_seats_gives_no_bids():
 async def test_empty_transcript_picks_first_seat():
     bids = await HeuristicRouter().bids("", SEATS, {})
     assert scores_of(bids) == {"alpha": 6.0, "beta": 0.0, "gamma": 0.0}
+
+
+async def test_afterthought_question_makes_nobody_volunteer():
+    transcript = "owner: hello\nalpha: hi\nbeta: hey"
+    bids = await HeuristicRouter().bids(transcript, SEATS, {}, "afterthought")
+    assert scores_of(bids) == {"alpha": 0.0, "beta": 0.0, "gamma": 0.0}

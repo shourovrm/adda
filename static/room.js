@@ -32,12 +32,11 @@ const WOKEN_BY_LABELS = {
   all: 'woken by @all',
   wake: 'woken by Wake',
   roundrobin: 'round-robin',
+  afterthought: 'afterthought',
+  more: 'continued',
 };
-const QUIET_REASONS = {
-  nobody: 'The room went quiet. Nobody scored high enough. Your turn.',
-  paused: 'The room is paused. Mention a seat, press Wake all, or resume.',
-  safety: 'Safety stop: too many automatic turns without you. Say something to continue.',
-};
+const DEFAULT_MAX_CONCURRENT = 2;
+const QUIET_COUNTDOWN_TICK_MS = 1000;
 
 const state = {
   roomId: decodeURIComponent(location.pathname.split('/').filter(Boolean).pop() || ''),
@@ -51,9 +50,13 @@ const state = {
   typingSeatIds: new Set(),
   lastBids: {}, // seat id -> {score, confidence}
   threshold: 5,
-  chosenSeatId: null,
+  chosenSeatIds: new Set(),
+  lastBidsKind: 'message',
   cooldownEndsAt: {}, // seat id -> epoch ms
   quietReason: null,
+  quietFrame: null, // the last quiet frame, with quietReceivedAt for the live countdown
+  quietReceivedAt: 0,
+  quietTimer: null,
   connection: { state: 'connecting', retryInSeconds: 0 },
   ownerScrolledUp: false,
   unseenCount: 0,
@@ -88,6 +91,7 @@ const elements = {
   endButton: document.getElementById('end-button'),
   stopButton: document.getElementById('stop-button'),
   sendButton: document.getElementById('send-button'),
+  maxConcurrent: document.getElementById('max-concurrent-select'),
   liveliness: document.getElementById('liveliness-input'),
   livelinessValue: document.getElementById('liveliness-value'),
   livelinessSentence: document.getElementById('liveliness-sentence'),
@@ -223,8 +227,7 @@ function handleFrame(frame) {
       handlePassedFrame(frame);
       break;
     case 'quiet':
-      state.quietReason = frame.reason;
-      renderStatusLine();
+      handleQuietFrame(frame);
       break;
     case 'ended':
       handleEndedFrame(frame);
@@ -238,6 +241,25 @@ function handleFrame(frame) {
       break;
     default:
       console.warn('Unknown frame type', frame);
+  }
+}
+
+function handleQuietFrame(frame) {
+  state.quietReason = frame.reason;
+  state.quietFrame = frame;
+  state.quietReceivedAt = Date.now();
+  ensureQuietTimer();
+  renderStatusLine();
+}
+
+/** Re-render once a second while a countdown is showing; stop when nothing is counting. */
+function ensureQuietTimer() {
+  const counting = state.quietReason && state.quietFrame && typeof state.quietFrame.next_tick_in_s === 'number';
+  if (counting && !state.quietTimer) {
+    state.quietTimer = setInterval(renderStatusLine, QUIET_COUNTDOWN_TICK_MS);
+  } else if (!counting && state.quietTimer) {
+    clearInterval(state.quietTimer);
+    state.quietTimer = null;
   }
 }
 
@@ -283,7 +305,7 @@ function handleMessageFrame(message) {
     state.cooldownEndsAt[message.seat_id] = Date.now() + state.cooldownSeconds * 1000;
     ensureCooldownTicker();
   }
-  state.chosenSeatId = null;
+  state.chosenSeatIds.clear();
   state.quietReason = null;
   state.messages.push(message);
   appendMessageElement(message);
@@ -306,7 +328,7 @@ function handleMessageFrame(message) {
 function handleTypingFrame(frame) {
   if (frame.state === 'start') {
     state.typingSeatIds.add(frame.seat);
-    if (state.chosenSeatId === frame.seat) state.chosenSeatId = null;
+    state.chosenSeatIds.delete(frame.seat);
     state.quietReason = null;
   } else {
     state.typingSeatIds.delete(frame.seat);
@@ -328,7 +350,8 @@ function handleBidsFrame(frame) {
     bidsBySeat[bid.seat] = { score: bid.score, rawScore: bid.raw_score ?? bid.score, confidence: bid.confidence };
   }
   state.lastBids = bidsBySeat;
-  state.chosenSeatId = frame.chosen;
+  state.chosenSeatIds = new Set(Array.isArray(frame.chosen) ? frame.chosen : [frame.chosen].filter(Boolean));
+  state.lastBidsKind = frame.kind || 'message';
   state.threshold = frame.threshold;
   state.router = frame.router;
   renderSeats();
@@ -569,30 +592,44 @@ function scrollToMessage(messageId) {
 
 // ----- status line (typing and quiet notice) -----
 
-function describeQuiet(reason) {
-  if (reason === 'budget') {
+function describeQuietNotice() {
+  const frame = state.quietFrame;
+  if (state.quietReason === 'budget') {
     const room = state.room;
     return `Budget reached (${formatMoney(room.spent_usd)} of ${formatMoney(room.budget_usd)}). Raise it to continue.`;
   }
-  return QUIET_REASONS[reason] || 'The room went quiet. Your turn.';
+  if (!frame || typeof frame.next_tick_in_s !== 'number') return describeQuiet({ reason: state.quietReason });
+  const elapsedSeconds = (Date.now() - state.quietReceivedAt) / 1000;
+  return describeQuiet({ ...frame, next_tick_in_s: Math.max(0, frame.next_tick_in_s - elapsedSeconds) });
 }
 
 function renderStatusLine() {
   elements.statusLine.replaceChildren();
-  for (const seatId of state.typingSeatIds) {
-    const seat = seatById(seatId);
-    if (!seat) continue;
-    const typing = createElement('span', 'typing');
-    setSeatColor(typing, seat.color);
+  const typingSeats = [...state.typingSeatIds].map((seatId) => seatById(seatId)).filter(Boolean);
+  if (typingSeats.length > 0) {
+    elements.statusLine.append(buildTypingIndicator(typingSeats));
+  }
+  if (state.quietReason && state.typingSeatIds.size === 0 && state.room) {
+    elements.statusLine.append(createElement('span', 'quiet-notice', describeQuietNotice()));
+  }
+  ensureQuietTimer();
+}
+
+/** "Ravi is thinking", "Ravi and Tuli are thinking", "Ravi, Tuli and Pi are thinking". */
+function buildTypingIndicator(seats) {
+  const typing = createElement('span', 'typing');
+  seats.forEach((seat, index) => {
+    if (index > 0) typing.append(index === seats.length - 1 ? ' and ' : ', ');
+    const seatPart = createElement('span', 'typing-seat');
+    setSeatColor(seatPart, seat.color);
     const dots = createElement('span', 'typing-dots');
     dots.setAttribute('aria-hidden', 'true');
     dots.append(document.createElement('i'), document.createElement('i'), document.createElement('i'));
-    typing.append(dots, createElement('span', 'typing-name', seat.name), ' is thinking');
-    elements.statusLine.append(typing);
-  }
-  if (state.quietReason && state.typingSeatIds.size === 0 && state.room) {
-    elements.statusLine.append(createElement('span', 'quiet-notice', describeQuiet(state.quietReason)));
-  }
+    seatPart.append(dots, createElement('span', 'typing-name', seat.name));
+    typing.append(seatPart);
+  });
+  typing.append(seats.length === 1 ? ' is thinking' : ' are thinking');
+  return typing;
 }
 
 // ----- side panel -----
@@ -606,6 +643,10 @@ function renderPanel() {
   if (!room) return;
   // Never overwrite a field the owner is editing.
   if (document.activeElement !== elements.liveliness) elements.liveliness.value = room.liveliness;
+  if (document.activeElement !== elements.maxConcurrent) {
+    elements.maxConcurrent.value = String(room.max_concurrent ?? DEFAULT_MAX_CONCURRENT);
+  }
+  elements.maxConcurrent.disabled = isRoomEnded();
   elements.livelinessValue.textContent = room.liveliness;
   elements.livelinessSentence.textContent = describeLiveliness(room.liveliness, countAutomaticTurns());
   if (document.activeElement !== elements.budget) elements.budget.value = room.budget_usd;
@@ -675,7 +716,7 @@ function computeSeatState(seat) {
   if (!seat.enabled) return 'disabled';
   if (state.typingSeatIds.has(seat.id)) return 'speaking';
   if (cooldownSecondsLeft(seat.id) > 0) return 'cooldown';
-  if (state.chosenSeatId === seat.id) return 'chosen';
+  if (state.chosenSeatIds.has(seat.id)) return 'chosen';
   return 'idle';
 }
 
@@ -723,7 +764,8 @@ function renderSeats(forceEditorSync = false) {
     references.programText.textContent = `${seat.program} · ${seat.model || 'default model'}`;
     references.meter.setAttribute('aria-valuenow', bid ? String(bid.score) : '0');
     references.scoreText.textContent = bid ? bid.score.toFixed(1) : '–';
-    references.scoreText.title = bid ? `Jev scored ${bid.rawScore.toFixed(1)}; with eagerness ${seat.eagerness} the bid is ${bid.score.toFixed(1)}` : 'No bid yet';
+    const roundLabel = state.lastBidsKind === 'afterthought' ? 'Afterthought round. ' : '';
+    references.scoreText.title = bid ? `${roundLabel}Jev scored ${bid.rawScore.toFixed(1)}; with eagerness ${seat.eagerness} the bid is ${bid.score.toFixed(1)}` : 'No bid yet';
     references.eagernessText.textContent = `eagerness ${seat.eagerness}`;
     references.eagernessText.title = describeEagerness(seat.eagerness);
     references.statusText.textContent = describeSeatState(seat, seatState);
@@ -1388,6 +1430,7 @@ function bindEvents() {
     elements.livelinessValue.textContent = value;
     elements.livelinessSentence.textContent = describeLiveliness(value, countAutomaticTurns());
   });
+  elements.maxConcurrent.addEventListener('change', () => sendRoomPatch({ max_concurrent: Number(elements.maxConcurrent.value) }));
   elements.liveliness.addEventListener('change', () => sendRoomPatch({ liveliness: Number(elements.liveliness.value) }));
   elements.budget.addEventListener('change', () => {
     const budget = Math.max(0, Number(elements.budget.value) || 0);

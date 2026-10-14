@@ -316,3 +316,38 @@ def test_add_seat_stores_eagerness_and_rejects_values_outside_zero_to_ten():
         store.add_seat(room.id, name="B", program="claude", eagerness=11)
     with pytest.raises(ValueError, match="eagerness"):
         store.update_seat(seat.id, eagerness=-1)
+
+
+def test_database_without_max_concurrent_is_upgraded_in_place(tmp_path):
+    database_path = tmp_path / "v03.db"
+    connection = sqlite3.connect(database_path)
+    connection.executescript(
+        """
+        CREATE TABLE rooms (id TEXT PRIMARY KEY, title TEXT NOT NULL, created_at TEXT NOT NULL,
+            ended_at TEXT, mode TEXT NOT NULL, folder TEXT NOT NULL DEFAULT '',
+            liveliness INTEGER NOT NULL DEFAULT 6, budget_usd REAL NOT NULL DEFAULT 0,
+            spent_usd REAL NOT NULL DEFAULT 0);
+        INSERT INTO rooms (id, title, created_at, mode)
+            VALUES ('r1', 'old', '2026-01-01', 'bidding');
+        """
+    )
+    connection.commit()
+    connection.close()
+
+    store = Store(database_path)
+    assert store.get_room("r1").max_concurrent == 2
+    store.update_room("r1", max_concurrent=4)
+    assert store.get_room("r1").max_concurrent == 4
+    store.close()
+    Store(database_path).close()  # a second open must not try to add the column again
+
+
+def test_max_concurrent_is_stored_and_limited_to_one_through_four(store):
+    room = store.create_room("voices", max_concurrent=3)
+    assert store.get_room(room.id).max_concurrent == 3
+    assert store.create_room("default").max_concurrent == 2
+    for bad_value in (0, 5, 2.5, True, "2"):
+        with pytest.raises(ValueError, match="max_concurrent"):
+            store.update_room(room.id, max_concurrent=bad_value)
+        with pytest.raises(ValueError, match="max_concurrent"):
+            store.create_room("bad", max_concurrent=bad_value)

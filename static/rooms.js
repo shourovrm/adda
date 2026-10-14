@@ -44,6 +44,7 @@ const elements = {
   folderCancelButton: document.getElementById('folder-cancel-button'),
   budget: document.getElementById('room-budget-input'),
   mode: document.getElementById('room-mode-select'),
+  maxConcurrent: document.getElementById('room-max-concurrent-select'),
   liveliness: document.getElementById('room-liveliness-input'),
   livelinessValue: document.getElementById('room-liveliness-value'),
   livelinessSentence: document.getElementById('room-liveliness-sentence'),
@@ -197,6 +198,7 @@ function createDraft() {
     budget: defaults.budget_usd,
     mode: defaults.mode,
     liveliness: defaults.liveliness,
+    maxConcurrent: defaults.max_concurrent ?? 2,
     seats: [],
   };
   state.draft = draft;
@@ -255,6 +257,7 @@ function renderDraftFields() {
   elements.budget.value = draft.budget;
   elements.mode.value = draft.mode;
   elements.liveliness.value = draft.liveliness;
+  elements.maxConcurrent.value = String(draft.maxConcurrent);
   renderDraftLiveliness();
   renderSeatTable();
 }
@@ -476,6 +479,7 @@ async function openRoom(event) {
     title: draft.title.trim(),
     mode: draft.mode,
     liveliness: draft.liveliness,
+    max_concurrent: draft.maxConcurrent,
     budget_usd: Number(draft.budget) || 0,
     seats: draft.seats.map(buildNewSeat),
   };
@@ -621,6 +625,9 @@ function bindEvents() {
   elements.liveliness.addEventListener('input', () => {
     state.draft.liveliness = Number(elements.liveliness.value);
     renderDraftLiveliness();
+  });
+  elements.maxConcurrent.addEventListener('change', () => {
+    state.draft.maxConcurrent = Number(elements.maxConcurrent.value);
   });
   elements.addSeatButton.addEventListener('click', () => {
     state.draft.seats.push(createDraftRow({ instructionOpen: true }));

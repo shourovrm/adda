@@ -260,6 +260,24 @@ function computeLivelinessThreshold(liveliness, automaticTurns) {
   return { base, ramp, current: Math.max(THRESHOLD_FLOOR, base + ramp * automaticTurns) };
 }
 
+const QUIET_REASON_TEXT = {
+  nobody: 'The room went quiet. Nobody scored high enough. Your turn.',
+  paused: 'The room is paused. Mention a seat, press Wake all, or resume.',
+  safety: 'Safety stop: too many automatic turns without you. Say something to continue.',
+};
+
+/** The quiet notice for a `quiet` frame: a countdown to the next afterthought chance when one is scheduled. */
+function describeQuiet(frame) {
+  const secondsLeft = frame.next_tick_in_s;
+  if (typeof secondsLeft !== 'number' || secondsLeft < 0) {
+    return QUIET_REASON_TEXT[frame.reason] || 'The room went quiet. Your turn.';
+  }
+  const chances = frame.ticks_left > 0 ? frame.ticks_left : 1;
+  const chanceWord = chances === 1 ? 'chance' : 'chances';
+  const wait = secondsLeft >= 1 ? `in about ${Math.round(secondsLeft)} s` : 'any moment now';
+  return `Quiet. Someone may come back ${wait} (${chances} ${chanceWord} left).`;
+}
+
 function describeLiveliness(liveliness, automaticTurns) {
   if (liveliness === 0) {
     return 'Paused. Seats speak only when mentioned or woken.';

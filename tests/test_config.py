@@ -44,6 +44,9 @@ def test_defaults(isolated):
     assert settings.liveliness == 6
     assert settings.budget_usd == 1.0
     assert settings.max_auto_turns == 40
+    assert (settings.max_concurrent, settings.self_reply_penalty) == (2, 1.5)
+    assert (settings.more_limit, settings.afterthought_limit) == (2, 3)
+    assert settings.afterthought_scale == 1.0
     assert settings.harnesses["claude"].model == "sonnet"
     assert settings.harnesses["claude"].thinking == "medium"
     assert settings.harnesses["codex"].enabled is False

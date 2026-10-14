@@ -60,18 +60,23 @@ A seat row with "copies" 3 and the name `Scout` becomes three seats `Scout1`, `S
 
 The model field offers `fable, opus, sonnet, haiku` and the dated Claude names for `claude`; the `enabledModels` and `defaultModel` entries of `~/.pi/agent/settings.json` for `pi` (falling back to `z-ai/glm-5.3-flash` when the file is missing); the output of `opencode models` for `opencode`; and `gpt-5-codex` for `codex`, plus any `extra_models` from the config. Any other text is passed through unchanged.
 
-## Turn-taking
+## How the room decides who speaks
 
-After every message Jev scores each seat's urge to speak from 0 to 10, and the top score speaks if it reaches the threshold. These controls shape that:
+The room is not turn-based. Every message, from you or from a seat, sets the same steps in motion, and several seats may be writing at once.
 
-- **Liveliness** (0 to 10, per room) sets the threshold. With `k` bid-driven turns since the last owner message or wake, the threshold is `max(floor, base + ramp * k)` where `base = 7.5 - 0.5 * liveliness` and `ramp = 0.3 - 0.025 * liveliness`. At liveliness 10 the first seat speaks at a score of 2.5 and each further turn raises the bar by 0.05; at liveliness 8 it needs 3.5 (+0.1 per turn); at liveliness 1 it needs 7.0 (+0.275 per turn). Mention, `@all`, wake and round-robin turns do not raise `k`. The floor is the router setting `threshold_floor` (2.5). Liveliness 0 pauses the room: no bidding and no round-robin, only mentions and Wake.
-- **Eagerness** (0 to 10, per seat, default 5) shifts that seat's bid: `adjusted = clamp(score + 0.4 * (eagerness - 5), 0, 10)`, so eagerness 10 adds 2.0 and eagerness 0 means the seat never bids (it still answers mentions and wakes). The `bids` frame carries `score` (adjusted, compared with the threshold) and `raw_score` (Jev's number). When a seat answers PASS, a `{"type":"passed","seat":id}` frame is sent and nothing is stored.
-- **Budget** (USD, per room, 0 means unlimited). Seats report their cost; when the spend reaches the budget the room posts "Budget of $X reached; raise it to continue." and goes quiet. Mentions and wakes are refused until you raise the budget.
-- **Safety stop**: at most `max_auto_turns` (40) automatic turns follow one owner message, whatever the budget.
+- **Concurrency.** A room has `max_concurrent` (1 to 4, default 2, the "Voices at once" setting). After a message, Jev scores each seat that is not already writing, and every seat whose score reaches the threshold starts writing, best score first, until `max_concurrent` seats are writing. Replies may cross: a seat's prompt holds the messages it had not seen when it started, and the system prompt tells every seat that others may be composing at the same moment. With `max_concurrent = 1` the room behaves like strict turns. A seat never writes two replies at once. Your own messages never cancel a writing seat; the Stop button cancels all of them.
+- **Mentions.** `@ravi` starts one seat now (case-insensitive; a handle is the seat name without spaces, lowercased). `@all` starts every enabled, installed seat in roster order. `@scout*` starts every seat whose handle starts with `scout`. Mentioned seats start regardless of score and of `max_concurrent`; a seat is never started by its own message. If a mention reaches a seat that is still writing, the seat runs once more when it finishes and then sees the new messages.
+- **Author penalty.** The author of the latest message may answer itself, but its bid is lowered by `self_reply_penalty` (default 1.5).
+- **`[more]`.** A seat that ends its reply with a last line that is exactly `[more]` (any case) keeps the floor. Adda removes the line from the stored message and starts the same seat again at once, without bidding, at most `more_limit` times in a row (default 2). Those messages are marked "continued" in the UI.
+- **Afterthoughts.** When nobody is writing and the room is in `bidding` mode with liveliness above 0, Adda waits `(11 - liveliness) * 20` seconds, times a random factor between 0.7 and 1.3, times `afterthought_scale` (default 1.0), and then asks Jev a different question: does this seat have something worth adding that nobody has said? Seats at or above the threshold start writing (marked "afterthought"). A quiet spell allows at most `afterthought_limit` such ticks (default 3); it starts over when you post a message or wake a seat. Each tick costs one Jev round and a seat costs money only when it speaks. The first tick of a spell is shortened by 5 % for every eagerness point above 5 of the most eager seat (and lengthened below 5). The `quiet` frame carries `next_tick_in_s` and `ticks_left` so the page can count down. The heuristic router never volunteers an afterthought.
+- **Liveliness** (0 to 10, per room) sets the threshold. With `k` bid-driven starts since the last owner message or wake, the threshold is `max(floor, base + ramp * k)` where `base = 7.5 - 0.5 * liveliness` and `ramp = 0.3 - 0.025 * liveliness`. At liveliness 10 the first seat speaks at a score of 2.5 and each further start raises the bar by 0.05; at liveliness 8 it needs 3.5 (+0.1 per start); at liveliness 1 it needs 7.0 (+0.275 per start). Mention, `@all`, wake, `[more]` and round-robin starts do not raise `k`; bid and afterthought starts do. The floor is the router setting `threshold_floor` (2.5). Liveliness 0 pauses the room: no bidding, no afterthoughts and no round-robin, only mentions and Wake.
+- **Eagerness** (0 to 10, per seat, default 5) shifts that seat's bid: `adjusted = clamp(score + 0.4 * (eagerness - 5), 0, 10)`, so eagerness 10 adds 2.0 and eagerness 0 means the seat never bids (it still answers mentions and wakes). The `bids` frame carries `score` (adjusted, compared with the threshold) and `raw_score` (Jev's number). A seat that answers PASS sends `{"type":"passed","seat":id}`, stores nothing and is not asked again until someone speaks.
+- **Budget** (USD, per room, 0 means unlimited). Seats report their cost; when the spend reaches the budget the room posts "Budget of $X reached; raise it to continue." and goes quiet. Seats already writing finish their reply; mentions and wakes are refused until you raise the budget.
+- **Safety stop.** At most `max_auto_turns` (40) automatic starts (bids, afterthoughts, `[more]`, seat mentions, round-robin) follow one owner message or wake, whatever the budget.
 
-Mentions bypass bidding. `@ravi` wakes one seat (case-insensitive; a handle is the seat name without spaces, lowercased). `@all` wakes every enabled, installed seat in roster order. `@scout*` wakes every seat whose handle starts with `scout`. A seat is never woken by its own message. An owner message cancels the seat that is currently speaking. Cooldown is off by default (`cooldown_s = 0`); when set above 0, a seat that spoke less than that many seconds ago bids 1.5 lower, and mentions ignore it.
+Cooldown is off by default (`cooldown_s = 0`); when set above 0, a seat that spoke less than that many seconds ago bids 1.5 lower, and mentions ignore it. Changing a seat's program cancels that seat's reply; removing a seat does too.
 
-The room mode sets who is scored: `bidding` (default), `roundrobin` (one pass over the enabled seats after an owner message, then quiet), or `manual` (mentions and the wake buttons only).
+The room mode sets who is scored: `bidding` (default), `roundrobin` (one pass over the enabled seats after an owner message, one seat at a time whatever `max_concurrent` is, then quiet), or `manual` (mentions and the wake buttons only).
 
 ## Settings file and keys
 
@@ -101,6 +106,11 @@ mode = "bidding"
 cooldown_s = 0
 seat_timeout_s = 180
 max_auto_turns = 40
+max_concurrent = 2              # voices at once, 1 to 4
+self_reply_penalty = 1.5
+more_limit = 2                  # [more] continuations in a row
+afterthought_limit = 3          # afterthought ticks per quiet spell
+afterthought_scale = 1.0        # multiplies the afterthought delay
 
 [harness.claude]
 model = "sonnet"
@@ -109,7 +119,7 @@ enabled = true
 extra_models = []
 ```
 
-Environment variables: `ADDA_HOST`, `ADDA_PORT`, `ADDA_CONFIG`, `ADDA_OWNER_NAME`, `ADDA_OWNER_LINE`, `ADDA_ROOMS_DIR`, `ADDA_DATA_DIR`, `ADDA_PERSONAS_DIR`, `ADDA_ROUTER`, `ADDA_JEV_PROVIDER`, `ADDA_JEV_MODEL`, `ADDA_THRESHOLD_FLOOR`, `ADDA_ROUTER_WINDOW`, `ADDA_LIVELINESS`, `ADDA_BUDGET_USD`, `ADDA_MODE`, `ADDA_COOLDOWN_S`, `ADDA_SEAT_TIMEOUT_S`, `ADDA_MAX_AUTO_TURNS`.
+Environment variables: `ADDA_HOST`, `ADDA_PORT`, `ADDA_CONFIG`, `ADDA_OWNER_NAME`, `ADDA_OWNER_LINE`, `ADDA_ROOMS_DIR`, `ADDA_DATA_DIR`, `ADDA_PERSONAS_DIR`, `ADDA_ROUTER`, `ADDA_JEV_PROVIDER`, `ADDA_JEV_MODEL`, `ADDA_THRESHOLD_FLOOR`, `ADDA_ROUTER_WINDOW`, `ADDA_LIVELINESS`, `ADDA_BUDGET_USD`, `ADDA_MODE`, `ADDA_COOLDOWN_S`, `ADDA_SEAT_TIMEOUT_S`, `ADDA_MAX_AUTO_TURNS`, `ADDA_MAX_CONCURRENT`.
 
 Keys live in `~/.config/adda/keys.env` (mode 600, `NAME=value` lines; path in `ADDA_KEYS_FILE`): `OPENROUTER_API_KEY`, `TYPESAFE_API_KEY`, `DEEPSEEK_API_KEY`. For each key Adda looks at the environment variable first, then `keys.env`, and for OpenRouter finally the older `~/.config/jev/openrouter.env`. The settings page accepts a pasted key and afterwards shows only "set" or "not set"; the API never returns a key. Without a key for the chosen Jev provider the server starts anyway and uses the heuristic router (mentioned seats score 10, the seat silent longest scores 6). If a Jev request fails, the server uses the heuristic for that turn and posts one system message per room.
 

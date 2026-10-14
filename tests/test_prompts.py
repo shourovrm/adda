@@ -12,6 +12,7 @@ from adda.prompts import (
     parse_memory_bullets,
     render_transcript,
     resolve_mentions,
+    split_more_marker,
     system_prompt,
     turn_prompt,
 )
@@ -114,6 +115,8 @@ def test_system_prompt_order_and_content(tmp_path):
     assert "@tuli (Tuli), @scout2 (Scout 2)" in prompt
     assert "@all" in prompt
     assert "PASS" in prompt
+    assert "at the same moment" in prompt  # others compose at the same time; replies can cross
+    assert "[more]" in prompt
     assert "no files, no shell, no tools" in prompt
     assert "Riad" in prompt
 
@@ -167,3 +170,29 @@ def test_end_of_discussion_prompt_is_unchanged():
 )
 def test_parse_memory_bullets(reply, expected):
     assert parse_memory_bullets(reply) == expected
+
+
+@pytest.mark.parametrize(
+    ("text", "expected_text", "expected_more"),
+    [
+        ("part one\n[more]", "part one", True),
+        ("part one\n[MORE]  \n", "part one", True),
+        ("[more]", "", True),
+        ("first\n\nsecond\n  [More]", "first\n\nsecond", True),
+        ("use [more] sparingly", "use [more] sparingly", False),
+        ("[more]\nand then text", "[more]\nand then text", False),
+        ("plain", "plain", False),
+        ("", "", False),
+    ],
+)
+def test_split_more_marker(text, expected_text, expected_more):
+    assert split_more_marker(text) == (expected_text, expected_more)
+
+
+def test_turn_prompt_explains_afterthoughts_and_continuations():
+    room = Room(title="t")
+    seat = make_seat("Ravi")
+    assert "quiet for a while" in turn_prompt(room, [], seat, "Riad", "afterthought")
+    assert "carry on" in turn_prompt(room, [], seat, "Riad", "more")
+    plain = turn_prompt(room, [], seat, "Riad", "mention")
+    assert "quiet for a while" not in plain and "carry on" not in plain

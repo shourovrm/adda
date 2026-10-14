@@ -78,6 +78,8 @@ class Room(BaseModel):
     liveliness: int = Field(default=6, ge=0, le=10)
     budget_usd: float = Field(default=0.0, ge=0)  # 0 = unlimited
     spent_usd: float = 0.0
+    # How many seats may compose a reply at the same time (1 reproduces strict turn-taking).
+    max_concurrent: int = Field(default=2, ge=1, le=4)
     created_at: datetime = Field(default_factory=utc_now)
     ended_at: datetime | None = None
     seats: list[Seat] = Field(default_factory=list)
@@ -97,7 +99,8 @@ class Message(BaseModel):
     created_at: datetime = Field(default_factory=utc_now)
     mentions: list[str] = Field(default_factory=list)  # seat ids
     cost_usd: float | None = None
-    # bid_score, model, latency_ms, woken_by ("mention"|"all"|"wake"|"bid"|"roundrobin")
+    # bid_score, model, latency_ms, woken_by
+    # ("mention"|"all"|"wake"|"bid"|"roundrobin"|"more"|"afterthought")
     meta: dict[str, Any] = Field(default_factory=dict)
 
     @property

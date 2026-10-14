@@ -27,6 +27,29 @@ class FakeClock:
         self.now += seconds
 
 
+class FakeSleeper:
+    """Stands in for asyncio.sleep in the scheduler: records every delay it was asked for.
+
+    By default a sleep returns at once (after yielding to the event loop once). With
+    `hold=True` it blocks until `release()` so a test can look at the room while it waits.
+    """
+
+    def __init__(self, hold: bool = False) -> None:
+        self.hold = hold
+        self.delays: list[float] = []
+        self._release = asyncio.Event()
+
+    def release(self) -> None:
+        self._release.set()
+
+    async def __call__(self, seconds: float) -> None:
+        self.delays.append(seconds)
+        if self.hold and not self._release.is_set():
+            await self._release.wait()
+        else:
+            await asyncio.sleep(0)
+
+
 class FakeAdapter:
     """Returns scripted replies (SeatReply or an exception to raise) and records every call."""
 
@@ -119,6 +142,7 @@ class FakeRouter:
         self.name = name
         self.scripted: deque[dict[str, float] | Exception] = deque()
         self.transcripts: list[str] = []
+        self.question_kinds: list[str] = []
 
     def script(self, *entries: dict[str, float] | Exception) -> None:
         self.scripted.extend(entries)
@@ -127,8 +151,9 @@ class FakeRouter:
     def call_count(self) -> int:
         return len(self.transcripts)
 
-    async def bids(self, transcript, seats, personas):
+    async def bids(self, transcript, seats, personas, question_kind="message"):
         self.transcripts.append(transcript)
+        self.question_kinds.append(question_kind)
         entry = self.scripted.popleft() if self.scripted else {}
         if isinstance(entry, Exception):
             raise entry

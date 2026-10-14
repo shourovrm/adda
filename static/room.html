@@ -4,16 +4,16 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light dark">
-  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v=0.3">
-  <link rel="stylesheet" href="/static/style.css?v=0.3">
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v=0.4">
+  <link rel="stylesheet" href="/static/style.css?v=0.4">
   <title>Room · Adda</title>
-  <script src="/static/common.js?v=0.3" defer></script>
-  <script src="/static/markdown.js?v=0.3" defer></script>
-  <script src="/static/room.js?v=0.3" defer></script>
+  <script src="/static/common.js?v=0.4" defer></script>
+  <script src="/static/markdown.js?v=0.4" defer></script>
+  <script src="/static/room.js?v=0.4" defer></script>
 </head>
 <body class="page-room">
   <header class="top">
-    <a class="brand" href="/"><img class="brand-mark" src="/static/logo.svg?v=0.3" width="28" height="28" alt="">Adda <small lang="bn">আড্ডা</small></a>
+    <a class="brand" href="/"><img class="brand-mark" src="/static/logo.svg?v=0.4" width="28" height="28" alt="">Adda <small lang="bn">আড্ডা</small></a>
     <nav aria-label="Pages">
       <a href="/">Rooms</a>
       <a href="/settings">Settings</a>
@@ -69,6 +69,14 @@
         <input class="slider" type="range" id="liveliness-input" min="0" max="10" step="1">
         <div class="scale"><span>Quiet</span><span>Lively</span></div>
         <div class="small mute" id="liveliness-sentence" style="margin-top:6px"></div>
+        <label for="max-concurrent-select">Voices at once</label>
+        <select id="max-concurrent-select">
+          <option value="1">1</option>
+          <option value="2">2</option>
+          <option value="3">3</option>
+          <option value="4">4</option>
+        </select>
+        <div class="field-hint">How many seats may write a reply at the same time.</div>
         <label for="budget-input">Budget</label>
         <div class="row">
           <input type="number" id="budget-input" min="0" step="0.25">

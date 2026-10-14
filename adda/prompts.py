@@ -25,6 +25,9 @@ ALL_HANDLE = "all"
 MENTION_REASON = "mention"
 ALL_REASON = "all"
 
+# A reply whose last line is exactly this keeps the floor: the seat is started again at once.
+MORE_MARKER = "[more]"
+
 
 def render_transcript(messages: list[Message], owner_name: str = "owner") -> str:
     """One `author: text` line per message, as the router and the seats read it.
@@ -77,6 +80,19 @@ def resolve_mentions(text: str, seats: list[Seat], author_seat_id: str | None) -
     return resolved
 
 
+def split_more_marker(text: str) -> tuple[str, bool]:
+    """Reply text without a trailing `[more]` line, and whether that line was there.
+
+    Only a last line that is exactly the marker (case-insensitive, surrounding blanks ignored)
+    counts, so a reply that merely mentions "[more]" in a sentence is left alone.
+    """
+    stripped = text.rstrip()
+    last_line_start = stripped.rfind("\n") + 1
+    if stripped[last_line_start:].strip().lower() != MORE_MARKER:
+        return text, False
+    return stripped[:last_line_start].rstrip(), True
+
+
 def find_mentions(text: str, seats: list[Seat], author_seat_id: str | None = None) -> list[str]:
     """Seat ids woken by `text`, in order, without duplicates (see resolve_mentions)."""
     return list(resolve_mentions(text, seats, author_seat_id))
@@ -118,15 +134,39 @@ def _room_rules(seat: Seat, other_seats: list[Seat], owner_name: str) -> str:
         "You only talk: no files, no shell, no tools. Address a seat with @handle, everyone with "
         "@all, or a group with @prefix*. "
         "Keep messages short and conversational. "
+        "Other seats may be composing a reply at the same moment as you, so replies can cross: "
+        "a message may appear that you have not seen when you started. "
+        "If you have more to say and want to keep the floor, end your reply with a last line "
+        f"that is exactly {MORE_MARKER} and you will be asked to continue at once; use it "
+        "sparingly, it works only a couple of times in a row. "
         "If you have nothing worth adding when asked to speak, reply with exactly PASS."
     )
 
 
-def turn_prompt(room: Room, unseen_messages: list[Message], seat: Seat, owner_name: str) -> str:
+# Extra sentence in the turn prompt for the two ways a seat is started without a new message.
+REASON_HINTS = {
+    "afterthought": (
+        "The room has been quiet for a while. Speak only if you have an afterthought that "
+        "nobody has said and the room would want to hear."
+    ),
+    "more": f"You ended your last reply with {MORE_MARKER}; carry on from where you stopped.",
+}
+
+
+def turn_prompt(
+    room: Room,
+    unseen_messages: list[Message],
+    seat: Seat,
+    owner_name: str,
+    woken_by: str | None = None,
+) -> str:
     transcript = render_transcript(unseen_messages, owner_name) or "(no new messages)"
+    hint = REASON_HINTS.get(woken_by or "")
+    hint_line = f"{hint}\n" if hint else ""
     return (
         f"Adda room: {room.title}\n"
         f"New messages since your last turn:\n\n{transcript}\n\n"
+        f"{hint_line}"
         f"It is your turn to speak as @{seat.handle}. Reply with your message text only. "
         "If you have nothing to add, reply with exactly PASS."
     )

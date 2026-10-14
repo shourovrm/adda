@@ -185,3 +185,33 @@ async def test_missing_api_key_raises_before_any_request():
 
     with pytest.raises(RouterError, match="API key"):
         await make_router("openrouter", handler, api_key=None).bids("t", SEATS, PERSONAS)
+
+
+async def test_afterthought_question_asks_for_something_new_to_add():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json=answers_payload(alpha=(1, 1), beta=(1, 1)))
+
+    await make_router("openrouter", handler).bids("t", SEATS, PERSONAS, "afterthought")
+
+    questions = captured["body"]["questions"]
+    for seat_name in ("alpha", "beta"):
+        instructions = questions[f"id-{seat_name}"]["instructions"]
+        assert f"Does @{seat_name} have something worth adding that nobody has said" in instructions
+        assert "afterthought" in instructions
+        assert "should speak next" not in instructions
+        assert len(questions[f"id-{seat_name}"]["criteria"]) == 10
+    assert "Architecture" in questions["id-alpha"]["instructions"]
+
+
+async def test_message_question_is_the_default():
+    captured = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured["body"] = json.loads(request.content)
+        return httpx.Response(200, json=answers_payload(alpha=(1, 1), beta=(1, 1)))
+
+    await make_router("typesafe", handler).bids("t", SEATS, PERSONAS)
+    assert "should speak next" in captured["body"]["questions"]["id-alpha"]["instructions"]

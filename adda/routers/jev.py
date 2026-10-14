@@ -16,7 +16,7 @@ import httpx
 
 from adda.models import Bid, Seat
 from adda.personas import Persona
-from adda.routers.base import RouterError
+from adda.routers.base import AFTERTHOUGHT_QUESTION, MESSAGE_QUESTION, RouterError
 
 logger = logging.getLogger(__name__)
 
@@ -40,16 +40,28 @@ SCORE_CRITERIA = [
 ]
 
 
-def _question_for_seat(seat: Seat, personas: dict[str, Persona]) -> dict:
-    """`personas` is the library by slug; the seat points at one with `seat.persona`."""
+def _question_for_seat(
+    seat: Seat, personas: dict[str, Persona], question_kind: str = MESSAGE_QUESTION
+) -> dict:
+    """`personas` is the library by slug; the seat points at one with `seat.persona`.
+
+    `question_kind` "afterthought" asks whether the seat has something new to add to a room that
+    went quiet, instead of whether it should answer the last message.
+    """
     persona = personas.get(seat.persona) if seat.persona else None
     role = persona.role if persona and persona.role else "a participant"
     stance = persona.stance if persona else ""
-    instructions = (
-        f"The state is a chat transcript. Rate how strongly the participant @{seat.handle} "
-        "should speak next, given the last message.\n"
-        f"Role of @{seat.handle}: {role}"
-    )
+    if question_kind == AFTERTHOUGHT_QUESTION:
+        task = (
+            f"Does @{seat.handle} have something worth adding that nobody has said, an "
+            "afterthought the room would want to hear? Rate how strongly they should speak up now."
+        )
+    else:
+        task = (
+            f"Rate how strongly the participant @{seat.handle} should speak next, given the "
+            "last message."
+        )
+    instructions = f"The state is a chat transcript. {task}\nRole of @{seat.handle}: {role}"
     if stance:
         instructions += f"\nStance of @{seat.handle}: {stance}"
     if seat.instruction and seat.instruction.strip():
@@ -85,11 +97,19 @@ class JevRouter:
         # The key is deliberately left out.
         return f"JevRouter(provider={self.provider!r}, model={self.model!r})"
 
-    def _request_body(self, transcript: str, seats: list[Seat], personas: dict[str, Persona]):
+    def _request_body(
+        self,
+        transcript: str,
+        seats: list[Seat],
+        personas: dict[str, Persona],
+        question_kind: str = MESSAGE_QUESTION,
+    ):
         body: dict = {
             "model": self.model,
             "state": transcript,
-            "questions": {seat.id: _question_for_seat(seat, personas) for seat in seats},
+            "questions": {
+                seat.id: _question_for_seat(seat, personas, question_kind) for seat in seats
+            },
         }
         if self.provider == "openrouter":
             body["provider"] = {"data_collection": "deny", "zdr": True}
@@ -111,14 +131,18 @@ class JevRouter:
             ) from error
 
     async def bids(
-        self, transcript: str, seats: list[Seat], personas: dict[str, Persona]
+        self,
+        transcript: str,
+        seats: list[Seat],
+        personas: dict[str, Persona],
+        question_kind: str = MESSAGE_QUESTION,
     ) -> list[Bid]:
         if not self._api_key:
             raise RouterError(f"jev ({self.provider}) has no API key configured")
         if not seats:
             return []
 
-        response = await self._post(self._request_body(transcript, seats, personas))
+        response = await self._post(self._request_body(transcript, seats, personas, question_kind))
         if not response.is_success:
             body_start = response.text[:300]
             raise RouterError(

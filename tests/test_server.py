@@ -201,6 +201,7 @@ def test_create_room_expands_copies_and_creates_the_default_folder(client, tmp_p
     assert room["folder"] == str(expected_folder)
     assert expected_folder.is_dir()
     assert (room["mode"], room["liveliness"], room["budget_usd"]) == ("bidding", 0, 1.0)
+    assert room["max_concurrent"] == 2  # settings default
 
 
 def test_create_room_uses_and_creates_an_explicit_folder(client, tmp_path):
@@ -218,6 +219,8 @@ def test_create_room_uses_and_creates_an_explicit_folder(client, tmp_path):
         ({"title": "x", "folder": "relative/path"}, "absolute"),
         ({"title": "x", "mode": "chaos"}, "mode"),
         ({"title": "x", "liveliness": 11}, "liveliness"),
+        ({"title": "x", "max_concurrent": 0}, "max_concurrent"),
+        ({"title": "x", "max_concurrent": 5}, "max_concurrent"),
         ({"title": "x", "seats": [{"name": "A", "program": "emacs"}]}, "program"),
         ({"title": "x", "seats": [{"name": "A", "program": "pi", "persona": "nobody"}]}, "nobody"),
         ({"title": "x", "seats": [{"name": "A", "program": "pi", "copies": 0}]}, "copies"),
@@ -309,8 +312,24 @@ def test_patch_room(client):
     assert response.status_code == 200
     patched = response.json()
     assert (patched["title"], patched["liveliness"], patched["budget_usd"]) == ("Renamed", 8, 3.0)
-    for bad_patch in ({"liveliness": 11}, {"mode": "chaos"}, {"folder": "/x"}):
+    for bad_patch in (
+        {"liveliness": 11},
+        {"mode": "chaos"},
+        {"folder": "/x"},
+        {"max_concurrent": 0},
+        {"max_concurrent": 5},
+        {"max_concurrent": 1.5},
+    ):
         assert client.patch(f"/api/rooms/{room['id']}", json=bad_patch).status_code == 400
+
+
+def test_max_concurrent_is_set_on_create_and_patched(client):
+    room = make_room(client, max_concurrent=3)
+    assert room["max_concurrent"] == 3
+    response = client.patch(f"/api/rooms/{room['id']}", json={"max_concurrent": 1})
+    assert response.status_code == 200
+    assert response.json()["max_concurrent"] == 1
+    assert client.get(f"/api/rooms/{room['id']}").json()["room"]["max_concurrent"] == 1
 
 
 def test_seat_add_patch_and_delete(client):
@@ -402,6 +421,13 @@ def test_settings_put_round_trip_with_key_masking(client, environment, store):
     view = client.get("/api/settings").json()
     view["owner"] = {"name": "Riad", "line": "Likes short answers."}
     view["room_defaults"]["liveliness"] = 9
+    view["room_defaults"].update(
+        max_concurrent=3,
+        self_reply_penalty=2.0,
+        more_limit=1,
+        afterthought_limit=4,
+        afterthought_scale=0.5,
+    )
     view["harness"]["claude"]["model"] = "opus"
     view["harness"]["claude"]["extra_models"] = ["opus-next"]
     view["keys"] = {"openrouter": SECRET_KEY, "typesafe": False, "deepseek": ""}
@@ -419,6 +445,8 @@ def test_settings_put_round_trip_with_key_masking(client, environment, store):
     config = tomllib.loads(open(environment["ADDA_CONFIG"], encoding="utf-8").read())
     assert config["owner"]["name"] == "Riad"
     assert config["room_defaults"]["liveliness"] == 9
+    assert config["room_defaults"]["max_concurrent"] == 3
+    assert config["room_defaults"]["afterthought_scale"] == 0.5
     assert config["harness"]["claude"]["model"] == "opus"
     assert SECRET_KEY not in open(environment["ADDA_CONFIG"], encoding="utf-8").read()
 
@@ -429,6 +457,7 @@ def test_settings_put_round_trip_with_key_masking(client, environment, store):
     # The new owner name reaches a room opened afterwards, and new rooms use the new defaults.
     room = client.post("/api/rooms", json={"title": "after"}).json()
     assert room["liveliness"] == 9
+    assert room["max_concurrent"] == 3
     with client.websocket_connect(f"/ws/{room['id']}") as websocket:
         assert websocket.receive_json()["owner"] == {"name": "Riad"}
 
@@ -447,6 +476,9 @@ def test_settings_put_keeps_env_overridden_fields_out_of_the_file(client, enviro
     "change",
     [
         lambda view: view["room_defaults"].update(liveliness=99),
+        lambda view: view["room_defaults"].update(max_concurrent=5),
+        lambda view: view["room_defaults"].update(afterthought_scale=0),
+        lambda view: view["room_defaults"].update(more_limit=-1),
         lambda view: view["router"].update(provider="carrier-pigeon"),
         lambda view: view["harness"]["pi"].update(thinking="extreme"),
         lambda view: view.update(keys={"made-up": "value"}),
@@ -506,7 +538,12 @@ def test_say_runs_the_mentioned_seat_and_every_tab_sees_it(client, factory):
     assert seat_message["meta"]["woken_by"] == "mention"
     assert frames_one[1] == {"type": "typing", "seat": ravi, "state": "start"}
     assert frames_one[4]["room"]["spent_usd"] == pytest.approx(0.25)
-    assert frames_one[5] == {"type": "quiet", "reason": "paused"}
+    assert frames_one[5] == {
+        "type": "quiet",
+        "reason": "paused",
+        "next_tick_in_s": None,
+        "ticks_left": 0,
+    }
 
 
 def test_room_and_seat_frames_patch_the_room_and_reach_every_tab(client):
@@ -543,6 +580,7 @@ def test_room_and_seat_frames_patch_the_room_and_reach_every_tab(client):
         ({"type": "teleport"}, "unknown frame type"),
         ({"type": "say", "text": "   "}, "non-empty"),
         ({"type": "room", "patch": {"liveliness": 99}}, "liveliness"),
+        ({"type": "room", "patch": {"max_concurrent": 9}}, "max_concurrent"),
         ({"type": "room"}, "patch"),
         ({"type": "seat", "seat": "nope", "patch": {"color": "#000"}}, "nope"),
         ({"type": "seat", "seat": "x", "patch": []}, "patch"),
@@ -578,7 +616,12 @@ def test_wake_wake_all_and_stop_frames(client, factory):
         websocket.send_json({"type": "wake", "seat": seat_id(room, "Tuli")})
         woken = receive_until(websocket, "quiet")
         assert [f["message"]["author"] for f in woken if f["type"] == "message"] == ["Tuli"]
-        assert woken[-1] == {"type": "quiet", "reason": "paused"}
+        assert woken[-1] == {
+            "type": "quiet",
+            "reason": "paused",
+            "next_tick_in_s": None,
+            "ticks_left": 0,
+        }
 
         websocket.send_json({"type": "wake_all"})
         everyone = receive_until(websocket, "quiet")
@@ -597,7 +640,12 @@ def test_budget_blocks_wake_with_an_error_frame(client, factory):
         websocket.receive_json()
         websocket.send_json({"type": "say", "text": "@ravi hi"})
         frames = receive_until(websocket, "quiet")
-        assert frames[-1] == {"type": "quiet", "reason": "budget"}
+        assert frames[-1] == {
+            "type": "quiet",
+            "reason": "budget",
+            "next_tick_in_s": None,
+            "ticks_left": 0,
+        }
         websocket.send_json({"type": "wake", "seat": seat_id(room, "Tuli")})
         error = websocket.receive_json()
     assert error["type"] == "error"
