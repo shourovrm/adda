@@ -12,19 +12,17 @@ body {
 .panel + .panel { margin-top: var(--space-6); }
 .panel > h2 { margin-bottom: var(--space-4); }
 
-/* Save sits beside the title, where New room sits on the rooms page, so it is never off screen. */
-.page-head--action {
+/* Save sticks to the foot of the window, so it is on screen whichever section is being edited. */
+.save-bar {
+  position: sticky;
+  bottom: 0;
   display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: var(--space-4);
-}
-
-.settings-actions {
-  display: flex;
-  flex: none;
   align-items: center;
   gap: var(--space-3);
+  margin: var(--space-5) 0 0;
+  padding: var(--space-3) 0;
+  background: var(--ground);
+  border-top: var(--border-width) solid var(--panel);
 }
 
 /* Section list on the left, the same width as the threads column on the room page. */
@@ -75,16 +73,35 @@ body {
   flex: 1 1 auto;
 }
 
-/* One key per line: the input is as wide as a provider key, with Show/Hide beside it. */
+/* One key per line, as wide as a provider key, with the eye inside the field's right end. */
 .key-row {
-  display: flex;
-  gap: var(--space-2);
+  position: relative;
+  max-width: 64ch;
 }
 
 .key-row input {
-  flex: 0 1 auto;
   width: 100%;
-  max-width: 64ch;
+  padding-right: var(--control-height);
+}
+
+.field-eye {
+  position: absolute;
+  top: 0;
+  right: 0;
+  display: grid;
+  place-items: center;
+  width: var(--control-height);
+  height: var(--control-height);
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--mute);
+  cursor: pointer;
+}
+
+.field-eye:hover,
+.field-eye[aria-pressed="true"] {
+  color: var(--ink);
 }
 
 /* The last field of a panel needs no gap below it, the panel padding does that. */
@@ -169,7 +186,6 @@ body {
   .section-nav { position: static; flex-direction: row; flex-wrap: wrap; }
   .section-nav a { border-left: 0; border-bottom: var(--focus-width) solid transparent; }
   .section-nav a[aria-current="true"] { border-bottom-color: var(--accent); }
-  .page-head--action { flex-wrap: wrap; }
 }
 
 @media (max-width: 640px) {

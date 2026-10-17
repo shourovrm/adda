@@ -48,8 +48,9 @@ Three button kinds, and no size variants:
 - **Warning**, `.btn--warning`: `--stop` fill, `--stop-ink` text. Destructive and hard to undo only: End
   discussion, Delete seat. Each warning action asks for confirmation first (GOV.UK rule).
 
-Labels are sentence case and start with a verb: "Open folder", "Add a seat", "Wake all". No icon-only
-buttons. Links are `--ink`, underlined, and become links only when they navigate; an action is a button.
+Labels are sentence case and start with a verb: "Open folder", "Add a seat", "Wake all". The one
+icon-only control is the eye inside a secret field that shows or hides what is typed; it carries an
+`aria-label` and `aria-pressed`. Links are `--ink`, underlined, and become links only when they navigate; an action is a button.
 
 ## Colour
 
@@ -99,8 +100,9 @@ seat names, and one meta line in
 
 A 240px list of the six sections on the left, sticky, with the current section marked by the accent
 bar; the panels in one column on the right, each with an id the list links to. Save and the save status
-sit beside the title, as New room does on the rooms page. Short fields sit side by side in a wrapping
-row, each as wide as its control.
+sit in a bar stuck to the foot of the window, so they are on screen whichever section is being edited;
+the status reads "Unsaved changes" after any edit and the page asks before it is left with edits
+unsaved. Short fields sit side by side in a wrapping row, each as wide as its control.
 
 ## Gates
 

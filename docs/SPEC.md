@@ -242,7 +242,7 @@ extra_models = []
 [harness.codex]      model = "gpt-5-codex"               thinking = "default"  enabled = false
 ```
 Keys: `~/.config/adda/keys.env` (mode 600, `NAME=value` lines): `OPENROUTER_API_KEY`,
-`TYPESAFE_API_KEY`, `DEEPSEEK_API_KEY`. Lookup order for each: env var, keys.env, then for
+`TYPESAFE_API_KEY`. Lookup order for each: env var, keys.env, then for
 OpenRouter the legacy `~/.config/jev/openrouter.env`. The API never returns key values.
 `ANTHROPIC_API_KEY` is never read, never stored, and is stripped from seat environments.
 Env var names stay as in v0.1 (`ADDA_PORT`, `ADDA_DATA_DIR`, `ADDA_ROUTER`, ...) plus

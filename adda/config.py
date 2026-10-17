@@ -14,7 +14,7 @@ View shape (key values never appear, only booleans):
                        "self_reply_penalty", "more_limit", "afterthought_limit",
                        "afterthought_scale"},
      "harness": {"claude": {"model", "thinking", "enabled", "extra_models"}, ...},
-     "keys": {"openrouter": bool, "typesafe": bool, "deepseek": bool},
+     "keys": {"openrouter": bool, "typesafe": bool},
      "env_overrides": ["router.kind", ...]}   # dotted paths of fields an env var is setting
 
 Keys live in `~/.config/adda/keys.env` (mode 600). ANTHROPIC_API_KEY is deliberately never
@@ -46,7 +46,6 @@ JEV_KEY_VARIABLES = {
 KEY_VARIABLES = {
     "openrouter": "OPENROUTER_API_KEY",
     "typesafe": "TYPESAFE_API_KEY",
-    "deepseek": "DEEPSEEK_API_KEY",
 }
 
 PROGRAMS = ("claude", "opencode", "pi", "codex")

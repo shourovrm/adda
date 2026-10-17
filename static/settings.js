@@ -12,10 +12,17 @@
 const KEY_FIELDS = [
   { name: 'openrouter', label: 'OpenRouter key', variable: 'OPENROUTER_API_KEY' },
   { name: 'typesafe', label: 'TypeSafe key', variable: 'TYPESAFE_API_KEY' },
-  { name: 'deepseek', label: 'DeepSeek key', variable: 'DEEPSEEK_API_KEY' },
 ];
 
-const state = { settings: null, harnesses: [], personas: [] };
+// Two 24-unit strokes: an open eye, and the same eye crossed out while the key is shown.
+const EYE_ICON =
+  '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
+  + '<path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12z"/><circle cx="12" cy="12" r="3"/></svg>';
+const EYE_OFF_ICON =
+  '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
+  + '<path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7S1 12 1 12z"/><circle cx="12" cy="12" r="3"/><line x1="3" y1="3" x2="21" y2="21"/></svg>';
+
+const state = { settings: null, harnesses: [], personas: [], dirty: false };
 
 const elements = {
   ownerName: document.getElementById('owner-name'),
@@ -123,15 +130,20 @@ function renderKeyFields() {
     input.dataset.key = keyField.name;
     input.placeholder = isSet ? 'set; paste a new key to replace it' : 'paste to set';
     label.htmlFor = input.id;
-    // Show/Hide reveals only what is typed now; saved keys never come back from the server.
-    const toggle = createButton('Show', 'btn', () => {
-      const revealing = input.type === 'password';
-      input.type = revealing ? 'text' : 'password';
-      toggle.textContent = revealing ? 'Hide' : 'Show';
-      toggle.setAttribute('aria-pressed', String(revealing));
-    });
+    // The eye reveals only what is typed now; saved keys never come back from the server.
+    const toggle = createElement('button', 'field-eye');
+    toggle.type = 'button';
+    toggle.innerHTML = EYE_ICON;
+    toggle.setAttribute('aria-label', 'Show key');
     toggle.setAttribute('aria-pressed', 'false');
     toggle.setAttribute('aria-controls', input.id);
+    toggle.addEventListener('click', () => {
+      const revealing = input.type === 'password';
+      input.type = revealing ? 'text' : 'password';
+      toggle.innerHTML = revealing ? EYE_OFF_ICON : EYE_ICON;
+      toggle.setAttribute('aria-label', revealing ? 'Hide key' : 'Show key');
+      toggle.setAttribute('aria-pressed', String(revealing));
+    });
     const row = createElement('div', 'key-row');
     row.append(input, toggle);
     wrapper.append(label, row);
@@ -284,6 +296,7 @@ async function saveSettings(event) {
     state.settings = await sendJson('PUT', '/api/settings', collectSettings());
     state.harnesses = await fetchJson('/api/harnesses');
     renderAll();
+    state.dirty = false;
     elements.saveStatus.textContent = 'Saved';
     showToast('Settings saved.');
   } catch (error) {
@@ -298,7 +311,14 @@ async function start() {
   elements.form.addEventListener('submit', saveSettings);
   // Save sits in the page head, away from the fields, so the status says when there is work to save.
   elements.form.addEventListener('input', () => {
+    state.dirty = true;
     elements.saveStatus.textContent = 'Unsaved changes';
+  });
+  // Leaving with unsaved edits (close, reload, another page) asks first; the browser shows the dialog.
+  window.addEventListener('beforeunload', (event) => {
+    if (!state.dirty) return;
+    event.preventDefault();
+    event.returnValue = '';
   });
   markCurrentSection();
   elements.rescanButton.addEventListener('click', rescanHarnesses);

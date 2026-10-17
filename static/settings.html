@@ -4,16 +4,16 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light dark">
-  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v=1.1">
-  <link rel="stylesheet" href="/static/style.css?v=1.1">
-  <link rel="stylesheet" href="/static/settings.css?v=1.1">
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v=1.2">
+  <link rel="stylesheet" href="/static/style.css?v=1.2">
+  <link rel="stylesheet" href="/static/settings.css?v=1.2">
   <title>Settings · Adda</title>
-  <script src="/static/common.js?v=1.1" defer></script>
-  <script src="/static/settings.js?v=1.1" defer></script>
+  <script src="/static/common.js?v=1.2" defer></script>
+  <script src="/static/settings.js?v=1.2" defer></script>
 </head>
 <body>
   <header class="top">
-    <a class="brand" href="/"><img class="brand-mark" src="/static/logo.svg?v=1.1" width="28" height="28" alt="">Adda <small lang="bn">আড্ডা</small></a>
+    <a class="brand" href="/"><img class="brand-mark" src="/static/logo.svg?v=1.2" width="28" height="28" alt="">Adda <small lang="bn">আড্ডা</small></a>
     <nav aria-label="Pages">
       <a href="/">Rooms</a>
       <a href="/settings" aria-current="page">Settings</a>
@@ -22,15 +22,9 @@
   </header>
 
   <main class="page">
-    <div class="page-head page-head--action">
-      <div>
-        <h1>Settings</h1>
-        <p>Saved to <code>~/.config/adda/config.toml</code>. A shell variable with the same name still wins, and the field says so.</p>
-      </div>
-      <div class="settings-actions">
-        <span class="small mute" id="save-status" role="status"></span>
-        <button class="btn btn--primary" id="save-button" type="submit" form="settings-form">Save</button>
-      </div>
+    <div class="page-head">
+      <h1>Settings</h1>
+      <p>Saved to <code>~/.config/adda/config.toml</code>. A shell variable with the same name still wins, and the field says so.</p>
     </div>
 
     <div class="settings">
@@ -163,6 +157,11 @@
           <input type="text" id="personas-dir-input" data-path="folders.personas_dir">
         </div>
       </section>
+
+      <div class="save-bar">
+        <button class="btn btn--primary" id="save-button" type="submit">Save</button>
+        <span class="small mute" id="save-status" role="status"></span>
+      </div>
     </form>
     </div>
   </main>

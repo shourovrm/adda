@@ -119,11 +119,11 @@ def test_key_lookup_order_environment_then_keys_file_then_legacy(tmp_path, isola
     environment = dict(isolated["environment"])
 
     assert load_keys(environment)["OPENROUTER_API_KEY"] == "from-legacy"
-    keys_file.write_text("OPENROUTER_API_KEY=from-keys-file\nDEEPSEEK_API_KEY=d\n")
+    keys_file.write_text("OPENROUTER_API_KEY=from-keys-file\nTYPESAFE_API_KEY=t\n")
     assert load_keys(environment)["OPENROUTER_API_KEY"] == "from-keys-file"
     environment["OPENROUTER_API_KEY"] = "from-env"
     assert load_keys(environment)["OPENROUTER_API_KEY"] == "from-env"
-    assert load_keys(environment)["DEEPSEEK_API_KEY"] == "d"
+    assert load_keys(environment)["TYPESAFE_API_KEY"] == "t"
 
 
 def test_legacy_file_only_supplies_the_openrouter_key(tmp_path, isolated):
@@ -142,7 +142,7 @@ def test_settings_carry_the_provider_key_and_view_shows_only_booleans(tmp_path, 
     settings = load(isolated)
     assert settings.jev_api_key == "sk-test-value"
     view = settings_view(settings)
-    assert view["keys"] == {"openrouter": True, "typesafe": False, "deepseek": False}
+    assert view["keys"] == {"openrouter": True, "typesafe": False}
     assert "sk-test-value" not in repr(settings)
     assert "sk-test-value" not in str(view)
 
@@ -150,10 +150,10 @@ def test_settings_carry_the_provider_key_and_view_shows_only_booleans(tmp_path, 
 def test_save_key_writes_mode_600_and_keeps_other_lines(tmp_path):
     keys_file = tmp_path / "sub" / "keys.env"
     save_key("openrouter", "first", keys_file)
-    save_key("DEEPSEEK_API_KEY", "other", keys_file)
+    save_key("TYPESAFE_API_KEY", "other", keys_file)
     save_key("openrouter", "second", keys_file)
     assert stat.S_IMODE(keys_file.stat().st_mode) == 0o600
-    assert read_key_file(keys_file) == {"OPENROUTER_API_KEY": "second", "DEEPSEEK_API_KEY": "other"}
+    assert read_key_file(keys_file) == {"OPENROUTER_API_KEY": "second", "TYPESAFE_API_KEY": "other"}
 
 
 def test_save_key_rejects_unknown_names_and_multiline_values(tmp_path):

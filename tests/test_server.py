@@ -444,7 +444,7 @@ def test_removed_v01_routes_are_gone(client):
 
 def test_settings_view_masks_keys(client):
     view = client.get("/api/settings").json()
-    assert view["keys"] == {"openrouter": False, "typesafe": False, "deepseek": False}
+    assert view["keys"] == {"openrouter": False, "typesafe": False}
     assert view["owner"]["name"] == "Owner"
     assert "router.kind" in view["env_overrides"]
 
@@ -462,14 +462,14 @@ def test_settings_put_round_trip_with_key_masking(client, environment, store):
     )
     view["harness"]["claude"]["model"] = "opus"
     view["harness"]["claude"]["extra_models"] = ["opus-next"]
-    view["keys"] = {"openrouter": SECRET_KEY, "typesafe": False, "deepseek": ""}
+    view["keys"] = {"openrouter": SECRET_KEY, "typesafe": ""}
 
     response = client.put("/api/settings", json=view)
     assert response.status_code == 200, response.text
     assert SECRET_KEY not in response.text
     saved = response.json()
     assert saved["owner"] == {"name": "Riad", "line": "Likes short answers."}
-    assert saved["keys"] == {"openrouter": True, "typesafe": False, "deepseek": False}
+    assert saved["keys"] == {"openrouter": True, "typesafe": False}
 
     assert SECRET_KEY not in client.get("/api/settings").text
     assert client.get("/api/settings").json() == saved
