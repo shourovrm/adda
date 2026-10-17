@@ -102,8 +102,9 @@ function createRoomCard(room) {
 
   const seatLine = createElement('div', 'room-seats');
   for (const seat of room.seats) {
-    const seatName = createElement('span', 'room-seat', seat.name);
+    const seatName = createElement('span', 'room-seat');
     setSeatColor(seatName, seat.color);
+    seatName.append(createSwatch(seat.name), seat.name);
     seatLine.append(seatName);
   }
 

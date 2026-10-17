@@ -14,7 +14,8 @@ const RECONNECT_JITTER_FRACTION = 0.25;
 const TOAST_DURATION_MS = 4000;
 const THINKING_LEVELS = ['default', 'low', 'medium', 'high'];
 // Distinct from each other and readable on both grounds; used when a new seat has no colour.
-const SEAT_COLOR_PALETTE = ['#CF5A26', '#2A8F5E', '#D6409F', '#3E7FD6', '#8A6BD1', '#B08900'];
+// Same list as SEAT_COLOR_PALETTE in adda/server.py; the server makes colours unique per room.
+const SEAT_COLOR_PALETTE = ['#D1495B', '#E07A1F', '#B08900', '#2A8F5E', '#1F9E9E', '#3E7FD6', '#8A6BD1', '#D6409F'];
 
 // ---------------------------------------------------------------------------
 // DOM
@@ -189,6 +190,17 @@ function safeColor(color) {
  */
 function setSeatColor(element, color) {
   element.style.setProperty('--seat', safeColor(color));
+}
+
+/**
+ * A filled square in the seat colour with the name's initial. Text in a seat colour has to be
+ * pulled toward the ink for contrast, which makes hues look alike; a filled shape stays vivid,
+ * so the swatch is what tells seats apart. It inherits --seat from its parent.
+ */
+function createSwatch(name) {
+  const swatch = createElement('span', 'swatch', (name || '?').trim().charAt(0).toUpperCase());
+  swatch.setAttribute('aria-hidden', 'true');
+  return swatch;
 }
 
 function paletteColor(index) {

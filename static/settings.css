@@ -4,7 +4,7 @@
 /* Adda is a desktop app: the page fills the window and only the gutter is fixed. */
 .page { padding: 0 var(--space-5) var(--space-6); }
 .page-head { margin: var(--space-5) 0 var(--space-6); }
-.page-head p { max-width: var(--measure); margin: var(--space-2) 0 0; color: var(--mute); }
+.page-head p { margin: var(--space-2) 0 0; color: var(--mute); }
 .panel { background: var(--panel); padding: var(--space-5); }
 .panel + .panel { margin-top: var(--space-6); }
 .panel > h2 { margin-bottom: var(--space-4); }
@@ -23,7 +23,6 @@
 }
 
 .panel-note {
-  max-width: var(--measure);
   margin: 0 0 var(--space-4);
   color: var(--mute);
   font-size: var(--text-small);

@@ -19,7 +19,6 @@ body {
 }
 
 .page-head p {
-  max-width: var(--measure);
   margin: var(--space-2) 0 0;
   color: var(--mute);
 }
@@ -100,6 +99,13 @@ body {
 .room-seat {
   color: var(--seat-text);
   font-weight: 600;
+}
+
+.room-seat .swatch {
+  width: var(--space-2);
+  height: var(--space-2);
+  margin-right: var(--space-1);
+  font-size: 0;
 }
 
 .room-meta {

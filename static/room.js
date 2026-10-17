@@ -594,7 +594,10 @@ function createMessageItem(message) {
 
   const authorName = isOwner ? state.ownerName : message.author;
   const head = createElement('div', 'msg-head');
-  head.append(createElement('span', 'msg-who', authorName), createElement('span', 'msg-meta', describeMessageMeta(message)));
+  head.append(createElement('span', 'msg-who', authorName));
+  const seat = isOwner ? null : seatById(message.seat_id) || seatsOfRoom().find((candidate) => candidate.name === message.author);
+  if (seat) head.append(createElement('span', 'msg-harness', seat.program));
+  head.append(createElement('span', 'msg-meta', describeMessageMeta(message)));
 
   const tools = createElement('div', 'msg-tools');
   tools.append(createButton('Copy', 'btn', (event) => copyMessage(message, event.currentTarget)));

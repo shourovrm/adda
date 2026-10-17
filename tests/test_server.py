@@ -201,7 +201,9 @@ def test_create_room_expands_copies_and_creates_the_default_folder(client, tmp_p
     scouts = room["seats"][:3]
     assert {seat["persona"] for seat in scouts} == {"alpha"}
     assert {seat["instruction"] for seat in scouts} == {"Look for gaps."}
-    assert {seat["color"] for seat in scouts} == {"#D9480F"}  # the persona's colour
+    # The first copy keeps the persona's colour; the others get free palette colours.
+    assert scouts[0]["color"] == "#D9480F"
+    assert len({seat["color"] for seat in room["seats"]}) == 4
     assert [seat["position"] for seat in room["seats"]] == [0, 1, 2, 3]
 
     expected_folder = tmp_path / "rooms" / f"{TODAY:%Y%m%d}-design-the-queue"
@@ -209,6 +211,26 @@ def test_create_room_expands_copies_and_creates_the_default_folder(client, tmp_p
     assert expected_folder.is_dir()
     assert (room["mode"], room["liveliness"], room["budget_usd"]) == ("bidding", 0, 1.0)
     assert room["max_concurrent"] == 2  # settings default
+
+
+def test_every_seat_in_a_room_gets_its_own_colour(client):
+    room = make_room(
+        client,
+        "Colours",
+        seats=[
+            {"name": "Scout", "program": "claude", "copies": 3, "color": "#D1495B"},
+            {"name": "Ravi", "program": "pi", "color": "#D1495B"},
+        ],
+    )
+    colours = [seat["color"] for seat in room["seats"]]
+    assert colours[0] == "#D1495B"
+    assert len(set(colours)) == 4
+
+    added = client.post(
+        f"/api/rooms/{room['id']}/seats", json={"name": "Tuli", "program": "pi", "color": "#d1495b"}
+    )
+    assert added.status_code == 200
+    assert len({seat["color"] for seat in added.json()["seats"]}) == 5
 
 
 def test_create_room_uses_and_creates_an_explicit_folder(client, tmp_path):

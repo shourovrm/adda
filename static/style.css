@@ -52,7 +52,6 @@
   --control-height: 40px;
 
   /* Layout widths: page files may not write raw px, so every width they need is named here. */
-  --measure: 72ch; /* longest comfortable line of running text */
   --menu-width: 360px; /* floating list: mention menu, search results */
   --toast-width: 420px; /* widest toast */
   --dialog-width: 640px; /* widest dialog */
@@ -208,6 +207,20 @@ th {
   --seat-text: color-mix(in srgb, var(--seat) var(--seat-text-mix), var(--ink));
   --seat-field: color-mix(in srgb, var(--seat) 11%, var(--card));
   --seat-field-strong: color-mix(in srgb, var(--seat) 26%, var(--card));
+}
+
+/* The seat swatch: raw seat colour, since a shape only needs 3:1. Owner swatches are ink. */
+.swatch {
+  display: inline-grid;
+  place-items: center;
+  width: var(--check-size);
+  height: var(--check-size);
+  background: var(--seat, var(--ink));
+  color: var(--card);
+  font-size: var(--text-small);
+  font-weight: 700;
+  line-height: 1;
+  vertical-align: middle;
 }
 
 /* ---------- Utilities ---------- */

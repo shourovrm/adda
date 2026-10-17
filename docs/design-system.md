@@ -27,8 +27,7 @@ gap take a token or 0. Inside a component the gap between a label and its contro
 fields `--space-4`; between sections `--space-6`. Page gutter is `--space-5`.
 
 Adda is a desktop app. Every page fills the window and only the gutter is fixed; no page centres a
-narrow column. Intro paragraphs and hints may cap at `--measure` (72ch); messages, cards and tables do
-not. Phone widths only have to stay usable.
+narrow column, and no text block caps its line length. Phone widths only have to stay usable.
 
 ## Controls
 
@@ -55,8 +54,13 @@ Colour tokens stay as they are: `--ground`, `--panel`, `--card`, `--ink`, `--mut
 
 - `--good` and `--bad` colour a status word or a pill only ("Live", "not installed"). Instructions and
   body text are never green or red.
-- A seat's colour appears in its name and its 3px left bar on a message. Message bodies sit on
-  `--ground` with no tint (Slack and Discord show messages flush, not in bubbles).
+- Every seat in a room has a different colour. The server picks the first unused colour of the
+  eight-hue palette (red, orange, gold, green, teal, blue, violet, magenta, all at one lightness).
+- A speaker's name is a filled block in the raw seat colour with `--card` text, in messages and in
+  the thread list; the owner's block is `--ink`. A block only needs 3:1, so it keeps the hue that
+  coloured text would lose. Room cards show a 10px swatch before each seat name. The 3px left bar on
+  a message stays. Message bodies sit on `--ground` with no tint (Slack and Discord show messages
+  flush, not in bubbles).
 - Surfaces step by tone: page `--ground`, columns `--panel`, cards and fields `--card`. No borders between
   surfaces, no gradients, no shadow except the floating menu.
 
@@ -75,7 +79,8 @@ Pause and Wake all as two Secondary buttons, then a `<details>` named Settings t
 Access and Budget, and last the thread actions (Copy thread as Markdown, Memory, End discussion). Folder
 path and Open folder go under Settings too; they leave the meta line under the title.
 
-Messages: name in seat colour at weight 600, time in `--text-small` and `--mute` on the same line, body
+Messages: name block in the seat colour at weight 700, harness name as a small mono tag, time in
+`--text-small` and `--mute` on the same line, body
 below, `--space-4` between messages, no avatar column, full width of the chat column. The owner's
 messages use the same shape.
 

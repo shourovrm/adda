@@ -141,7 +141,11 @@ body.page-room.show-panel .side {
 }
 
 .thread-item-line .seat-coloured {
-  color: var(--seat-text);
+  display: inline-block;
+  padding: 0 var(--space-1);
+  background: var(--seat);
+  color: var(--card);
+  font-weight: 700;
 }
 
 .thread-item-meta {
@@ -264,13 +268,27 @@ a.search-result:hover {
   min-width: 0;
 }
 
+/* The speaker's name is a filled block in the raw seat colour, so one speaker's turns can be
+   found by scanning for one colour. A block only needs 3:1, unlike coloured text. */
 .msg-who {
-  color: var(--seat-text, var(--ink));
-  font-weight: 600;
+  display: inline-block;
+  padding: 0 var(--space-2);
+  background: var(--seat, var(--ink));
+  color: var(--card);
+  font-weight: 700;
+  line-height: calc(var(--text-body) * 1.5);
 }
 
 .msg--owner .msg-who {
-  color: var(--ink);
+  background: var(--ink);
+  color: var(--ground);
+}
+
+/* The harness as a small mono tag, so colour no longer has to say which program a seat runs. */
+.msg-harness {
+  font-family: var(--font-code);
+  font-size: var(--text-small);
+  color: var(--mute);
 }
 
 .msg-meta {

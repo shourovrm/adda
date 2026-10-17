@@ -90,7 +90,32 @@ CLIENT_ERRORS = (
 )
 MAX_COPIES = 12
 # Colours for seats whose persona does not supply one; picked by roster position.
-SEAT_COLOR_PALETTE = ("#e5b800", "#4fa3d9", "#d9694f", "#7bc47f", "#b08be0", "#e08bb4", "#5bc5b8")
+# Eight hues at one lightness; the same list as SEAT_COLOR_PALETTE in static/common.js.
+SEAT_COLOR_PALETTE = (
+    "#D1495B",
+    "#E07A1F",
+    "#B08900",
+    "#2A8F5E",
+    "#1F9E9E",
+    "#3E7FD6",
+    "#8A6BD1",
+    "#D6409F",
+)
+
+
+def unique_seat_color(wanted: str | None, used: set[str]) -> str:
+    """The wanted colour if no seat in the room has it yet, else the first free palette colour.
+
+    Copies of one seat and seats sharing a persona would otherwise all arrive in one colour, and
+    the room becomes unreadable. When the palette is exhausted the wanted colour wins.
+    """
+    used_lower = {color.lower() for color in used}
+    if wanted and wanted.lower() not in used_lower:
+        return wanted
+    for candidate in SEAT_COLOR_PALETTE:
+        if candidate.lower() not in used_lower:
+            return candidate
+    return wanted or SEAT_COLOR_PALETTE[len(used) % len(SEAT_COLOR_PALETTE)]
 
 
 class NewSeat(BaseModel):
@@ -374,12 +399,8 @@ class Hub:
             persona_color = load_persona(self.settings.personas_dir, new_seat.persona).color
         added = []
         for name in expand_copies(new_seat):
-            roster_size = len(self.store.get_room(room_id).seats)
-            color = (
-                new_seat.color
-                or persona_color
-                or SEAT_COLOR_PALETTE[roster_size % len(SEAT_COLOR_PALETTE)]
-            )
+            used_colors = {seat.color for seat in self.store.get_room(room_id).seats}
+            color = unique_seat_color(new_seat.color or persona_color, used_colors)
             added.append(
                 self.store.add_seat(
                     room_id,
