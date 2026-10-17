@@ -1,8 +1,8 @@
-"""Gate from docs/design-system.md: sizes in the stylesheet come from the token block.
+"""Gate from docs/design-system.md: sizes in the stylesheets come from the token block.
 
-Outside the ``:root`` blocks and ``@media`` preludes, ``static/style.css`` may not contain a
-``rem`` value or a ``px`` value above 3. Values of 1 to 3px are borders and outlines, which the
-spec allows inline.
+Outside the ``:root`` blocks and ``@media`` preludes, no stylesheet under ``static/`` may contain
+a ``rem`` value or a ``px`` value above 3. Values of 1 to 3px are borders and outlines, which the
+spec allows inline. Tokens are defined once, in ``static/style.css``.
 """
 
 import re
@@ -10,7 +10,8 @@ from pathlib import Path
 
 import pytest
 
-STYLESHEET = Path(__file__).resolve().parent.parent / "static" / "style.css"
+STATIC = Path(__file__).resolve().parent.parent / "static"
+STYLESHEET = STATIC / "style.css"
 
 MAX_INLINE_PX = 3
 
@@ -51,7 +52,7 @@ def inside(position: int, spans: list[tuple[int, int]]) -> bool:
     return any(start <= position < end for start, end in spans)
 
 
-def raw_length_violations(css: str) -> list[str]:
+def raw_length_violations(css: str, name: str = "style.css") -> list[str]:
     css = strip_comments(css)
     allowed = root_block_spans(css) + media_prelude_spans(css)
     violations = []
@@ -62,16 +63,18 @@ def raw_length_violations(css: str) -> list[str]:
         if unit == "px" and float(number) <= MAX_INLINE_PX:
             continue
         line_number = css.count("\n", 0, match.start()) + 1
-        violations.append(f"style.css:{line_number}: {match.group(0)}")
+        violations.append(f"{name}:{line_number}: {match.group(0)}")
     return violations
 
 
 @pytest.mark.xfail(
     strict=True,
-    reason="static/style.css is not yet rebuilt to docs/design-system.md; drop this marker then",
+    reason="static/*.css is not yet rebuilt to docs/design-system.md; drop this marker then",
 )
 def test_sizes_outside_tokens_come_from_the_scale():
-    violations = raw_length_violations(STYLESHEET.read_text())
+    violations = []
+    for stylesheet in sorted(STATIC.glob("*.css")):
+        violations += raw_length_violations(stylesheet.read_text(), stylesheet.name)
     assert not violations, (
         f"{len(violations)} raw lengths outside :root; use a --space-*, --text-* or "
         f"--control-height token:\n" + "\n".join(violations)
