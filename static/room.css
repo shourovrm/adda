@@ -1,0 +1,1099 @@
+/*
+  Room page. Loaded after style.css; tokens and the control set live there.
+  This file only lays controls out inside room containers and styles the room's own parts.
+*/
+
+/* ---------- Frame ---------- */
+
+/* Column widths come from the spacing scale so the columns follow the tokens. */
+body.page-room {
+  --threads-width: calc(var(--space-6) * 6);
+  --side-width: calc(var(--space-6) * 8);
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  height: 100dvh;
+  overflow: hidden;
+}
+
+.room {
+  display: grid;
+  flex: 1;
+  grid-template-columns: var(--threads-width) minmax(0, 1fr);
+  min-height: 0;
+}
+
+/* The panel is a column only while open; display:none also removes it from the tab order. */
+body.page-room.show-panel .room {
+  grid-template-columns: var(--threads-width) minmax(0, 1fr) var(--side-width);
+}
+
+.side {
+  display: none;
+}
+
+body.page-room.show-panel .side {
+  display: block;
+}
+
+.threads-toggle {
+  display: none;
+}
+
+/* On wide screens the panel is a column, so the scrim must never dim the chat. */
+.drawer-scrim {
+  display: none;
+}
+
+.threads,
+.side {
+  min-height: 0;
+  overflow-y: auto;
+  background: var(--panel);
+}
+
+.chat {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--ground);
+}
+
+/* ---------- Threads column ---------- */
+
+.threads {
+  display: flex;
+  flex-direction: column;
+  padding: var(--space-4) 0 0;
+}
+
+.threads-title {
+  padding: 0 var(--space-3);
+  font-size: var(--text-title);
+}
+
+.thread-new {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  padding: var(--space-3);
+}
+
+.thread-new input,
+.thread-new .btn {
+  width: 100%;
+}
+
+.thread-list {
+  flex: 1;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.thread-item {
+  display: grid;
+  gap: var(--space-1);
+  padding: var(--space-2) var(--space-3);
+  color: var(--ink);
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.thread-item:hover {
+  background: color-mix(in srgb, var(--ink) 6%, var(--panel));
+}
+
+.thread-item[aria-current="page"] {
+  background: var(--card);
+}
+
+.thread-item-head {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+  justify-content: space-between;
+}
+
+.thread-item-title {
+  min-width: 0;
+  overflow: hidden;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.thread-item-head .pill {
+  flex: none;
+}
+
+.thread-item-line {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--mute);
+  font-size: var(--text-small);
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.thread-item-line .seat-coloured {
+  color: var(--seat-text);
+}
+
+.thread-item-meta {
+  color: var(--mute);
+  font-size: var(--text-small);
+}
+
+.thread-rename {
+  display: block;
+  width: calc(100% - var(--space-4));
+  margin: var(--space-1) var(--space-2);
+  font-weight: 600;
+}
+
+.thread-hint {
+  margin: 0;
+  padding: var(--space-2) var(--space-3) var(--space-3);
+}
+
+/* ---------- Chat header ---------- */
+
+.chat-header {
+  position: relative;
+  display: flex;
+  flex: none;
+  gap: var(--space-3);
+  align-items: center;
+  padding: var(--space-3) var(--space-5);
+}
+
+.chat-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  font-size: var(--text-title);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.thread-heading {
+  color: var(--mute);
+}
+
+.thread-heading:not(:empty)::before {
+  content: " / ";
+}
+
+.chat-header .pill,
+.chat-header .btn {
+  flex: none;
+}
+
+.search {
+  position: relative;
+  flex: 0 1 calc(var(--space-6) * 6);
+  min-width: 0;
+}
+
+.search-results {
+  position: absolute;
+  top: calc(100% + var(--space-1));
+  right: 0;
+  z-index: 25;
+  width: calc(var(--space-6) * 12);
+  max-width: 90vw;
+  max-height: 60vh;
+  overflow-y: auto;
+}
+
+.search-result {
+  display: block;
+  padding: var(--space-2) var(--space-3);
+  color: var(--ink);
+  text-decoration: none;
+}
+
+a.search-result:hover {
+  background: var(--panel);
+}
+
+.search-result mark {
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+/* ---------- Messages ---------- */
+
+.message-scroller {
+  flex: 1;
+  min-height: 0;
+  padding: 0 var(--space-5);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.message-list {
+  margin: 0;
+  padding: var(--space-2) 0;
+  list-style: none;
+}
+
+.message-item + .message-item {
+  margin-top: var(--space-4);
+}
+
+.msg {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  max-width: var(--measure);
+  padding-left: var(--space-3);
+  border-left: 3px solid var(--seat, var(--mute));
+}
+
+/* Head and tools share the first row, so the tools never lie over the body text. */
+.msg-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 var(--space-2);
+  align-items: center;
+  min-width: 0;
+}
+
+.msg-who {
+  color: var(--seat-text, var(--ink));
+  font-weight: 600;
+}
+
+.msg--owner .msg-who {
+  color: var(--ink);
+}
+
+.msg-meta {
+  color: var(--mute);
+  font-size: var(--text-small);
+}
+
+.msg-tools {
+  display: flex;
+  gap: var(--space-1);
+  visibility: hidden;
+}
+
+.msg:hover .msg-tools,
+.msg:focus-within .msg-tools {
+  visibility: visible;
+}
+
+/* A tap focuses the message (it has tabindex), so touch screens reveal the tools by focus only. */
+@media (hover: none) {
+  .msg:hover:not(:focus-within) .msg-tools {
+    visibility: hidden;
+  }
+}
+
+.msg-body {
+  grid-column: 1 / -1;
+  overflow-wrap: anywhere;
+}
+
+.msg-body > :first-child {
+  margin-top: 0;
+}
+
+.msg-body > :last-child {
+  margin-bottom: 0;
+}
+
+.wake-line {
+  margin: var(--space-1) 0 0;
+  color: var(--mute);
+  font-size: var(--text-small);
+}
+
+.msg--system {
+  max-width: none;
+  padding-left: 0;
+  border-left: 0;
+  color: var(--mute);
+  font-size: var(--text-small);
+}
+
+.msg--system.is-error {
+  color: var(--bad);
+}
+
+.msg--passed {
+  font-style: italic;
+}
+
+.msg--arriving {
+  animation: message-in 240ms ease-out both;
+}
+
+.msg--highlight {
+  outline: 3px solid var(--accent);
+  outline-offset: var(--space-1);
+}
+
+.md-p {
+  margin: var(--space-2) 0;
+}
+
+.md-h {
+  margin: var(--space-3) 0 var(--space-1);
+  font-family: var(--font-text);
+  font-size: var(--text-body);
+  font-weight: 700;
+}
+
+.md-rule {
+  height: 3px;
+  margin: var(--space-3) 0;
+  border: 0;
+  background: var(--panel);
+}
+
+.md-code {
+  position: relative;
+  margin: var(--space-2) 0;
+  padding: var(--space-3);
+  overflow: auto;
+  background: var(--code-ground);
+  color: var(--code-ink);
+  font-family: var(--font-code);
+  font-size: var(--text-small);
+  line-height: 1.5;
+}
+
+/* The button sits over the code's top right corner; the first line of code is padded clear of it. */
+.md-code .md-copy {
+  position: absolute;
+  top: var(--space-1);
+  right: var(--space-1);
+  background: var(--code-button);
+  color: var(--code-ink);
+  border-color: var(--code-button);
+}
+
+.md-code code {
+  font-family: inherit;
+}
+
+.md-inline-code {
+  padding: 0 var(--space-1);
+  background: var(--panel);
+  font-family: var(--font-code);
+  font-size: var(--text-small);
+}
+
+.md-table {
+  display: block;
+  max-width: 100%;
+  margin: var(--space-2) 0;
+  overflow-x: auto;
+}
+
+.md-table th,
+.md-table td {
+  padding: var(--space-1) var(--space-2);
+  background: var(--card);
+  text-align: left;
+  vertical-align: top;
+}
+
+.md-table th {
+  font-weight: 600;
+}
+
+.mention {
+  color: var(--seat-text, var(--ink));
+  font-weight: 600;
+}
+
+/* ---------- Jump to latest ---------- */
+
+.jump-latest {
+  position: absolute;
+  bottom: calc(var(--space-6) * 5);
+  left: 50%;
+  z-index: 10;
+  transform: translateX(-50%);
+}
+
+/* ---------- Footer ---------- */
+
+.chat-footer {
+  position: relative;
+  flex: none;
+  padding: var(--space-2) var(--space-5) var(--space-3);
+}
+
+.seat-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-2);
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.seat-chip {
+  display: inline-flex;
+  gap: var(--space-2);
+  align-items: center;
+  padding: 0 var(--space-2);
+  background: var(--panel);
+  cursor: pointer;
+}
+
+.seat-chip-name {
+  color: var(--seat-text, var(--ink));
+  font-size: var(--text-small);
+  font-weight: 600;
+}
+
+.seat-chip[data-state="disabled"],
+.seat-chip[data-state="unavailable"] {
+  opacity: 0.55;
+}
+
+/* The meter is one fixed-width bar scaled by the inline transform on its fill. */
+.seat-meter {
+  position: relative;
+  display: block;
+  width: var(--space-6);
+  height: 3px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--seat, var(--mute)) 25%, var(--panel));
+}
+
+.seat-meter-fill {
+  position: absolute;
+  inset: 0;
+  background: var(--seat, var(--mute));
+  transform-origin: left center;
+  transform: scaleX(var(--score, 0));
+  transition: transform 700ms ease-out;
+}
+
+.status-line {
+  min-height: calc(var(--text-small) * 1.5);
+  margin: var(--space-1) 0;
+  color: var(--mute);
+  font-size: var(--text-small);
+}
+
+.typing {
+  display: inline-flex;
+  gap: var(--space-1);
+  align-items: center;
+}
+
+.typing-seat {
+  display: inline-flex;
+  gap: var(--space-1);
+  align-items: center;
+}
+
+.typing-dots {
+  display: inline-flex;
+  gap: 3px;
+}
+
+.typing-dots i {
+  width: 3px;
+  height: 3px;
+  background: var(--seat, var(--mute));
+  animation: typing-bounce 1s ease-in-out infinite;
+}
+
+.typing-dots i:nth-child(2) {
+  animation-delay: 140ms;
+}
+
+.typing-dots i:nth-child(3) {
+  animation-delay: 280ms;
+}
+
+.typing-name {
+  color: var(--seat-text, var(--ink));
+  font-weight: 600;
+}
+
+.quiet-notice {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+/* One row of controls; the hint takes its own row below. */
+.composer {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: var(--space-2);
+  align-items: start;
+}
+
+.composer textarea {
+  max-height: 40vh;
+  overflow-y: hidden;
+  resize: none;
+}
+
+/* The placeholder is longer than the field on a phone; one cut line keeps the single-line state at control height. */
+.composer textarea::placeholder {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.composer-hint {
+  grid-column: 1 / -1;
+  margin: 0;
+}
+
+.mention-menu {
+  position: absolute;
+  bottom: calc(100% + var(--space-1));
+  left: 0;
+  z-index: 20;
+  max-height: 50vh;
+  margin: 0;
+  padding: var(--space-1) 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.mention-option {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+  padding: var(--space-1) var(--space-3);
+  cursor: pointer;
+}
+
+.mention-option[aria-selected="true"] {
+  background: var(--panel);
+}
+
+.mention-option .dot {
+  flex: none;
+  width: var(--space-2);
+  height: var(--space-2);
+  background: var(--seat, var(--mute));
+}
+
+.mention-key {
+  font-weight: 600;
+  color: var(--seat-text, var(--ink));
+}
+
+.mention-option .hint {
+  margin: 0;
+}
+
+/* ---------- Room panel ---------- */
+
+.side {
+  padding: var(--space-4);
+}
+
+.side-section {
+  margin: 0 0 var(--space-6);
+}
+
+.side-section h2,
+.side-settings summary {
+  font-family: var(--font-display);
+  font-size: var(--text-title);
+  font-weight: 700;
+  letter-spacing: var(--display-tracking);
+  line-height: 1.1;
+}
+
+.side-section > h2 {
+  margin-bottom: var(--space-2);
+}
+
+.side-section > .btn,
+.side-thread > .btn {
+  width: 100%;
+}
+
+.side-thread > .btn + .btn {
+  margin-top: var(--space-2);
+}
+
+.side-thread > h2 + .hint {
+  margin-bottom: var(--space-3);
+}
+
+.side-section > .btn#add-seat-button {
+  margin-top: var(--space-2);
+}
+
+.side-settings summary {
+  margin-bottom: var(--space-4);
+  cursor: pointer;
+}
+
+.side .field {
+  margin-bottom: var(--space-4);
+}
+
+.field-label {
+  display: block;
+  margin-bottom: var(--space-1);
+  font-weight: 600;
+}
+
+.mode-options {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+}
+
+.mode-options legend {
+  margin-bottom: var(--space-1);
+  padding: 0;
+  font-weight: 600;
+}
+
+.mode-options label {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+  margin-bottom: var(--space-1);
+  font-weight: 400;
+}
+
+.scale {
+  display: flex;
+  justify-content: space-between;
+  margin-top: var(--space-1);
+  color: var(--mute);
+  font-size: var(--text-small);
+}
+
+.side-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: var(--space-4);
+}
+
+.field + .side-actions {
+  margin-top: 0;
+}
+
+.budget-row {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+}
+
+.budget-row input {
+  flex: 0 1 calc(var(--space-6) * 3);
+  min-width: 0;
+}
+
+.room-folder-line {
+  margin: 0 0 var(--space-2);
+}
+
+.room-folder {
+  font-family: var(--font-code);
+  font-size: var(--text-small);
+  overflow-wrap: anywhere;
+}
+
+.room-meta {
+  margin-top: 0;
+}
+
+/* Work access is full trust inside the folder; the bar flags it without making instructions red. */
+.access-warning {
+  padding-left: var(--space-2);
+  border-left: 3px solid var(--stop);
+  color: var(--ink);
+}
+
+.access-marker {
+  color: var(--mute);
+  font-size: var(--text-small);
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.access-marker--work {
+  color: var(--ink);
+}
+
+/* ---------- Seat cards ---------- */
+
+.seat-list {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.seat-card {
+  padding: var(--space-2) var(--space-3);
+  border-left: 3px solid var(--seat, var(--mute));
+  background: var(--card);
+}
+
+.seat-card[data-state="disabled"],
+.seat-card[data-state="unavailable"] {
+  opacity: 0.6;
+}
+
+.seat-card[data-state="cooldown"] .seat-meter-fill {
+  opacity: 0.5;
+}
+
+.seat-card[data-state="chosen"] {
+  outline: 3px solid var(--seat, var(--ink));
+  outline-offset: -3px;
+}
+
+.seat-head {
+  display: flex;
+  gap: var(--space-2);
+  align-items: baseline;
+}
+
+.seat-name {
+  color: var(--seat-text, var(--ink));
+  font-weight: 600;
+}
+
+.seat-program {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--mute);
+  font-size: var(--text-small);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.seat-card .seat-meter {
+  width: auto;
+  height: var(--space-2);
+  margin-top: var(--space-2);
+  background: color-mix(in srgb, var(--seat, var(--mute)) 25%, var(--card));
+}
+
+/* The notch marks the score a bid must reach to speak. */
+.seat-meter-threshold {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: calc(var(--threshold, 0.5) * 100%);
+  width: 3px;
+  background: var(--ink);
+}
+
+.seat-card.is-bidding .seat-meter {
+  animation: meter-bump 700ms ease-out;
+}
+
+.seat-card[data-state="speaking"] .seat-meter-fill {
+  animation: speaking-pulse 1.2s ease-in-out infinite;
+}
+
+.seat-foot {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-2);
+  align-items: center;
+  margin-top: var(--space-2);
+  font-size: var(--text-small);
+}
+
+.seat-foot .seat-status {
+  flex: 1 1 auto;
+  color: var(--mute);
+}
+
+.seat-card[data-state="speaking"] .seat-status {
+  color: var(--seat-text, var(--ink));
+  font-weight: 600;
+}
+
+.seat-eagerness {
+  white-space: nowrap;
+}
+
+.seat-foot .btn {
+  flex: none;
+  order: 2;
+}
+
+/* A full-width break keeps Wake and Edit together on their own row instead of splitting them
+   across the wrap of the status text. */
+.seat-foot::after {
+  content: "";
+  flex-basis: 100%;
+  order: 1;
+}
+
+.seat-editor {
+  margin-top: var(--space-3);
+}
+
+.seat-editor-toggles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2) var(--space-4);
+  align-items: center;
+  margin-bottom: var(--space-4);
+}
+
+.seat-editor-toggles label {
+  display: flex;
+  gap: var(--space-2);
+  align-items: center;
+  margin: 0;
+}
+
+.seat-editor .btn--warning {
+  width: 100%;
+}
+
+/* ---------- Memory dialog ---------- */
+
+dialog.memory-drawer {
+  position: fixed;
+  inset: 0 0 0 auto;
+  width: min(calc(var(--space-6) * 13), 100vw);
+  max-width: none;
+  height: 100dvh;
+  max-height: none;
+  margin: 0;
+  overflow-y: auto;
+  background: var(--ground);
+}
+
+.memory-head {
+  display: flex;
+  gap: var(--space-3);
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: var(--space-2);
+}
+
+.memory-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin: var(--space-4) 0;
+}
+
+.memory-tab {
+  gap: var(--space-2);
+}
+
+.memory-tab .dot {
+  width: var(--space-2);
+  height: var(--space-2);
+  background: var(--seat, var(--mute));
+}
+
+/* A 3px bar marks the open tab without relying on colour alone. */
+.memory-tab[aria-selected="true"] {
+  background: var(--card);
+  box-shadow: inset 0 -3px 0 var(--ink);
+}
+
+.memory-empty {
+  color: var(--mute);
+}
+
+.memory-group {
+  margin-top: var(--space-5);
+  padding-left: var(--space-3);
+  border-left: 3px solid var(--seat, var(--mute));
+}
+
+.memory-note {
+  margin-top: var(--space-2);
+  padding: var(--space-3);
+  background: var(--card);
+}
+
+.memory-note-title {
+  margin: 0;
+  font-size: var(--text-body);
+  font-weight: 600;
+}
+
+.memory-note-body {
+  margin-top: var(--space-1);
+  white-space: pre-wrap;
+}
+
+.memory-note-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-2);
+  align-items: center;
+}
+
+.memory-note-actions {
+  display: flex;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+}
+
+.memory-note-editor .side-actions {
+  margin-top: 0;
+}
+
+/* ---------- Ended dialog ---------- */
+
+.ended-seat {
+  margin: var(--space-4) 0;
+  padding-left: var(--space-3);
+  border-left: 3px solid var(--seat, var(--mute));
+}
+
+/* ---------- Motion ---------- */
+
+@keyframes message-in {
+  from {
+    opacity: 0;
+  }
+}
+
+@keyframes typing-bounce {
+  0%,
+  60%,
+  100% {
+    opacity: 0.4;
+  }
+  30% {
+    opacity: 1;
+  }
+}
+
+@keyframes meter-bump {
+  50% {
+    transform: scaleY(1.5);
+  }
+}
+
+@keyframes speaking-pulse {
+  50% {
+    opacity: 0.55;
+  }
+}
+
+/* ---------- Narrow screens ---------- */
+
+@media (max-width: 899px) {
+  .room {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  body.page-room.show-panel .room {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .threads-toggle {
+    display: inline-flex;
+  }
+
+  .threads,
+  .side {
+    position: fixed;
+    top: 0;
+    bottom: 0;
+    z-index: 40;
+    width: min(var(--threads-width), 90vw);
+    visibility: hidden;
+    transition:
+      transform 260ms ease-out,
+      visibility 260ms;
+  }
+
+  .threads {
+    left: 0;
+    transform: translateX(-100%);
+  }
+
+  .side {
+    right: 0;
+    display: block;
+    width: min(var(--side-width), 92vw);
+    transform: translateX(100%);
+  }
+
+  body.show-threads .threads,
+  body.show-panel .side {
+    transform: none;
+    visibility: visible;
+  }
+
+  body.page-room.show-panel .drawer-scrim,
+  body.show-threads .drawer-scrim {
+    display: block;
+  }
+
+  .drawer-scrim {
+    position: fixed;
+    inset: 0;
+    z-index: 30;
+    background: var(--scrim);
+  }
+
+  .chat-header {
+    gap: var(--space-2);
+    padding: var(--space-2) var(--space-3);
+  }
+
+  .search {
+    display: none;
+  }
+
+  .message-scroller {
+    padding: 0 var(--space-3);
+  }
+
+  .chat-footer {
+    padding: var(--space-2) var(--space-3);
+  }
+
+  .composer-hint {
+    display: none;
+  }
+
+  .jump-latest {
+    bottom: calc(var(--space-6) * 4);
+  }
+
+  dialog.memory-drawer {
+    padding: var(--space-4) var(--space-3);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .msg--arriving,
+  .typing-dots i,
+  .seat-card.is-bidding .seat-meter,
+  .seat-card[data-state="speaking"] .seat-meter-fill {
+    animation: none;
+  }
+
+  .seat-meter-fill,
+  .threads,
+  .side {
+    transition: none;
+  }
+}

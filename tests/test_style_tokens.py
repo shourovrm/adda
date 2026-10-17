@@ -8,8 +8,6 @@ spec allows inline. Tokens are defined once, in ``static/style.css``.
 import re
 from pathlib import Path
 
-import pytest
-
 STATIC = Path(__file__).resolve().parent.parent / "static"
 STYLESHEET = STATIC / "style.css"
 
@@ -67,10 +65,6 @@ def raw_length_violations(css: str, name: str = "style.css") -> list[str]:
     return violations
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="static/*.css is not yet rebuilt to docs/design-system.md; drop this marker then",
-)
 def test_sizes_outside_tokens_come_from_the_scale():
     violations = []
     for stylesheet in sorted(STATIC.glob("*.css")):

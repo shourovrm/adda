@@ -1,0 +1,144 @@
+/* Settings page. Shared controls, pills and tokens come from style.css. */
+
+/* Page layout shared with rooms.css: one column of panels. */
+.page { max-width: var(--page-width); margin: 0 auto; padding: 0 var(--space-5) var(--space-6); }
+.page-head { margin: var(--space-5) 0 var(--space-6); }
+.page-head p { max-width: var(--measure); margin: var(--space-2) 0 0; color: var(--mute); }
+.panel { background: var(--panel); padding: var(--space-5); }
+.panel + .panel { margin-top: var(--space-6); }
+.panel > h2 { margin-bottom: var(--space-4); }
+
+/* Two or four short fields side by side; they stack below the media query. */
+.field-pair {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0 var(--space-4);
+}
+
+/* The last field of a panel needs no gap below it, the panel padding does that. */
+.panel > .field:last-child,
+.panel > .field-pair:last-child > .field {
+  margin-bottom: 0;
+}
+
+.panel-note {
+  max-width: var(--measure);
+  margin: 0 0 var(--space-4);
+  color: var(--mute);
+  font-size: var(--text-small);
+}
+
+.panel-actions {
+  margin-top: var(--space-4);
+}
+
+/* Long folder paths in notes and cells must wrap instead of widening the page. */
+.panel code {
+  overflow-wrap: anywhere;
+}
+
+/* ---------- Harness table ---------- */
+
+.harness-table th,
+.harness-table td,
+.persona-table td {
+  padding: var(--space-2) var(--space-2) var(--space-2) 0;
+  vertical-align: middle;
+}
+
+.harness-table thead th {
+  border-bottom: var(--border-width) solid var(--ink);
+}
+
+/* Caps the name column so a long model name such as deepseek/deepseek-flash fits in its input. */
+.harness-table thead th:first-child {
+  width: 40%;
+}
+
+.harness-table tbody tr,
+.persona-table tr {
+  border-bottom: var(--border-width) solid var(--card);
+}
+
+.harness-table td:first-child {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.harness-table td > * + * {
+  margin-top: var(--space-1);
+}
+
+.harness-table td::before {
+  display: none;
+}
+
+/* The name cell stacks its lines: name, version and path, login hint. */
+.harness-table td:first-child > span {
+  display: inline-block;
+}
+
+.harness-table input[type="checkbox"] {
+  display: block;
+}
+
+.persona-dot {
+  display: inline-block;
+  width: var(--space-2);
+  height: var(--space-2);
+  background: var(--seat, var(--mute));
+}
+
+.persona-table td {
+  vertical-align: top;
+}
+
+.settings-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3);
+  margin-top: var(--space-6);
+}
+
+@media (max-width: 640px) {
+  .page { padding: 0 var(--space-3) var(--space-5); }
+  .panel { padding: var(--space-4); }
+
+  .field-pair { grid-template-columns: minmax(0, 1fr); }
+  /* Stacked, the fields of a closing pair still need the gap between them. */
+  .panel > .field-pair:last-child > .field:not(:last-child) { margin-bottom: var(--space-4); }
+
+  /* Each harness becomes a card: name on top, then captioned controls. */
+  .harness-table thead { display: none; }
+  .harness-table,
+  .harness-table tbody,
+  .harness-table tr,
+  .harness-table td,
+  .persona-table,
+  .persona-table tbody,
+  .persona-table tr,
+  .persona-table td {
+    display: block;
+    width: 100%;
+  }
+  .harness-table tbody tr {
+    margin-bottom: var(--space-3);
+    padding: var(--space-3);
+    background: var(--card);
+    border-bottom: 0;
+  }
+  .harness-table td,
+  .persona-table td {
+    padding: var(--space-1) 0;
+  }
+  .harness-table td::before {
+    display: block;
+    margin-bottom: var(--space-1);
+    font-weight: 600;
+    content: attr(data-column);
+  }
+  .harness-table td:first-child {
+    padding-top: 0;
+  }
+}

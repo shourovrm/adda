@@ -358,7 +358,7 @@ function createEagernessControl(initialValue, onInput, onChange) {
   const element = createElement('div', 'eagerness');
   const input = document.createElement('input');
   input.type = 'range';
-  input.className = 'slider slider--small';
+  input.className = 'slider';
   input.min = '0';
   input.max = '10';
   input.step = '1';
@@ -477,9 +477,15 @@ function renderHarnessList(container, harnesses) {
   for (const harness of harnesses) {
     const row = createElement('tr');
     const name = harness.found ? `${harness.program} ${harness.version || ''}`.trim() : harness.program;
-    const status = createElement('span', harness.found ? 'ok' : 'bad', harness.found ? harness.login_hint : 'not installed');
+    // The pill carries only the status word; the login instruction is ink text beside it (docs/design-system.md, Colour).
+    const status = harness.found
+      ? createElement('span', 'pill pill--good', 'found')
+      : createElement('span', 'pill pill--bad', 'not installed');
     const statusCell = createElement('td');
     statusCell.append(status);
+    if (harness.found && harness.login_hint) {
+      statusCell.append(createElement('p', 'harness-hint', harness.login_hint));
+    }
     row.append(createElement('td', '', name), statusCell);
     container.append(row);
   }

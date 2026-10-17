@@ -1,0 +1,303 @@
+/*
+  Rooms page. Page layout rules are the same as settings.css so both pages line up; the rest
+  is the room cards, the new-room form and the folder chooser. Sizes and colours are tokens only.
+*/
+
+/* ---------- Page layout (identical in settings.css) ---------- */
+
+.page {
+  max-width: var(--page-width);
+  margin: 0 auto;
+  padding: 0 var(--space-5) var(--space-6);
+}
+
+.page-head {
+  margin: var(--space-5) 0 var(--space-6);
+}
+
+.page-head p {
+  max-width: var(--measure);
+  margin: var(--space-2) 0 0;
+  color: var(--mute);
+}
+
+.panel {
+  background: var(--panel);
+  padding: var(--space-5);
+}
+
+.panel + .panel {
+  margin-top: var(--space-6);
+}
+
+.panel > h2 {
+  margin-bottom: var(--space-4);
+}
+
+/* The New room button sits beside the title block and drops below it when the line is short. */
+.page-head--action {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-4);
+}
+
+.room-section {
+  margin-bottom: var(--space-6);
+}
+
+/* ---------- Room cards ---------- */
+
+#room-list {
+  display: grid;
+  gap: var(--space-4);
+}
+
+.room-card {
+  padding: var(--space-4);
+  border-left: var(--focus-width) solid transparent;
+  background: var(--card);
+}
+
+.room-card--live {
+  border-left-color: var(--accent);
+}
+
+.room-card-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.room-card-head h2 a {
+  text-decoration: none;
+}
+
+.room-card-head h2 a:hover {
+  text-decoration: underline;
+}
+
+.room-seats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-1) var(--space-3);
+  margin-top: var(--space-2);
+}
+
+.room-seat {
+  color: var(--seat-text);
+  font-weight: 600;
+}
+
+.room-meta {
+  margin-top: var(--space-1);
+  color: var(--mute);
+  font-size: var(--text-small);
+}
+
+/* ---------- Harness list ---------- */
+
+.harness-table {
+  margin-bottom: var(--space-3);
+}
+
+.harness-table td {
+  padding: var(--space-2) var(--space-3) var(--space-2) 0;
+}
+
+.harness-table td:first-child {
+  white-space: nowrap;
+}
+
+/* The login instruction sits under the status pill, in ink, as plain text. */
+.harness-hint {
+  margin-top: var(--space-1);
+}
+
+/* ---------- New-room form ---------- */
+
+.panel-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  margin-bottom: var(--space-4);
+}
+
+.new-room {
+  margin-bottom: var(--space-6);
+}
+
+.input-row {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.input-row input {
+  flex: 1;
+  min-width: 0;
+}
+
+.field-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(24ch, 1fr));
+  gap: 0 var(--space-4);
+}
+
+.scale {
+  display: flex;
+  justify-content: space-between;
+}
+
+.button-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: var(--space-4);
+}
+
+.new-room h3 {
+  margin-top: var(--space-6);
+}
+
+.seats-intro {
+  margin: var(--space-1) 0 var(--space-3);
+}
+
+/* Work access is full trust in the folder: the warning is marked by a bar and weight, not by red text. */
+.access-warning {
+  margin-top: var(--space-2);
+  padding-left: var(--space-2);
+  border-left: var(--focus-width) solid var(--stop);
+  font-weight: 600;
+}
+
+.summary {
+  margin-top: var(--space-5);
+  padding: var(--space-3);
+  background: var(--card);
+}
+
+.summary h3 {
+  margin: 0 0 var(--space-1);
+  font-size: var(--text-body);
+}
+
+/* ---------- Seat table ---------- */
+
+.seat-card {
+  margin-bottom: var(--space-3);
+  padding: var(--space-3);
+  background: var(--card);
+}
+
+.seat-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(20ch, 1fr));
+  gap: var(--space-3);
+}
+
+.seat-fields .field {
+  margin-bottom: 0;
+}
+
+.seat-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
+.seat-card .instruction-card {
+  margin-top: var(--space-3);
+  padding: 0;
+}
+
+/* ---------- Folder chooser ---------- */
+
+.folder-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin: var(--space-3) 0;
+}
+
+.folder-path {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.folder-list {
+  max-height: 40vh;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  list-style: none;
+  background: var(--ground);
+}
+
+.folder-entry {
+  display: block;
+  width: 100%;
+  padding: var(--space-2) var(--space-3);
+  border: 0;
+  background: none;
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.folder-entry:hover {
+  background: var(--panel);
+}
+
+.folder-entry[aria-pressed="true"] {
+  background: var(--accent);
+  color: var(--accent-ink);
+}
+
+.folder-empty {
+  padding: var(--space-2) var(--space-3);
+}
+
+.folder-new {
+  display: flex;
+  gap: var(--space-2);
+  margin-top: var(--space-3);
+}
+
+.folder-new input {
+  flex: 1;
+  min-width: 0;
+}
+
+.folder-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: var(--space-4);
+}
+
+.folder-actions .spacer {
+  flex: 1;
+}
+
+@media (max-width: 640px) {
+  .page {
+    padding: 0 var(--space-3) var(--space-5);
+  }
+
+  .panel {
+    padding: var(--space-4);
+  }
+
+  .input-row {
+    flex-direction: column;
+  }
+}

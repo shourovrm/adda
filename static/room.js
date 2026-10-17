@@ -43,6 +43,7 @@ const DEFAULT_MAX_CONCURRENT = 2;
 const QUIET_COUNTDOWN_TICK_MS = 1000;
 const THREAD_LAST_LINE_LENGTH = 90;
 const THIS_ROOM_TAB = 'this-room';
+const CONNECTION_PILL_MODIFIERS = { open: 'pill--good', closed: 'pill--bad', connecting: 'pill--mute', reconnecting: 'pill--mute' };
 
 /** `/room/{room_id}` or `/room/{room_id}/thread/{thread_id}`; anything else yields empty ids. */
 function parseRoomPath(pathname) {
@@ -490,7 +491,7 @@ function describeThreadState() {
   return describeRoomState(state.room);
 }
 
-/** Heading: room title, then the thread title. Meta: mode, folder with its button, counts, spend, state. */
+/** Heading: room title, then the thread title. Meta: mode, counts, spend, state. The folder lives in the panel settings. */
 function renderRoomMeta() {
   const room = state.room;
   if (!room) return;
@@ -503,8 +504,8 @@ function renderRoomMeta() {
   document.title = showsThreadTitle ? `${threadTitle} · ${room.title} · Adda` : `${room.title} · Adda`;
   const persisted = state.messages.filter((message) => !message.isLocal);
   const budgetText = room.budget_usd > 0 ? ` of ${formatMoney(room.budget_usd)}` : ' (no budget limit)';
-  elements.meta.textContent = `${MODE_LABELS[room.mode] || room.mode} · `;
-  elements.folder.textContent = room.folder || 'no folder';
+  elements.meta.textContent = MODE_LABELS[room.mode] || room.mode;
+  elements.folder.textContent = room.folder || 'No folder set';
   elements.folder.title = room.folder || '';
   elements.openFolderButton.hidden = !room.folder;
   const after = [
@@ -524,6 +525,7 @@ function renderConnection() {
     closed: 'Offline',
   };
   elements.connection.dataset.state = connectionState;
+  elements.connection.className = `pill connection ${CONNECTION_PILL_MODIFIERS[connectionState] || 'pill--mute'}`;
   elements.connection.textContent = labels[connectionState] || 'Offline';
 }
 
@@ -585,6 +587,8 @@ function createMessageItem(message) {
 
   const isOwner = message.role === 'owner';
   const article = createElement('article', isOwner ? 'msg msg--owner' : 'msg');
+  // Focusable so a tap on a touch screen reveals the tools through :focus-within.
+  article.tabIndex = 0;
   const color = isOwner ? null : messageColor(message);
   if (color) setSeatColor(article, color);
 
@@ -593,8 +597,8 @@ function createMessageItem(message) {
   head.append(createElement('span', 'msg-who', authorName), createElement('span', 'msg-meta', describeMessageMeta(message)));
 
   const tools = createElement('div', 'msg-tools');
-  tools.append(createButton('Copy', '', (event) => copyMessage(message, event.currentTarget)));
-  tools.append(createButton('Quote', '', () => quoteMessage(message, authorName)));
+  tools.append(createButton('Copy', 'btn', (event) => copyMessage(message, event.currentTarget)));
+  tools.append(createButton('Quote', 'btn', () => quoteMessage(message, authorName)));
 
   const body = createElement('div', 'msg-body');
   body.append(AddaMarkdown.renderMarkdown(message.text, buildSeatsByHandle()));
@@ -909,8 +913,8 @@ function buildSeatCards() {
     const statusText = createElement('span', 'seat-status');
     const eagernessText = createElement('span', 'seat-eagerness small mute');
     const accessMarker = createElement('span', 'access-marker');
-    const wakeButton = createButton('Wake', 'btn btn--ghost btn--small', () => sendFrame({ type: 'wake', seat: seat.id }));
-    const editButton = createButton('Edit', 'btn btn--ghost btn--small', () => toggleSeatEditor(seat.id));
+    const wakeButton = createButton('Wake', 'btn', () => sendFrame({ type: 'wake', seat: seat.id }));
+    const editButton = createButton('Edit', 'btn', () => toggleSeatEditor(seat.id));
     editButton.setAttribute('aria-expanded', 'false');
     const foot = createElement('div', 'seat-foot');
     foot.append(scoreText, statusText, eagernessText, accessMarker, wakeButton, editButton);
@@ -920,11 +924,9 @@ function buildSeatCards() {
     elements.seatList.append(card);
 
     const chipElement = createElement('li', 'seat-chip');
-    const chipName = createElement('span', '', seat.name);
+    const chipName = createElement('span', 'seat-chip-name', seat.name);
     const chipFill = createElement('span', 'seat-meter-fill');
     const chipMeter = createElement('span', 'seat-meter');
-    chipMeter.style.width = '36px';
-    chipMeter.style.marginTop = '0';
     chipMeter.append(chipFill);
     chipElement.append(chipName, chipMeter);
     chipElement.addEventListener('click', () => toggleDrawer());
@@ -946,7 +948,7 @@ function toggleSeatEditor(seatId) {
 
 /** `labelTarget` is the control the label points at when it differs from the displayed element. */
 function labelledField(labelText, control, labelTarget = control) {
-  const wrapper = createElement('div');
+  const wrapper = createElement('div', 'field');
   const label = createElement('label', '', labelText);
   labelTarget.id = labelTarget.id || `field-${Math.random().toString(36).slice(2, 9)}`;
   label.htmlFor = labelTarget.id;
@@ -992,7 +994,7 @@ function buildSeatEditor(seat) {
   });
 
   const instruction = createInstructionCard('', null, (text) => sendSeatPatch(seat.id, { instruction: text.trim() || null }));
-  const instructionToggle = createButton('Add instruction', 'btn btn--ghost btn--small', () => {
+  const instructionToggle = createButton('Add instruction', 'btn', () => {
     if (state.instructionOpenSeatIds.has(seat.id)) {
       state.instructionOpenSeatIds.delete(seat.id);
     } else {
@@ -1023,11 +1025,11 @@ function buildSeatEditor(seat) {
 
   const colorLabel = createElement('label');
   colorLabel.append('Colour ', colorInput);
-  const toggles = createElement('div', 'row');
+  const toggles = createElement('div', 'seat-editor-toggles');
   toggles.append(colorLabel, enabledLabel);
 
-  const removeButton = createButton('Remove seat', 'btn btn--ghost btn--small', () => removeSeat(seat.id));
-  const programNote = createElement('p', 'small mute');
+  const removeButton = createButton('Remove seat', 'btn btn--warning', () => removeSeat(seat.id));
+  const programNote = createElement('p', 'hint');
 
   editor.append(
     labelledField('Name', nameInput),
@@ -1120,9 +1122,9 @@ function buildAddSeatForm() {
   harnessSelect.addEventListener('change', refreshForHarness);
   refreshForHarness();
 
-  const submitButton = createElement('button', 'btn btn--accent btn--small', 'Add');
+  const submitButton = createElement('button', 'btn', 'Add');
   submitButton.type = 'submit';
-  const cancelButton = createButton('Cancel', 'btn btn--ghost btn--small', () => {
+  const cancelButton = createButton('Cancel', 'btn', () => {
     form.hidden = true;
   });
   const actions = createElement('div', 'side-actions');
@@ -1205,7 +1207,9 @@ function renderComposerState() {
   const connected = isConnected();
   elements.composerInput.disabled = ended;
   elements.sendButton.disabled = ended || !connected;
-  elements.stopButton.disabled = ended || !connected || state.typingSeatIds.size === 0;
+  const seatIsComposing = !ended && connected && state.typingSeatIds.size > 0;
+  elements.stopButton.hidden = !seatIsComposing;
+  elements.stopButton.disabled = !seatIsComposing;
   elements.endButton.disabled = ended || !connected || state.endRequested || state.room === null;
   if (isRoomArchived()) {
     elements.composerHint.textContent = 'This room is archived. Its threads can be read, not continued.';
@@ -1222,7 +1226,13 @@ function renderComposerState() {
 function autoGrowComposer() {
   const input = elements.composerInput;
   input.style.height = 'auto';
-  input.style.height = Math.min(input.scrollHeight, window.innerHeight * COMPOSER_MAX_VIEWPORT_FRACTION) + 'px';
+  // scrollHeight excludes the border, but the box is border-box, so add it back or a scrollbar appears.
+  const borderHeight = input.offsetHeight - input.clientHeight;
+  const wantedHeight = input.scrollHeight + borderHeight;
+  const maximumHeight = window.innerHeight * COMPOSER_MAX_VIEWPORT_FRACTION;
+  input.style.height = Math.min(wantedHeight, maximumHeight) + 'px';
+  // Scroll only once the text outgrows the cap; while it fits, a scrollbar would only eat width.
+  input.style.overflowY = wantedHeight > maximumHeight ? 'auto' : 'hidden';
 }
 
 function submitComposer() {
@@ -1345,7 +1355,7 @@ function renderMentionMenu() {
       swatch.setAttribute('aria-hidden', 'true');
       option.append(swatch);
     }
-    option.append(createElement('span', 'key', item.label), createElement('span', 'small mute', item.description));
+    option.append(createElement('span', 'mention-key', item.label), createElement('span', 'hint', item.description));
     // mousedown, not click: click fires after the textarea has already lost focus.
     option.addEventListener('mousedown', (event) => {
       event.preventDefault();
@@ -1598,7 +1608,7 @@ function createThreadItem(thread) {
 
   const head = createElement('span', 'thread-item-head');
   head.append(createElement('span', 'thread-item-title', thread.title));
-  if (thread.ended_at) head.append(createElement('span', 'tag', 'ended'));
+  if (thread.ended_at) head.append(createElement('span', 'pill pill--mute', 'ended'));
 
   const activity = describeThreadActivity(thread);
   const line = createElement('span', 'thread-item-line');
@@ -1827,7 +1837,7 @@ function renderMemoryTabs() {
   tabs.push({ key: THIS_ROOM_TAB, label: 'This room', color: null });
   for (const tab of tabs) {
     const selected = tab.key === state.memoryTab;
-    const button = createButton('', 'memory-tab', () => selectMemoryTab(tab.key, true));
+    const button = createButton('', 'btn memory-tab', () => selectMemoryTab(tab.key, true));
     button.id = memoryTabId(tab.key);
     button.dataset.tab = tab.key;
     button.setAttribute('role', 'tab');
@@ -1875,7 +1885,7 @@ async function loadMemoryTab() {
     renderMemoryPanel();
     return;
   }
-  elements.memoryPanel.replaceChildren(createElement('p', 'small mute', 'Loading notes…'));
+  elements.memoryPanel.replaceChildren(createElement('p', 'hint', 'Loading notes…'));
   try {
     if (seat) {
       const notes = await fetchJson(`/api/personas/${encodeURIComponent(seat.persona)}/memory`);
@@ -1906,7 +1916,7 @@ function renderMemoryPanel() {
     const persona = personaBySlug(view.slug);
     const countWord = view.notes.length === 1 ? 'note' : 'notes';
     const personaName = persona ? `${persona.name} · ${persona.role}` : view.slug;
-    panel.append(createElement('p', 'small mute', `${view.seat.name} speaks as ${personaName} · ${view.notes.length} ${countWord}, newest first`));
+    panel.append(createElement('p', 'hint', `${view.seat.name} speaks as ${personaName} · ${view.notes.length} ${countWord}, newest first`));
     if (view.notes.length === 0) panel.append(createElement('p', 'memory-empty', 'No notes yet. Notes are written when a thread ends.'));
     for (const note of view.notes) panel.append(createNoteElement(view.slug, note));
     return;
@@ -1965,19 +1975,18 @@ function createNoteElement(slug, note) {
   }
   article.append(createElement('h4', 'memory-note-title', note.title));
   article.append(createElement('p', 'memory-note-body', note.body));
-  const meta = createElement('div', 'memory-note-meta small mute');
+  const meta = createElement('div', 'memory-note-meta hint');
   meta.append(createNoteSource(note));
   if (note.written) meta.append(` · ${formatDay(note.written)} ${formatClock(note.written)}`);
   const actions = createElement('div', 'memory-note-actions');
   actions.append(
-    createButton('Edit', 'btn btn--ghost btn--tiny', () => {
+    createButton('Edit', 'btn', () => {
       state.editingNoteFile = noteKey(slug, note);
       renderMemoryPanel();
     }),
-    createButton('Delete', 'btn btn--ghost btn--tiny', () => deleteNote(slug, note)),
+    createButton('Delete', 'btn btn--warning', () => deleteNote(slug, note)),
   );
-  meta.append(actions);
-  article.append(meta);
+  article.append(meta, actions);
   return article;
 }
 
@@ -1988,20 +1997,18 @@ function createNoteEditor(slug, note) {
   titleInput.value = note.title;
   titleInput.required = true;
   titleInput.maxLength = 200;
-  titleInput.setAttribute('aria-label', 'Note title');
   const bodyInput = document.createElement('textarea');
   bodyInput.rows = 4;
   bodyInput.value = note.body;
-  bodyInput.setAttribute('aria-label', 'Note text');
-  const saveButton = createElement('button', 'btn btn--accent btn--small', 'Save');
+  const saveButton = createElement('button', 'btn', 'Save');
   saveButton.type = 'submit';
-  const cancelButton = createButton('Cancel', 'btn btn--ghost btn--small', () => {
+  const cancelButton = createButton('Cancel', 'btn', () => {
     state.editingNoteFile = null;
     renderMemoryPanel();
   });
   const actions = createElement('div', 'side-actions');
   actions.append(saveButton, cancelButton);
-  form.append(titleInput, bodyInput, actions);
+  form.append(labelledField('Title', titleInput), labelledField('Note', bodyInput), actions);
   form.addEventListener('submit', (event) => {
     event.preventDefault();
     saveNote(slug, note, titleInput.value.trim(), bodyInput.value.trim(), saveButton);

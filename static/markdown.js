@@ -250,7 +250,7 @@
       codeElement.className = "language-" + language;
     }
     codeElement.textContent = code;
-    var button = element("button", "md-copy");
+    var button = element("button", "btn md-copy");
     button.type = "button";
     button.textContent = "Copy";
     button.addEventListener("click", function () {

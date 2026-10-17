@@ -4,16 +4,17 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light dark">
-  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v=0.6">
-  <link rel="stylesheet" href="/static/style.css?v=0.6">
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v=0.7">
+  <link rel="stylesheet" href="/static/style.css?v=0.7">
+  <link rel="stylesheet" href="/static/room.css?v=0.7">
   <title>Room · Adda</title>
-  <script src="/static/common.js?v=0.6" defer></script>
-  <script src="/static/markdown.js?v=0.6" defer></script>
-  <script src="/static/room.js?v=0.6" defer></script>
+  <script src="/static/common.js?v=0.7" defer></script>
+  <script src="/static/markdown.js?v=0.7" defer></script>
+  <script src="/static/room.js?v=0.7" defer></script>
 </head>
 <body class="page-room">
   <header class="top">
-    <a class="brand" href="/"><img class="brand-mark" src="/static/logo.svg?v=0.6" width="28" height="28" alt="">Adda <small lang="bn">আড্ডা</small></a>
+    <a class="brand" href="/"><img class="brand-mark" src="/static/logo.svg?v=0.7" width="28" height="28" alt="">Adda <small lang="bn">আড্ডা</small></a>
     <nav aria-label="Pages">
       <a href="/">Rooms</a>
       <a href="/settings">Settings</a>
@@ -21,102 +22,121 @@
     </nav>
   </header>
 
-  <div class="room-heading">
-    <h1 class="room-heading-title"><span id="room-title">Room</span><span class="thread-heading" id="thread-title"></span></h1>
-    <div class="room-heading-actions">
-      <span class="connection" id="connection" data-state="connecting" role="status">Connecting</span>
-      <form class="search" id="search-form" role="search">
-        <label class="visually-hidden" for="search-input">Search every room</label>
-        <input type="search" id="search-input" placeholder="Search every room" autocomplete="off">
-        <kbd>Ctrl K</kbd>
-        <div class="search-results" id="search-results" hidden></div>
-      </form>
-      <button class="btn btn--ghost btn--small" id="copy-thread-button" type="button">Copy thread as Markdown</button>
-      <button class="btn btn--ghost btn--small" id="memory-button" type="button" aria-haspopup="dialog">Memory</button>
-      <button class="btn btn--ghost btn--small threads-toggle" id="threads-toggle" type="button" aria-controls="threads" aria-expanded="false">Threads</button>
-      <button class="btn btn--ghost btn--small panel-toggle" id="panel-toggle" type="button" aria-controls="side" aria-expanded="false">Room panel</button>
-    </div>
-  </div>
-  <p class="room-meta"><span id="room-meta"></span><span class="room-folder" id="room-folder"></span><button class="btn btn--ghost btn--tiny" id="open-folder-button" type="button">Open folder</button><span id="room-state"></span></p>
-
   <div class="room">
     <nav class="threads" id="threads" aria-label="Threads in this room">
-      <h3>Threads</h3>
+      <h2 class="threads-title">Threads</h2>
       <form class="thread-new" id="thread-new-form">
         <label class="visually-hidden" for="thread-new-title">Title of the new thread</label>
         <input type="text" id="thread-new-title" placeholder="Title of a new thread" maxlength="200" autocomplete="off" required>
-        <button class="btn btn--accent btn--small" id="thread-new-button" type="submit">New thread</button>
+        <button class="btn" id="thread-new-button" type="submit">New thread</button>
       </form>
       <ol class="thread-list" id="thread-list"></ol>
-      <p class="small mute thread-hint">Double-click a title to rename it.</p>
+      <p class="hint thread-hint">Double-click a title to rename it.</p>
     </nav>
 
     <main class="chat">
+      <header class="chat-header">
+        <h1 class="chat-title"><span id="room-title">Room</span><span class="thread-heading" id="thread-title"></span></h1>
+        <span class="pill pill--mute connection" id="connection" data-state="connecting" role="status">Connecting</span>
+        <form class="search" id="search-form" role="search">
+          <label class="visually-hidden" for="search-input">Search every room</label>
+          <input type="search" id="search-input" placeholder="Search every room" autocomplete="off" aria-keyshortcuts="Control+K" title="Ctrl K moves here">
+          <div class="menu search-results" id="search-results" hidden></div>
+        </form>
+        <button class="btn panel-toggle" id="panel-toggle" type="button" aria-controls="side" aria-expanded="false">Room panel</button>
+      </header>
+
       <div class="message-scroller" id="message-scroller">
         <ol class="message-list" id="message-list" aria-label="Discussion" aria-live="polite"></ol>
       </div>
-      <button class="jump-latest" id="jump-latest" type="button" hidden>New messages below</button>
+      <button class="btn jump-latest" id="jump-latest" type="button" hidden>New messages below</button>
 
       <div class="chat-footer">
         <ul class="seat-strip" id="seat-strip" aria-label="Seats"></ul>
         <div class="status-line" id="status-line" aria-live="polite"></div>
         <form class="composer" id="composer">
-          <ul class="mention-menu menu" id="mention-menu" role="listbox" aria-label="Mention a seat" hidden></ul>
+          <ul class="menu mention-menu" id="mention-menu" role="listbox" aria-label="Mention a seat" hidden></ul>
           <label class="visually-hidden" for="composer-input">Message</label>
-          <textarea id="composer-input" rows="2" placeholder="Say something. @all wakes every seat; @name wakes one." autocomplete="off"
+          <textarea id="composer-input" rows="1" placeholder="Say something. @all wakes every seat; @name wakes one." autocomplete="off"
             role="combobox" aria-autocomplete="list" aria-controls="mention-menu" aria-expanded="false"></textarea>
-          <div class="composer-actions">
-            <p class="composer-hint" id="composer-hint">Enter sends · Shift+Enter new line · Esc stops · Markdown is rendered</p>
-            <button class="btn btn--ghost btn--small" id="end-button" type="button">End discussion</button>
-            <button class="btn btn--stop btn--small" id="stop-button" type="button" disabled>Stop</button>
-            <button class="btn btn--accent btn--small" id="send-button" type="submit">Send</button>
-          </div>
+          <button class="btn" id="stop-button" type="button" hidden>Stop</button>
+          <button class="btn btn--primary" id="send-button" type="submit">Send</button>
+          <p class="hint composer-hint" id="composer-hint">Enter sends · Shift+Enter new line · Esc stops · Markdown is rendered</p>
         </form>
       </div>
     </main>
 
     <aside class="side" id="side" aria-label="Room panel">
-      <section class="panel">
-        <h3>This room</h3>
-        <label for="liveliness-input">Liveliness <span id="liveliness-value"></span></label>
-        <input class="slider" type="range" id="liveliness-input" min="0" max="10" step="1">
-        <div class="scale"><span>Quiet</span><span>Lively</span></div>
-        <div class="small mute" id="liveliness-sentence" style="margin-top:6px"></div>
-        <label for="max-concurrent-select">Voices at once</label>
-        <select id="max-concurrent-select">
-          <option value="1">1</option>
-          <option value="2">2</option>
-          <option value="3">3</option>
-          <option value="4">4</option>
-        </select>
-        <div class="field-hint">How many seats may write a reply at the same time.</div>
-        <label for="access-select">Access</label>
-        <select id="access-select"></select>
-        <div class="field-hint" id="access-description"></div>
-        <div class="field-hint access-warning" id="access-warning" hidden></div>
-        <label for="budget-input">Budget</label>
-        <div class="row">
-          <input type="number" id="budget-input" min="0" step="0.25">
-          <span class="small mute" id="spend-text"></span>
-        </div>
-        <div class="field-hint">USD. 0 means unlimited.</div>
-        <fieldset class="mode-options" id="mode-options" style="border:0;padding:0;margin:8px 0 0">
+      <section class="side-section">
+        <h2>Seats</h2>
+        <p class="hint" id="router-name"></p>
+        <div class="seat-list" id="seat-list"></div>
+        <button class="btn" id="add-seat-button" type="button">Add a seat</button>
+        <form id="add-seat-form" class="seat-editor" hidden></form>
+      </section>
+
+      <section class="side-section">
+        <fieldset class="mode-options" id="mode-options">
+          <legend>Mode</legend>
           <label><input type="radio" name="mode" value="bidding"> Bidding</label>
           <label><input type="radio" name="mode" value="roundrobin"> Round-robin</label>
           <label><input type="radio" name="mode" value="manual"> Manual</label>
         </fieldset>
+      </section>
+
+      <section class="side-section">
+        <div class="field">
+          <label for="liveliness-input">Liveliness <span id="liveliness-value"></span></label>
+          <input class="slider" type="range" id="liveliness-input" min="0" max="10" step="1">
+          <div class="scale"><span>Quiet</span><span>Lively</span></div>
+          <div class="hint" id="liveliness-sentence"></div>
+        </div>
         <div class="side-actions">
-          <button class="btn btn--ghost btn--small" id="pause-button" type="button">Pause</button>
-          <button class="btn btn--small" id="wake-all-button" type="button">Wake all</button>
+          <button class="btn" id="pause-button" type="button">Pause</button>
+          <button class="btn" id="wake-all-button" type="button">Wake all</button>
         </div>
       </section>
 
-      <section class="panel">
-        <h3>Seats</h3>
-        <p class="small mute" id="router-name"></p>
-        <div id="seat-list"></div>
-        <div class="side-actions"><button class="btn btn--ghost btn--small" id="add-seat-button" type="button">Add a seat</button></div>
-        <form id="add-seat-form" class="seat-editor" hidden></form>
+      <details class="side-section side-settings">
+        <summary>Settings</summary>
+        <div class="field">
+          <label for="max-concurrent-select">Voices at once</label>
+          <select id="max-concurrent-select">
+            <option value="1">1</option>
+            <option value="2">2</option>
+            <option value="3">3</option>
+            <option value="4">4</option>
+          </select>
+          <p class="hint">How many seats may write a reply at the same time.</p>
+        </div>
+        <div class="field">
+          <label for="access-select">Access</label>
+          <select id="access-select"></select>
+          <div class="hint" id="access-description"></div>
+          <div class="hint access-warning" id="access-warning" hidden></div>
+        </div>
+        <div class="field">
+          <label for="budget-input">Budget</label>
+          <div class="budget-row">
+            <input type="number" id="budget-input" min="0" step="0.25">
+            <span class="small mute" id="spend-text"></span>
+          </div>
+          <p class="hint">USD. 0 means unlimited.</p>
+        </div>
+        <div class="field">
+          <span class="field-label">Folder</span>
+          <p class="room-folder-line"><span class="room-folder" id="room-folder"></span></p>
+          <button class="btn" id="open-folder-button" type="button">Open folder</button>
+        </div>
+      </details>
+
+      <section class="side-section side-thread">
+        <h2>This thread</h2>
+        <p class="hint room-meta"><span id="room-meta"></span><span id="room-state"></span></p>
+        <button class="btn threads-toggle" id="threads-toggle" type="button" aria-controls="threads" aria-expanded="false">Show threads</button>
+        <button class="btn" id="copy-thread-button" type="button">Copy thread as Markdown</button>
+        <button class="btn" id="memory-button" type="button" aria-haspopup="dialog">Memory</button>
+        <button class="btn btn--warning" id="end-button" type="button">End discussion</button>
       </section>
     </aside>
   </div>
@@ -126,17 +146,17 @@
   <dialog class="memory-drawer" id="memory-dialog" aria-labelledby="memory-title">
     <div class="memory-head">
       <h2 id="memory-title">Memory</h2>
-      <button class="btn btn--ghost btn--small" id="memory-close-button" type="button">Close</button>
+      <button class="btn" id="memory-close-button" type="button">Close</button>
     </div>
-    <p class="small mute">What each persona remembers between threads. Notes are written when a thread ends.</p>
+    <p class="hint">What each persona remembers between threads. Notes are written when a thread ends.</p>
     <div class="memory-tabs" id="memory-tabs" role="tablist" aria-label="Whose memory"></div>
     <div class="memory-panel" id="memory-panel" role="tabpanel"></div>
   </dialog>
 
-  <dialog id="ended-dialog" aria-labelledby="ended-title">
+  <dialog class="ended-dialog" id="ended-dialog" aria-labelledby="ended-title">
     <h2 id="ended-title">Thread ended</h2>
     <div id="ended-notes"></div>
-    <form method="dialog"><button class="btn btn--accent" type="submit">Close</button></form>
+    <form method="dialog"><button class="btn" type="submit">Close</button></form>
   </dialog>
 </body>
 </html>

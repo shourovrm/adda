@@ -4,46 +4,59 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light dark">
-  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v=0.6">
-  <link rel="stylesheet" href="/static/style.css?v=0.6">
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v=0.7">
+  <link rel="stylesheet" href="/static/style.css?v=0.7">
+  <link rel="stylesheet" href="/static/rooms.css?v=0.7">
   <title>Rooms · Adda</title>
-  <script src="/static/common.js?v=0.6" defer></script>
-  <script src="/static/rooms.js?v=0.6" defer></script>
+  <script src="/static/common.js?v=0.7" defer></script>
+  <script src="/static/rooms.js?v=0.7" defer></script>
 </head>
 <body>
-  <div class="wrap">
-    <header class="top">
-    <a class="brand" href="/"><img class="brand-mark" src="/static/logo.svg?v=0.6" width="28" height="28" alt="">Adda <small lang="bn">আড্ডা</small></a>
+  <header class="top">
+    <a class="brand" href="/"><img class="brand-mark" src="/static/logo.svg?v=0.7" width="28" height="28" alt="">Adda <small lang="bn">আড্ডা</small></a>
     <nav aria-label="Pages">
       <a href="/" aria-current="page">Rooms</a>
       <a href="/settings">Settings</a>
       <span class="owner-name" id="owner-name"></span>
     </nav>
-    </header>
+  </header>
+
+  <main class="page">
+    <div class="page-head page-head--action">
+      <div>
+        <h1 id="rooms-title">Rooms</h1>
+        <p>One project per room. A room keeps its seats, its folder and its budget; each discussion is a thread inside it.</p>
+      </div>
+      <button class="btn btn--primary" id="new-room-button" type="button">New room</button>
+    </div>
 
     <form class="panel new-room" id="new-room-form" hidden>
-      <div class="row row--between">
+      <div class="panel-head">
         <h2>New room</h2>
-        <button class="btn btn--ghost btn--small row-fixed" id="cancel-room-button" type="button">Cancel</button>
+        <button class="btn" id="cancel-room-button" type="button">Cancel</button>
       </div>
 
-      <label for="room-title-input">Name</label>
-      <input type="text" id="room-title-input" required maxlength="200" autocomplete="off" placeholder="What should they discuss?">
-
-      <label for="room-folder-input">Room folder</label>
-      <div class="field-with-button">
-        <input type="text" id="room-folder-input" autocomplete="off">
-        <button class="btn btn--ghost btn--small" id="browse-folder-button" type="button">Browse</button>
+      <div class="field">
+        <label for="room-title-input">Name</label>
+        <input type="text" id="room-title-input" required maxlength="200" autocomplete="off" placeholder="What should they discuss?">
       </div>
-      <div class="field-hint">Created if missing. Starts as the rooms folder plus today's date and the name; edit it or browse to a project.</div>
 
-      <div class="row" style="align-items:flex-start">
-        <div>
+      <div class="field">
+        <label for="room-folder-input">Room folder</label>
+        <div class="input-row">
+          <input type="text" id="room-folder-input" autocomplete="off">
+          <button class="btn" id="browse-folder-button" type="button">Browse folders</button>
+        </div>
+        <div class="hint">Created if missing. Starts as the rooms folder plus today's date and the name; edit it or browse to a project.</div>
+      </div>
+
+      <div class="field-row">
+        <div class="field">
           <label for="room-budget-input">Budget</label>
           <input type="number" id="room-budget-input" min="0" step="0.25">
-          <div class="field-hint">USD. 0 means unlimited.</div>
+          <div class="hint">USD. 0 means unlimited.</div>
         </div>
-        <div>
+        <div class="field">
           <label for="room-mode-select">Who speaks next</label>
           <select id="room-mode-select">
             <option value="bidding">Bidding (Jev scores every seat)</option>
@@ -53,77 +66,77 @@
         </div>
       </div>
 
-      <label for="room-liveliness-input">Liveliness <span id="room-liveliness-value"></span></label>
-      <input class="slider" type="range" id="room-liveliness-input" min="0" max="10" step="1">
-      <div class="scale"><span>Quiet</span><span>Lively</span></div>
-      <div class="field-hint" id="room-liveliness-sentence"></div>
+      <div class="field">
+        <label for="room-liveliness-input">Liveliness <span id="room-liveliness-value"></span></label>
+        <input class="slider" type="range" id="room-liveliness-input" min="0" max="10" step="1">
+        <div class="scale small mute"><span>Quiet</span><span>Lively</span></div>
+        <div class="hint" id="room-liveliness-sentence"></div>
+      </div>
 
-      <label for="room-max-concurrent-select">Voices at once</label>
-      <select id="room-max-concurrent-select">
-        <option value="1">1</option>
-        <option value="2">2</option>
-        <option value="3">3</option>
-        <option value="4">4</option>
-      </select>
-      <div class="field-hint">How many seats may write a reply at the same time.</div>
+      <div class="field">
+        <label for="room-max-concurrent-select">Voices at once</label>
+        <select id="room-max-concurrent-select">
+          <option value="1">1</option>
+          <option value="2">2</option>
+          <option value="3">3</option>
+          <option value="4">4</option>
+        </select>
+        <div class="hint">How many seats may write a reply at the same time.</div>
+      </div>
 
-      <label for="room-access-select">Access</label>
-      <select id="room-access-select"></select>
-      <div class="field-hint" id="room-access-description"></div>
-      <div class="field-hint access-warning" id="room-access-warning" hidden></div>
+      <div class="field">
+        <label for="room-access-select">Access</label>
+        <select id="room-access-select"></select>
+        <div class="hint" id="room-access-description"></div>
+        <div class="access-warning" id="room-access-warning" hidden></div>
+      </div>
 
-      <h3 style="margin-top:28px">Seats</h3>
-      <p class="small mute">Each row is one seat with its own name, harness, model and session. Two seats on one persona share its memory.</p>
+      <h3>Seats</h3>
+      <p class="small mute seats-intro">Each seat has its own name, harness, model and session. Two seats on one persona share its memory.</p>
       <div class="seat-table" id="seat-table"></div>
-      <p style="margin-top:12px">
-        <button class="btn btn--ghost btn--small" id="add-seat-button" type="button">Add a seat</button>
-        <button class="btn btn--ghost btn--small" id="last-seats-button" type="button">Same as last room</button>
-      </p>
+      <div class="button-row">
+        <button class="btn" id="add-seat-button" type="button">Add a seat</button>
+        <button class="btn" id="last-seats-button" type="button">Copy seats from last room</button>
+      </div>
 
-      <div class="card summary-line"><b>Before you open it</b>
-        <div class="small" id="room-summary"></div></div>
-      <p style="margin-top:18px"><button class="btn btn--accent" id="open-room-button" type="submit">Open the room</button></p>
+      <div class="summary">
+        <h3>Before you open it</h3>
+        <div class="small" id="room-summary"></div>
+      </div>
+      <div class="button-row">
+        <button class="btn btn--primary" id="open-room-button" type="submit">Open the room</button>
+      </div>
     </form>
 
-    <div class="grid grid--two">
-      <section aria-labelledby="rooms-title">
-        <div class="row row--between">
-          <h1 id="rooms-title">Rooms</h1>
-          <div class="row-fixed"><button class="btn btn--accent" id="new-room-button" type="button">New room</button></div>
-        </div>
-        <p class="mute">One project per room. A room keeps its seats, its folder and its budget; each discussion is a thread inside it.</p>
+    <section class="room-section" aria-labelledby="rooms-title">
+      <div id="room-list" aria-live="polite"></div>
+    </section>
 
-        <div id="room-list" aria-live="polite"></div>
-      </section>
-
-      <aside>
-        <section class="panel">
-          <h2>Harnesses on this machine</h2>
-          <table class="small kv" style="margin-top:10px"><tbody id="harness-list"></tbody></table>
-          <p class="small"><a href="/settings">Change harnesses, models and keys</a></p>
-        </section>
-      </aside>
-    </div>
-  </div>
+    <section class="panel" aria-labelledby="harness-title">
+      <h2 id="harness-title">Harnesses on this machine</h2>
+      <table class="harness-table"><tbody id="harness-list"></tbody></table>
+      <p class="small"><a href="/settings">Change harnesses, models and keys</a></p>
+    </section>
+  </main>
 
   <dialog class="folder-dialog" id="folder-dialog" aria-labelledby="folder-dialog-title">
     <h2 id="folder-dialog-title">Choose a folder</h2>
     <div class="folder-bar">
-      <button class="btn btn--ghost btn--small" id="folder-up-button" type="button">Up</button>
+      <button class="btn" id="folder-up-button" type="button">Go up</button>
       <code class="folder-path" id="folder-dialog-path"></code>
     </div>
     <ul class="folder-list" id="folder-list" aria-label="Folders"></ul>
     <form class="folder-new" id="folder-new-form" hidden>
       <label class="visually-hidden" for="folder-new-name">New folder name</label>
       <input type="text" id="folder-new-name" placeholder="New folder name" autocomplete="off" maxlength="120">
-      <button class="btn btn--small" type="submit">Create</button>
+      <button class="btn" type="submit">Create folder</button>
     </form>
     <div class="folder-actions">
-      <button class="btn btn--ghost btn--small" id="folder-open-button" type="button">Open</button>
-      <button class="btn btn--ghost btn--small" id="folder-new-button" type="button">New folder here</button>
+      <button class="btn" id="folder-open-button" type="button">Open folder</button>
+      <button class="btn" id="folder-new-button" type="button">New folder here</button>
       <span class="spacer"></span>
-      <button class="btn btn--ghost btn--small" id="folder-cancel-button" type="button">Cancel</button>
-      <button class="btn btn--accent btn--small" id="folder-choose-button" type="button">Choose this folder</button>
+      <button class="btn" id="folder-cancel-button" type="button">Cancel</button>
+      <button class="btn" id="folder-choose-button" type="button">Choose this folder</button>
     </div>
   </dialog>
 </body>

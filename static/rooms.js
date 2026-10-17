@@ -10,7 +10,6 @@
 
 const MAX_PREVIEWED_ROOMS = 30;
 const FOLDER_SUGGESTION_DEBOUNCE_MS = 300;
-const MODE_LABELS = { bidding: 'Bidding', roundrobin: 'Round-robin', manual: 'Manual' };
 
 const state = {
   rooms: [],
@@ -62,14 +61,10 @@ const elements = {
 // Room list
 // ---------------------------------------------------------------------------
 
-function describeRoomTag(room) {
-  if (room.ended_at) {
-    return createElement('span', 'tag', `Ended ${formatDay(room.ended_at)}`);
-  }
-  if (room.liveliness === 0) {
-    return createElement('span', 'tag', 'Paused');
-  }
-  return createElement('span', 'tag tag--live', 'Live');
+function createStatusPill(room) {
+  if (room.ended_at) return createElement('span', 'pill pill--mute', 'Ended');
+  if (room.liveliness === 0) return createElement('span', 'pill pill--mute', 'Paused');
+  return createElement('span', 'pill pill--good', 'Live');
 }
 
 function describeRoomSpend(room) {
@@ -82,67 +77,38 @@ function describeRoomAccessSuffix(room) {
   return room.access && room.access !== 'talk' ? ` · access ${room.access}` : '';
 }
 
-function createRoomCard(room) {
-  const card = createElement('article', room.ended_at || room.liveliness === 0 ? 'card room-card' : 'card room-card room-card--live');
-
-  const head = createElement('div', 'row row--between');
-  const left = createElement('div');
-  left.append(describeRoomTag(room), ' ');
-  const details = room.ended_at
-    ? ''
-    : `started ${formatClock(room.created_at)} · ${MODE_LABELS[room.mode] || room.mode} · liveliness ${room.liveliness}${describeRoomAccessSuffix(room)}`;
-  left.append(createElement('span', 'small mute', details));
-  const right = createElement('div', 'small mute row-fixed', describeRoomSpend(room));
-  right.dataset.role = 'counts';
-  head.append(left, right);
-
-  const title = createElement('h2');
-  title.style.marginTop = '6px';
-  const link = createElement('a', '', room.title);
-  link.href = `/room/${room.id}`;
-  title.append(link);
-
-  const seatLine = createElement('div', 'seat-line');
-  for (const seat of room.seats) {
-    const dot = createElement('span', 'dot');
-    setSeatColor(dot, seat.color);
-    seatLine.append(dot, ' ', seat.name, ' ');
-  }
-  seatLine.append(createElement('span', 'mute', room.folder || 'no folder'));
-  if (room.folder) {
-    seatLine.append(' ', createButton('Open folder', 'btn btn--ghost btn--tiny', () => openRoomFolder(room.id)));
-  }
-
-  const lastLine = createElement('p', 'last-line mute', '');
-  lastLine.dataset.role = 'last-line';
-
-  card.append(head, title, seatLine, lastLine);
-  return card;
-}
-
 /**
- * Room.threads (SPEC v0.5 F2) carries every thread's count and last line, newest first, so the
- * card needs no extra request: it shows the thread count and the newest thread's last line.
+ * Room.threads (SPEC v0.5 F2) carries every thread's message count, so the meta line needs no
+ * extra request.
  */
-function fillRoomPreview(room, card) {
+function describeRoomMeta(room) {
   const threads = Array.isArray(room.threads) ? room.threads : [];
   const messageCount = threads.reduce((total, thread) => total + (thread.message_count || 0), 0);
   const threadWord = threads.length === 1 ? 'thread' : 'threads';
-  const countText = `${threads.length} ${threadWord} · ${messageCount} messages · ${describeRoomSpend(room)}`;
-  card.querySelector('[data-role="counts"]').textContent = countText;
-  const newest = threads[0];
-  if (!newest || !newest.last_line) return;
-  const isOwner = !newest.last_author || newest.last_author === 'owner';
-  const authorElement = createElement('b', '', isOwner ? state.settings.owner.name : newest.last_author);
-  const seat = room.seats.find((candidate) => candidate.name === newest.last_author);
-  if (seat) {
-    setSeatColor(authorElement, seat.color);
-    authorElement.style.color = 'var(--seat-text)';
+  const messageWord = messageCount === 1 ? 'message' : 'messages';
+  return `${threads.length} ${threadWord} · ${messageCount} ${messageWord} · ${describeRoomSpend(room)}${describeRoomAccessSuffix(room)}`;
+}
+
+function createRoomCard(room) {
+  const isLive = !room.ended_at && room.liveliness !== 0;
+  const card = createElement('article', isLive ? 'room-card room-card--live' : 'room-card');
+
+  const head = createElement('div', 'room-card-head');
+  const title = createElement('h2');
+  const link = createElement('a', '', room.title);
+  link.href = `/room/${room.id}`;
+  title.append(link);
+  head.append(title, createStatusPill(room));
+
+  const seatLine = createElement('div', 'room-seats');
+  for (const seat of room.seats) {
+    const seatName = createElement('span', 'room-seat', seat.name);
+    setSeatColor(seatName, seat.color);
+    seatLine.append(seatName);
   }
-  const flat = newest.last_line.replace(/\s+/g, ' ').replace(/[#*`>|]/g, '').trim();
-  const line = flat.length > 140 ? flat.slice(0, 140) + '…' : flat;
-  const lineElement = card.querySelector('[data-role="last-line"]');
-  lineElement.replaceChildren(createElement('span', 'thread-name', newest.title), ' · ', authorElement, ' ', line);
+
+  card.append(head, seatLine, createElement('div', 'room-meta', describeRoomMeta(room)));
+  return card;
 }
 
 function renderRoomList() {
@@ -152,9 +118,7 @@ function renderRoomList() {
     return;
   }
   for (const room of state.rooms.slice(0, MAX_PREVIEWED_ROOMS)) {
-    const card = createRoomCard(room);
-    elements.roomList.append(card);
-    fillRoomPreview(room, card);
+    elements.roomList.append(createRoomCard(room));
   }
   elements.roomList.append(
     createElement('p', 'small mute', `Showing ${Math.min(state.rooms.length, MAX_PREVIEWED_ROOMS)} of ${state.rooms.length}`),
@@ -323,35 +287,28 @@ function renderSummary() {
 // Seat table
 // ---------------------------------------------------------------------------
 
-const SEAT_TABLE_COLUMNS = ['', 'Name', 'Harness', 'Model', 'Thinking', 'Persona', 'Access', 'Eagerness', ''];
-
 function renderSeatTable() {
   elements.seatTable.replaceChildren();
-
-  const head = createElement('div', 'seat-row seat-row--head');
-  for (const column of SEAT_TABLE_COLUMNS) {
-    head.append(createElement('span', '', column));
-  }
-  elements.seatTable.append(head);
-
   for (const row of state.draft.seats) {
     appendSeatRow(row);
   }
   renderSummary();
 }
 
-function labelled(element, label) {
-  element.setAttribute('aria-label', label);
-  return element;
+/** A visible label tied to its control; ids only need to be unique among the rows on the page. */
+function createSeatField(row, fieldName, labelText, control) {
+  const field = createElement('div', 'field');
+  control.id = `seat-${row.key}-${fieldName}`;
+  const label = createElement('label', '', labelText);
+  label.htmlFor = control.id;
+  field.append(label, control);
+  return field;
 }
 
 function appendSeatRow(row) {
   const harness = findHarness(state.harnesses, row.program);
-  const container = elements.seatTable;
 
-  const rowElement = createElement('div', 'seat-row');
-
-  const colorInput = labelled(document.createElement('input'), `Colour for ${row.name}`);
+  const colorInput = document.createElement('input');
   colorInput.type = 'color';
   colorInput.value = safeColor(row.color);
   colorInput.addEventListener('input', () => {
@@ -359,7 +316,7 @@ function appendSeatRow(row) {
     row.colorEdited = true;
   });
 
-  const nameInput = labelled(document.createElement('input'), 'Seat name');
+  const nameInput = document.createElement('input');
   nameInput.type = 'text';
   nameInput.value = row.name;
   nameInput.addEventListener('input', () => {
@@ -367,7 +324,7 @@ function appendSeatRow(row) {
     row.nameEdited = true;
   });
 
-  const harnessSelect = labelled(document.createElement('select'), 'Harness');
+  const harnessSelect = document.createElement('select');
   fillHarnessSelect(harnessSelect, state.harnesses, row.program);
   harnessSelect.addEventListener('change', () => {
     row.program = harnessSelect.value;
@@ -380,7 +337,7 @@ function appendSeatRow(row) {
   const datalist = document.createElement('datalist');
   datalist.id = `models-${row.key}`;
   fillDatalist(datalist, harness);
-  const modelInput = labelled(document.createElement('input'), 'Model');
+  const modelInput = document.createElement('input');
   modelInput.type = 'text';
   modelInput.setAttribute('list', datalist.id);
   modelInput.placeholder = harness && harness.default_model ? `default: ${harness.default_model}` : 'harness default';
@@ -389,13 +346,13 @@ function appendSeatRow(row) {
     row.model = modelInput.value;
   });
 
-  const thinkingSelect = labelled(document.createElement('select'), 'Thinking');
+  const thinkingSelect = document.createElement('select');
   fillThinkingSelect(thinkingSelect, harness, row.thinking);
   thinkingSelect.addEventListener('change', () => {
     row.thinking = thinkingSelect.value;
   });
 
-  const personaSelect = labelled(document.createElement('select'), 'Persona');
+  const personaSelect = document.createElement('select');
   fillPersonaSelect(personaSelect, state.personas, row.persona);
   personaSelect.addEventListener('change', () => {
     row.persona = personaSelect.value;
@@ -407,7 +364,7 @@ function appendSeatRow(row) {
     renderSeatTable();
   });
 
-  const accessSelect = labelled(document.createElement('select'), `Access for ${row.name}`);
+  const accessSelect = document.createElement('select');
   fillAccessSelect(accessSelect, row.access, 'Room level');
   accessSelect.addEventListener('change', () => {
     row.access = readAccessSelect(accessSelect);
@@ -417,38 +374,44 @@ function appendSeatRow(row) {
   const eagerness = createEagernessControl(row.eagerness, (value) => {
     row.eagerness = value;
   });
-  eagerness.input.setAttribute('aria-label', `Eagerness for ${row.name}`);
 
-  const removeButton = createButton('×', 'btn btn--ghost btn--small', () => {
-    state.draft.seats = state.draft.seats.filter((candidate) => candidate !== row);
-    renderSeatTable();
-  });
-  removeButton.setAttribute('aria-label', `Remove ${row.name}`);
+  const fields = createElement('div', 'seat-fields');
+  fields.append(
+    createSeatField(row, 'name', 'Name', nameInput),
+    createSeatField(row, 'color', 'Colour', colorInput),
+    createSeatField(row, 'harness', 'Harness', harnessSelect),
+    createSeatField(row, 'model', 'Model', modelInput),
+    createSeatField(row, 'thinking', 'Thinking', thinkingSelect),
+    createSeatField(row, 'persona', 'Persona', personaSelect),
+    createSeatField(row, 'access', 'Access', accessSelect),
+    createSeatField(row, 'eagerness', 'Eagerness', eagerness.input),
+  );
+  // The eagerness sentence belongs to the slider, so it moves into the slider's field.
+  fields.lastElementChild.append(eagerness.element.querySelector('.eagerness-sentence'));
+  fields.append(datalist);
 
-  rowElement.append(colorInput, nameInput, harnessSelect, modelInput, thinkingSelect, personaSelect, accessSelect, eagerness.element, removeButton, datalist);
-  container.append(rowElement);
+  const actions = createElement('div', 'seat-actions');
+  actions.append(
+    createButton(row.instructionOpen ? 'Hide instruction' : 'Add instruction', 'btn', () => {
+      row.instructionOpen = !row.instructionOpen;
+      renderSeatTable();
+    }),
+    createButton('Duplicate seat', 'btn', () => duplicateRow(row)),
+    createButton('Remove seat', 'btn', () => {
+      state.draft.seats = state.draft.seats.filter((candidate) => candidate !== row);
+      renderSeatTable();
+    }),
+  );
 
-  // The instruction control and card sit under the row, aligned with the name column.
-  const toggleLabel = row.instructionOpen ? 'Hide instruction' : 'Add instruction';
-  const toggle = createButton(toggleLabel, 'btn btn--ghost btn--small', () => {
-    row.instructionOpen = !row.instructionOpen;
-    renderSeatTable();
-  });
-  const actions = createElement('div', 'seat-row seat-row--sub');
-  const actionCell = createElement('div', 'seat-row-actions');
-  actionCell.append(toggle);
-  actionCell.append(createButton('Duplicate', 'btn btn--ghost btn--small', () => duplicateRow(row)));
-  actions.append(createElement('span'), actionCell);
-  container.append(actions);
-
+  const card = createElement('div', 'seat-card');
+  card.append(fields, actions);
   if (row.instructionOpen) {
-    const { card } = createInstructionCard(row.instruction, (text) => {
+    const instruction = createInstructionCard(row.instruction, (text) => {
       row.instruction = text;
     });
-    const cardRow = createElement('div', 'seat-row seat-row--sub');
-    cardRow.append(createElement('span'), card);
-    container.append(cardRow);
+    card.append(instruction.card);
   }
+  elements.seatTable.append(card);
 }
 
 /** Scout -> Scout2 -> Scout3: the lowest number from 2 up that no other row already uses. */
@@ -650,6 +613,8 @@ function bindFolderPicker() {
 function openNewRoomForm() {
   createDraft();
   elements.form.hidden = false;
+  // While the form is open its submit button is the page's one primary action.
+  elements.newRoomButton.hidden = true;
   renderDraftFields();
   elements.title.focus();
 }
@@ -658,6 +623,7 @@ function bindEvents() {
   elements.newRoomButton.addEventListener('click', openNewRoomForm);
   elements.cancelButton.addEventListener('click', () => {
     elements.form.hidden = true;
+    elements.newRoomButton.hidden = false;
   });
   elements.form.addEventListener('submit', openRoom);
   bindFolderPicker();

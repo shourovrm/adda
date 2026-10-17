@@ -99,7 +99,7 @@ function markEnvOverrides() {
   for (const field of fieldElements()) {
     const label = field.id ? document.querySelector(`label[for="${field.id}"]`) : null;
     if (!overridden.has(field.dataset.path) || !label || label.querySelector('.tag--env')) continue;
-    const badge = createElement('span', 'tag tag--env', 'env');
+    const badge = createElement('span', 'pill pill--mute', 'env');
     badge.title = 'A shell variable is set and overrides this value.';
     label.append(' ', badge);
   }
@@ -113,9 +113,9 @@ function renderKeyFields() {
   elements.keyFields.replaceChildren();
   for (const keyField of KEY_FIELDS) {
     const isSet = Boolean((state.settings.keys || {})[keyField.name]);
-    const wrapper = createElement('div');
+    const wrapper = createElement('div', 'field');
     const label = createElement('label', '', keyField.label + ' ');
-    label.append(createElement('span', isSet ? 'ok' : 'bad', isSet ? 'set' : 'not set'));
+    label.append(createElement('span', isSet ? 'pill pill--good' : 'pill pill--bad', isSet ? 'set' : 'not set'));
     const input = document.createElement('input');
     input.type = 'password';
     input.autocomplete = 'off';
@@ -138,7 +138,7 @@ function createHarnessRow(harness) {
   if (harness.found) {
     nameCell.append(createElement('span', 'small mute', `${harness.version || 'unknown version'} · ${harness.path}`));
   } else {
-    nameCell.append(createElement('span', 'small bad', 'not on PATH'));
+    nameCell.append(createElement('span', 'pill pill--bad', 'not on PATH'));
   }
   nameCell.append(createElement('br'), createElement('span', 'small', harness.login_hint));
 
@@ -164,15 +164,17 @@ function createHarnessRow(harness) {
 
   row.append(
     nameCell,
-    wrapCell(modelInput, datalist),
-    wrapCell(thinkingSelect),
-    wrapCell(enabledInput),
+    wrapCell('Default model', modelInput, datalist),
+    wrapCell('Thinking', thinkingSelect),
+    wrapCell('On', enabledInput),
   );
   return row;
 }
 
-function wrapCell(...children) {
+/** `columnName` is shown as a caption above the control when the table is stacked on a narrow screen. */
+function wrapCell(columnName, ...children) {
   const cell = createElement('td');
+  cell.dataset.column = columnName;
   cell.append(...children);
   return cell;
 }
@@ -190,7 +192,7 @@ function renderPersonaRows() {
   const personasDir = state.settings.folders.personas_dir;
   for (const persona of state.personas) {
     const row = createElement('tr');
-    const dot = createElement('span', 'dot');
+    const dot = createElement('span', 'persona-dot');
     setSeatColor(dot, persona.color);
     const nameCell = createElement('td');
     nameCell.append(dot, ' ', createElement('b', '', persona.name), ` · ${persona.role}`);
