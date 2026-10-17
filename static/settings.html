@@ -4,16 +4,16 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light dark">
-  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v=0.9">
-  <link rel="stylesheet" href="/static/style.css?v=0.9">
-  <link rel="stylesheet" href="/static/settings.css?v=0.9">
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v=1.0">
+  <link rel="stylesheet" href="/static/style.css?v=1.0">
+  <link rel="stylesheet" href="/static/settings.css?v=1.0">
   <title>Settings · Adda</title>
-  <script src="/static/common.js?v=0.9" defer></script>
-  <script src="/static/settings.js?v=0.9" defer></script>
+  <script src="/static/common.js?v=1.0" defer></script>
+  <script src="/static/settings.js?v=1.0" defer></script>
 </head>
 <body>
   <header class="top">
-    <a class="brand" href="/"><img class="brand-mark" src="/static/logo.svg?v=0.9" width="28" height="28" alt="">Adda <small lang="bn">আড্ডা</small></a>
+    <a class="brand" href="/"><img class="brand-mark" src="/static/logo.svg?v=1.0" width="28" height="28" alt="">Adda <small lang="bn">আড্ডা</small></a>
     <nav aria-label="Pages">
       <a href="/">Rooms</a>
       <a href="/settings" aria-current="page">Settings</a>
@@ -22,21 +22,37 @@
   </header>
 
   <main class="page">
-    <div class="page-head">
-      <h1>Settings</h1>
-      <p>Saved to <code>~/.config/adda/config.toml</code>. A shell variable with the same name still wins, and the field says so.</p>
+    <div class="page-head page-head--action">
+      <div>
+        <h1>Settings</h1>
+        <p>Saved to <code>~/.config/adda/config.toml</code>. A shell variable with the same name still wins, and the field says so.</p>
+      </div>
+      <div class="settings-actions">
+        <span class="small mute" id="save-status" role="status"></span>
+        <button class="btn btn--primary" id="save-button" type="submit" form="settings-form">Save</button>
+      </div>
     </div>
 
+    <div class="settings">
+    <nav class="section-nav" aria-label="Sections">
+      <a href="#you" aria-current="true">You</a>
+      <a href="#harnesses">Harnesses</a>
+      <a href="#personas">Personas</a>
+      <a href="#keys-and-router">Keys and router</a>
+      <a href="#room-defaults">Room defaults</a>
+      <a href="#folders">Folders</a>
+    </nav>
+
     <form id="settings-form" autocomplete="off">
-      <section class="panel">
+      <section class="panel" id="you">
         <h2>You</h2>
-        <div class="field-pair">
+        <div class="field-row">
           <div class="field">
             <label for="owner-name-input">Your name in the room</label>
-            <input type="text" id="owner-name-input" data-path="owner.name">
+            <input class="input--20" type="text" id="owner-name-input" data-path="owner.name">
             <div class="hint">Seats address you by this name. Your messages carry it.</div>
           </div>
-          <div class="field">
+          <div class="field field--grow">
             <label for="owner-line-input">Your line for the seats</label>
             <input type="text" id="owner-line-input" data-path="owner.line">
             <div class="hint">One sentence added to every seat's system prompt.</div>
@@ -44,7 +60,7 @@
         </div>
       </section>
 
-      <section class="panel">
+      <section class="panel" id="harnesses">
         <h2>Harnesses</h2>
         <p class="panel-note">Found on this machine. Default model and thinking apply to any seat that leaves them blank.</p>
         <table class="harness-table">
@@ -54,75 +70,75 @@
         <p class="panel-actions"><button class="btn" id="rescan-button" type="button">Re-scan PATH</button></p>
       </section>
 
-      <section class="panel">
+      <section class="panel" id="personas">
         <h2>Personas</h2>
         <p class="panel-note">A persona is a voice file plus its memory. Seats pick one when a room is made.</p>
         <table class="persona-table"><tbody id="persona-rows"></tbody></table>
       </section>
 
-      <section class="panel">
+      <section class="panel" id="keys-and-router">
         <h2>Keys and router</h2>
-        <div class="field">
-          <label for="router-kind-select">Who decides who speaks</label>
-          <select id="router-kind-select" data-path="router.kind">
-            <option value="jev">Jev</option>
-            <option value="heuristic">Heuristic (no network)</option>
-          </select>
-        </div>
-        <div class="field-pair">
+        <div class="field-row">
+          <div class="field">
+            <label for="router-kind-select">Who decides who speaks</label>
+            <select class="input--30" id="router-kind-select" data-path="router.kind">
+              <option value="jev">Jev</option>
+              <option value="heuristic">Heuristic (no network)</option>
+            </select>
+          </div>
           <div class="field">
             <label for="router-provider-select">Provider</label>
-            <select id="router-provider-select" data-path="router.provider">
+            <select class="input--20" id="router-provider-select" data-path="router.provider">
               <option value="openrouter">OpenRouter</option>
               <option value="typesafe">TypeSafe</option>
             </select>
           </div>
           <div class="field">
             <label for="router-model-input">Model</label>
-            <input type="text" id="router-model-input" data-path="router.model" placeholder="provider default">
+            <input class="input--30" type="text" id="router-model-input" data-path="router.model" placeholder="provider default">
           </div>
         </div>
-        <div id="key-fields"></div>
+        <div class="field-row" id="key-fields"></div>
         <p class="panel-note">Keys are stored in <code>~/.config/adda/keys.env</code> with mode 600 and never shown again. Nothing here accepts an Anthropic key.</p>
-        <div class="field-pair">
+        <div class="field-row">
           <div class="field">
             <label for="floor-input">Lowest score that may speak</label>
-            <input type="number" id="floor-input" data-path="router.threshold_floor" step="0.5" min="0" max="10">
+            <input class="input--10" type="number" id="floor-input" data-path="router.threshold_floor" step="0.5" min="0" max="10">
           </div>
           <div class="field">
             <label for="window-input">Messages the router sees</label>
-            <input type="number" id="window-input" data-path="router.window" step="1" min="1">
+            <input class="input--10" type="number" id="window-input" data-path="router.window" step="1" min="1">
           </div>
         </div>
       </section>
 
-      <section class="panel">
+      <section class="panel" id="room-defaults">
         <h2>Room defaults</h2>
         <div class="field">
           <label for="default-liveliness-input">Liveliness <span id="default-liveliness-value"></span></label>
-          <input class="slider" type="range" id="default-liveliness-input" data-path="room_defaults.liveliness" min="0" max="10" step="1">
+          <input class="slider input--30" type="range" id="default-liveliness-input" data-path="room_defaults.liveliness" min="0" max="10" step="1">
         </div>
-        <div class="field-pair">
+        <div class="field-row">
           <div class="field">
             <label for="default-budget-input">Budget (USD)</label>
-            <input type="number" id="default-budget-input" data-path="room_defaults.budget_usd" step="0.25" min="0">
+            <input class="input--10" type="number" id="default-budget-input" data-path="room_defaults.budget_usd" step="0.25" min="0">
           </div>
           <div class="field">
             <label for="default-cooldown-input">Cooldown (s, 0 = off)</label>
-            <input type="number" id="default-cooldown-input" data-path="room_defaults.cooldown_s" step="1" min="0">
+            <input class="input--10" type="number" id="default-cooldown-input" data-path="room_defaults.cooldown_s" step="1" min="0">
           </div>
           <div class="field">
             <label for="default-timeout-input">Seat timeout (s)</label>
-            <input type="number" id="default-timeout-input" data-path="room_defaults.seat_timeout_s" step="1" min="1">
+            <input class="input--10" type="number" id="default-timeout-input" data-path="room_defaults.seat_timeout_s" step="1" min="1">
           </div>
           <div class="field">
             <label for="default-auto-turns-input">Safety stop (turns)</label>
-            <input type="number" id="default-auto-turns-input" data-path="room_defaults.max_auto_turns" step="1" min="1">
+            <input class="input--10" type="number" id="default-auto-turns-input" data-path="room_defaults.max_auto_turns" step="1" min="1">
           </div>
         </div>
         <div class="field">
           <label for="default-mode-select">Who speaks next</label>
-          <select id="default-mode-select" data-path="room_defaults.mode">
+          <select class="input--20" id="default-mode-select" data-path="room_defaults.mode">
             <option value="bidding">Bidding</option>
             <option value="roundrobin">Round-robin</option>
             <option value="manual">Manual</option>
@@ -130,7 +146,7 @@
         </div>
       </section>
 
-      <section class="panel">
+      <section class="panel" id="folders">
         <h2>Folders</h2>
         <div class="field">
           <label for="rooms-dir-input">Rooms folder</label>
@@ -147,12 +163,8 @@
           <input type="text" id="personas-dir-input" data-path="folders.personas_dir">
         </div>
       </section>
-
-      <div class="settings-actions">
-        <button class="btn btn--primary" id="save-button" type="submit">Save</button>
-        <span class="small mute" id="save-status" role="status"></span>
-      </div>
     </form>
+    </div>
   </main>
 </body>
 </html>

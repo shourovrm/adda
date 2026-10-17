@@ -118,6 +118,7 @@ function renderKeyFields() {
     label.append(createElement('span', isSet ? 'pill pill--good' : 'pill pill--bad', isSet ? 'set' : 'not set'));
     const input = document.createElement('input');
     input.type = 'password';
+    input.className = 'input--30';
     input.autocomplete = 'off';
     input.id = `key-${keyField.name}`;
     input.dataset.key = keyField.name;
@@ -144,6 +145,7 @@ function createHarnessRow(harness) {
 
   const modelInput = document.createElement('input');
   modelInput.type = 'text';
+  modelInput.className = 'input--30';
   modelInput.dataset.path = `harness.${program}.model`;
   modelInput.setAttribute('aria-label', `${program} default model`);
   modelInput.disabled = !harness.found;
@@ -230,6 +232,40 @@ async function rescanHarnesses() {
   }
 }
 
+/** Marks the section list entry for the panel the reader is in: the last one that has reached
+ *  the top third of the window, or the last panel of all once the page is scrolled to its end,
+ *  since a short last panel never reaches the top on its own. */
+function markCurrentSection() {
+  const links = [...document.querySelectorAll('.section-nav a')];
+  const panels = links.map((link) => document.querySelector(link.getAttribute('href'))).filter(Boolean);
+  if (panels.length === 0) return;
+
+  function update() {
+    const atPageEnd = window.scrollY + window.innerHeight >= document.documentElement.scrollHeight - 2;
+    const threshold = window.innerHeight / 3;
+    let current = panels[0];
+    for (const panel of panels) {
+      if (panel.getBoundingClientRect().top <= threshold) current = panel;
+    }
+    if (atPageEnd) current = panels[panels.length - 1];
+    for (const link of links) {
+      if (link.getAttribute('href') === `#${current.id}`) link.setAttribute('aria-current', 'true');
+      else link.removeAttribute('aria-current');
+    }
+  }
+
+  let scheduled = false;
+  window.addEventListener('scroll', () => {
+    if (scheduled) return;
+    scheduled = true;
+    requestAnimationFrame(() => {
+      scheduled = false;
+      update();
+    });
+  });
+  update();
+}
+
 async function saveSettings(event) {
   event.preventDefault();
   elements.saveButton.disabled = true;
@@ -250,6 +286,11 @@ async function saveSettings(event) {
 
 async function start() {
   elements.form.addEventListener('submit', saveSettings);
+  // Save sits in the page head, away from the fields, so the status says when there is work to save.
+  elements.form.addEventListener('input', () => {
+    elements.saveStatus.textContent = 'Unsaved changes';
+  });
+  markCurrentSection();
   elements.rescanButton.addEventListener('click', rescanHarnesses);
   elements.defaultLiveliness.addEventListener('input', () => {
     elements.defaultLivelinessValue.textContent = elements.defaultLiveliness.value;

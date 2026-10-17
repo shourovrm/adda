@@ -36,6 +36,10 @@ composer's single-line state. Controls use `--text-body`, horizontal padding `--
 no shadow. Text inputs, selects and textareas have a 2px solid `--ink` border (GOV.UK). Focus is a 3px solid
 `--ink` outline with 0 offset on every focusable element; no custom focus per component.
 
+A control is as wide as its longest expected answer, never as wide as its column (GOV.UK):
+`.input--10` for numbers, `.input--20` for names and short selects, `.input--30` for model names,
+keys and long selects. Folder paths and the composer take the full width.
+
 Three button kinds, and no size variants:
 
 - **Primary**, `.btn--primary`: `--accent` fill, `--accent-ink` text. At most one per page: Send in a room,
@@ -90,6 +94,13 @@ A grid of room cards, as many columns as fit at 440px minimum, each with the tit
 seat names, and one meta line in
 `--text-small` (threads, messages, spent of budget). Folder paths and Open folder are not on the card. The
 "Harnesses on this machine" panel lists each program with a status pill; its instruction text is `--ink`.
+
+## Layout of the settings page
+
+A 240px list of the six sections on the left, sticky, with the current section marked by the accent
+bar; the panels in one column on the right, each with an id the list links to. Save and the save status
+sit beside the title, as New room does on the rooms page. Short fields sit side by side in a wrapping
+row, each as wide as its control.
 
 ## Gates
 

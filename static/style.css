@@ -223,6 +223,24 @@ th {
   vertical-align: middle;
 }
 
+/* Input widths follow GOV.UK: a control is as wide as its longest expected answer, never as
+   wide as its column. Numbers take 10, names 20, models and keys 30; paths stay full width. */
+.input--5 {
+  max-width: 7ch;
+}
+
+.input--10 {
+  max-width: 13ch;
+}
+
+.input--20 {
+  max-width: 24ch;
+}
+
+.input--30 {
+  max-width: 34ch;
+}
+
 /* ---------- Utilities ---------- */
 
 .visually-hidden {

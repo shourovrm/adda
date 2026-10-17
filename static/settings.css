@@ -1,6 +1,9 @@
 /* Settings page. Shared controls, pills and tokens come from style.css. */
 
-/* Page layout shared with rooms.css: one column of panels. */
+body {
+  --section-nav-width: calc(var(--space-6) * 6);
+}
+
 /* Adda is a desktop app: the page fills the window and only the gutter is fixed. */
 .page { padding: 0 var(--space-5) var(--space-6); }
 .page-head { margin: var(--space-5) 0 var(--space-6); }
@@ -9,16 +12,72 @@
 .panel + .panel { margin-top: var(--space-6); }
 .panel > h2 { margin-bottom: var(--space-4); }
 
-/* Two or four short fields side by side; they stack below the media query. */
-.field-pair {
+/* Save sits beside the title, where New room sits on the rooms page, so it is never off screen. */
+.page-head--action {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-4);
+}
+
+.settings-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: var(--space-3);
+}
+
+/* Section list on the left, the same width as the threads column on the room page. */
+.settings {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0 var(--space-4);
+  grid-template-columns: var(--section-nav-width) minmax(0, 1fr);
+  gap: var(--space-6);
+  align-items: start;
+}
+
+.section-nav {
+  position: sticky;
+  top: var(--space-5);
+  display: flex;
+  flex-direction: column;
+}
+
+.section-nav a {
+  padding: var(--space-2) var(--space-3);
+  border-left: var(--focus-width) solid transparent;
+  color: var(--ink);
+  text-decoration: none;
+}
+
+.section-nav a[aria-current="true"] {
+  border-left-color: var(--accent);
+  background: var(--panel);
+  font-weight: 600;
+}
+
+/* Anchored sections stop below the top bar instead of under it. */
+.panel[id] {
+  scroll-margin-top: var(--space-5);
+}
+
+/* Short fields sit side by side and wrap; each is as wide as its control. */
+.field-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 var(--space-5);
+}
+
+.field-row > .field {
+  flex: 0 1 auto;
+}
+
+.field-row > .field--grow {
+  flex: 1 1 auto;
 }
 
 /* The last field of a panel needs no gap below it, the panel padding does that. */
 .panel > .field:last-child,
-.panel > .field-pair:last-child > .field {
+.panel > .field-row:last-child > .field {
   margin-bottom: 0;
 }
 
@@ -93,21 +152,21 @@
   vertical-align: top;
 }
 
-.settings-actions {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: var(--space-3);
-  margin-top: var(--space-6);
+@media (max-width: 900px) {
+  .settings { grid-template-columns: minmax(0, 1fr); }
+  .section-nav { position: static; flex-direction: row; flex-wrap: wrap; }
+  .section-nav a { border-left: 0; border-bottom: var(--focus-width) solid transparent; }
+  .section-nav a[aria-current="true"] { border-bottom-color: var(--accent); }
+  .page-head--action { flex-wrap: wrap; }
 }
 
 @media (max-width: 640px) {
   .page { padding: 0 var(--space-3) var(--space-5); }
   .panel { padding: var(--space-4); }
 
-  .field-pair { grid-template-columns: minmax(0, 1fr); }
-  /* Stacked, the fields of a closing pair still need the gap between them. */
-  .panel > .field-pair:last-child > .field:not(:last-child) { margin-bottom: var(--space-4); }
+  .field-row > .field { flex: 1 1 100%; }
+  /* Stacked, the fields of a closing row still need the gap between them. */
+  .panel > .field-row:last-child > .field:not(:last-child) { margin-bottom: var(--space-4); }
 
   /* Each harness becomes a card: name on top, then captioned controls. */
   .harness-table thead { display: none; }
