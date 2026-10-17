@@ -51,7 +51,7 @@
       }
       var span = element("span", "mention");
       span.setAttribute("data-handle", handle);
-      span.style.setProperty("--m", colour);
+      span.style.setProperty("--seat", colour);
       span.textContent = label;
       parent.appendChild(span);
       lastEnd = match.index + match[0].length;

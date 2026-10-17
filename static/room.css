@@ -428,9 +428,12 @@ a.search-result:hover {
   font-weight: 600;
 }
 
+/* A mentioned seat wears its own colour as a light tag: tinted ground, name pulled toward ink. */
 .mention {
+  padding: 0 var(--space-1);
+  background: var(--seat-field-strong);
   color: var(--seat-text, var(--ink));
-  font-weight: 600;
+  font-weight: 700;
 }
 
 /* ---------- Jump to latest ---------- */

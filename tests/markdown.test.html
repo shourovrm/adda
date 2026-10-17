@@ -78,7 +78,7 @@
   var mentions = host.querySelectorAll("span.mention");
   check("mentions", mentions.length === 2 && mentions[0].textContent === "@Ravi" &&
     mentions[0].getAttribute("data-handle") === "ravi" &&
-    mentions[0].style.getPropertyValue("--m") === "#CF5A26");
+    mentions[0].style.getPropertyValue("--seat") === "#CF5A26");
 
   host = render("mail mail@alpha.com or @nobody");
   check("email and unknown handle are not mentions", !host.querySelector(".mention"));
