@@ -29,3 +29,6 @@ build/
 
 # tool scratch
 .playwright-mcp/
+
+# local explainers and mockups (HTML demos for the owner, not part of the app)
+explainers/
