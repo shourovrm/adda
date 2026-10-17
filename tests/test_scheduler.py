@@ -407,7 +407,7 @@ async def test_mention_of_a_missing_program_posts_a_system_message(tmp_path):
     room.factory.unavailable_names.add("Ravi")
     await room.scheduler.say("@ravi hello")
     await room.settle()
-    assert room.system_texts() == ["Seat Ravi: program claude not found."]
+    assert room.system_texts() == ["Ravi cannot reply: claude is not installed."]
 
 
 # Liveliness, safety, budget ---------------------------------------------------------------
@@ -729,7 +729,7 @@ async def test_seat_error_becomes_a_system_message_with_the_current_name(harness
     harness.adapter("Ravi").script(SeatError("old-name", "exit code 1: boom"))
     await harness.scheduler.say("@ravi hi")
     await harness.settle()
-    assert harness.system_texts() == ["Seat Ravi failed: exit code 1: boom"]
+    assert harness.system_texts() == ["Ravi could not reply. exit code 1: boom"]
     assert harness.spoken() == []
 
 
@@ -738,7 +738,8 @@ async def test_router_failure_falls_back_to_heuristic_once(tmp_path):
     room.router.script(RouterError("HTTP 500"), RouterError("HTTP 500"))
     await room.scheduler.say("hello all")
     await room.settle()
-    assert len([text for text in room.system_texts() if text.startswith("Router jev failed")]) == 1
+    unavailable = "The turn-taking service is unavailable"
+    assert len([text for text in room.system_texts() if text.startswith(unavailable)]) == 1
     assert room.frames_of("bids")[0]["router"] == "heuristic"
 
 
@@ -779,7 +780,7 @@ async def test_missing_persona_posts_a_system_message(tmp_path):
     (tmp_path / "personas" / "alpha" / "persona.md").unlink()
     await room.scheduler.say("@ravi hi")
     await room.settle()
-    assert room.system_texts()[0].startswith("Seat Ravi: persona 'alpha' not found")
+    assert room.system_texts()[0].startswith("Ravi cannot reply: persona 'alpha' not found")
 
 
 # End of room --------------------------------------------------------------------------------

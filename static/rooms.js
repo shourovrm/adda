@@ -114,8 +114,8 @@ function createRoomCard(room) {
 
 function renderRoomList() {
   elements.roomList.replaceChildren();
+  // With no rooms the list stays empty: the New room button beside the title says what to do.
   if (state.rooms.length === 0) {
-    elements.roomList.append(createElement('p', 'mute', 'No rooms yet. Start one with New room.'));
     return;
   }
   for (const room of state.rooms.slice(0, MAX_PREVIEWED_ROOMS)) {
@@ -244,7 +244,7 @@ function renderDraftFields() {
 
 function renderDraftLiveliness() {
   elements.livelinessValue.textContent = state.draft.liveliness;
-  elements.livelinessSentence.textContent = describeLiveliness(state.draft.liveliness, 0);
+  elements.livelinessSentence.textContent = describeLiveliness(state.draft.liveliness);
 }
 
 function renderDraftAccess() {
@@ -273,10 +273,10 @@ function summaryHasWork() {
 
 function renderSummary() {
   const seatCount = state.draft.seats.length;
-  const harnessCount = new Set(state.draft.seats.map((row) => row.program)).size;
+  const agentCount = new Set(state.draft.seats.map((row) => row.program)).size;
   const seatWord = seatCount === 1 ? 'seat' : 'seats';
-  const harnessWord = harnessCount === 1 ? 'harness' : 'harnesses';
-  elements.summary.textContent = `${seatCount} ${seatWord} · ${harnessCount} ${harnessWord} · ${describeSummaryAccess()}`;
+  const agentWord = agentCount === 1 ? 'agent' : 'agents';
+  elements.summary.textContent = `${seatCount} ${seatWord} · ${agentCount} ${agentWord} · ${describeSummaryAccess()}`;
   if (summaryHasWork()) {
     const warning = createElement('div', 'access-warning', describeAccessWarning(elements.folder.value.trim()));
     elements.summary.append(warning);
@@ -341,7 +341,7 @@ function appendSeatRow(row) {
   const modelInput = document.createElement('input');
   modelInput.type = 'text';
   modelInput.setAttribute('list', datalist.id);
-  modelInput.placeholder = harness && harness.default_model ? `default: ${harness.default_model}` : 'harness default';
+  modelInput.placeholder = harness && harness.default_model ? `default: ${harness.default_model}` : 'Default';
   modelInput.value = row.model;
   modelInput.addEventListener('input', () => {
     row.model = modelInput.value;
@@ -380,7 +380,7 @@ function appendSeatRow(row) {
   fields.append(
     createSeatField(row, 'name', 'Name', nameInput),
     createSeatField(row, 'color', 'Colour', colorInput),
-    createSeatField(row, 'harness', 'Harness', harnessSelect),
+    createSeatField(row, 'harness', 'Agent', harnessSelect),
     createSeatField(row, 'model', 'Model', modelInput),
     createSeatField(row, 'thinking', 'Thinking', thinkingSelect),
     createSeatField(row, 'persona', 'Persona', personaSelect),
@@ -440,7 +440,7 @@ async function fillFromLastRoom() {
   try {
     const lastSeats = await fetchJson('/api/rooms/last-seats');
     if (lastSeats.length === 0) {
-      showToast('There is no earlier room to copy seats from.');
+      showToast('No earlier room to copy from.');
       return;
     }
     state.draft.seats = lastSeats.map((seat) =>
@@ -509,7 +509,7 @@ async function openRoom(event) {
     location.assign(`/room/${room.id}`);
   } catch (error) {
     elements.openButton.disabled = false;
-    reportError('Could not open the room', error);
+    reportError('Could not create the room', error);
   }
 }
 

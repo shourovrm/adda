@@ -134,7 +134,7 @@ class NewSeat(BaseModel):
     @classmethod
     def name_must_not_be_blank(cls, name: str) -> str:
         if not name.strip():
-            raise ValueError("seat name must not be empty")
+            raise ValueError("The seat needs a name.")
         return name.strip()
 
 
@@ -341,7 +341,7 @@ class Hub:
     def create_room(self, body: NewRoom) -> Room:
         title = body.title.strip()
         if not title:
-            raise ValueError("title must not be empty")
+            raise ValueError("The title is empty.")
         seat_names = [name for new_seat in body.seats for name in expand_copies(new_seat)]
         self._check_new_seat_names(seat_names, existing=[])
         for new_seat in body.seats:
@@ -425,7 +425,7 @@ class Hub:
         for name in names:
             handle = seat_handle(name)
             if handle in taken:
-                raise ValueError(f"a seat named {name!r} already exists in this room")
+                raise ValueError(f"A seat named {name} already exists.")
             taken.add(handle)
 
     def _check_persona(self, slug: str | None) -> None:

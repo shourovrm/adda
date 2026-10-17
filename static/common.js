@@ -43,7 +43,10 @@ function createButton(label, className, onClick) {
 // Network
 // ---------------------------------------------------------------------------
 
-/** GET or send JSON. Throws an Error that carries the server's `detail` text. */
+/**
+ * GET or send JSON. Throws an Error whose message is the server's `detail` text, which is what
+ * the owner reads in a toast; the path and status ride along on the error for the console.
+ */
 async function fetchJson(path, options) {
   const response = await fetch(path, options);
   if (!response.ok) {
@@ -53,7 +56,10 @@ async function fetchJson(path, options) {
     } catch (parseError) {
       // The body was not JSON; the raw text is the best detail there is.
     }
-    throw new Error(`${path}: ${detail} (HTTP ${response.status})`);
+    const failure = new Error(detail);
+    failure.path = path;
+    failure.status = response.status;
+    throw failure;
   }
   return response.json();
 }
@@ -259,51 +265,29 @@ function formatDay(isoText) {
   return dayFormatter.format(new Date(isoText));
 }
 
-/**
- * Threshold rule of SPEC v0.3 D1: a seat speaks when its bid reaches
- * base + ramp * k, base = 7.5 - 0.5 L, ramp = 0.3 - 0.025 L, k = automatic turns since the
- * last owner message or wake. The server never lets the threshold fall below the floor.
- */
-const THRESHOLD_FLOOR = 2.5;
-
-function computeLivelinessThreshold(liveliness, automaticTurns) {
-  const base = Math.max(THRESHOLD_FLOOR, 7.5 - 0.5 * liveliness);
-  const ramp = 0.3 - 0.025 * liveliness;
-  return { base, ramp, current: Math.max(THRESHOLD_FLOOR, base + ramp * automaticTurns) };
-}
-
 const QUIET_REASON_TEXT = {
-  nobody: 'The room went quiet. Nobody scored high enough. Your turn.',
-  paused: 'The room is paused. Mention a seat, press Wake all, or resume.',
-  safety: 'Safety stop: too many automatic turns without you. Say something to continue.',
+  nobody: 'Nobody has anything to add. Say something or wake a seat.',
+  paused: 'Paused. Mention a seat or press Wake all.',
+  // The room page names the reply limit from settings; this is the line when it is unknown.
+  safety: 'Paused after many replies without you. Say something to continue.',
 };
 
 /** The quiet notice for a `quiet` frame: a countdown to the next afterthought chance when one is scheduled. */
 function describeQuiet(frame) {
   const secondsLeft = frame.next_tick_in_s;
   if (typeof secondsLeft !== 'number' || secondsLeft < 0) {
-    return QUIET_REASON_TEXT[frame.reason] || 'The room went quiet. Your turn.';
+    return QUIET_REASON_TEXT[frame.reason] || QUIET_REASON_TEXT.nobody;
   }
-  const chances = frame.ticks_left > 0 ? frame.ticks_left : 1;
-  const chanceWord = chances === 1 ? 'chance' : 'chances';
   const wait = secondsLeft >= 1 ? `in about ${Math.round(secondsLeft)} s` : 'any moment now';
-  return `Quiet. Someone may come back ${wait} (${chances} ${chanceWord} left).`;
+  return `Quiet. A seat may add a thought ${wait}.`;
 }
 
-function describeLiveliness(liveliness, automaticTurns) {
+/** The bid numbers behind liveliness are not something the owner can act on, so the hint stays plain. */
+function describeLiveliness(liveliness) {
   if (liveliness === 0) {
     return 'Paused. Seats speak only when mentioned or woken.';
   }
-  const { base, ramp, current } = computeLivelinessThreshold(liveliness, automaticTurns);
-  const rule = `A seat speaks at a bid of ${base.toFixed(1)} or more, rising ${ramp.toFixed(2)} per automatic turn.`;
-  if (automaticTurns > 0 && current > 10) {
-    // Bids top out at 10, so past this point only you, a mention or Wake can restart the room.
-    return `${rule} After ${automaticTurns} turns no bid can pass; the room waits for you.`;
-  }
-  if (automaticTurns > 0) {
-    return `${rule} After ${automaticTurns} it is ${current.toFixed(1)}.`;
-  }
-  return rule;
+  return 'How readily seats join in.';
 }
 
 // ---------------------------------------------------------------------------
@@ -312,13 +296,13 @@ function describeLiveliness(liveliness, automaticTurns) {
 
 const ACCESS_LABELS = { talk: 'Talk only', look: 'Look', work: 'Work' };
 const ACCESS_DESCRIPTIONS = {
-  talk: 'Seats have no tools. They only talk.',
-  look: 'Seats may read, list and search files in the room folder. They cannot change anything.',
-  work: 'Seats may read, edit and write files and run shell commands in the room folder.',
+  talk: 'Seats can only talk.',
+  look: 'Seats can read files in the room folder.',
+  work: 'Seats can edit files and run commands in the room folder.',
 };
 
 function describeAccessWarning(folder) {
-  return `Seats may edit files and run commands in ${folder || 'the room folder'} without asking.`;
+  return `Seats can change files in ${folder || 'the room folder'} without asking.`;
 }
 
 /**
@@ -351,14 +335,13 @@ function readAccessSelect(select) {
 
 const EAGERNESS_NEUTRAL = 5;
 const EAGERNESS_DEFAULT = 5;
-const EAGERNESS_BID_PER_STEP = 0.4;
 
-/** "bids +0.8", "bids -2.0", "never bids": what a slider position does to every bid of the seat. */
+/** What a slider position does to the seat: above neutral it speaks more, below it less, at 0 never unasked. */
 function describeEagerness(eagerness) {
-  if (eagerness === 0) return 'never bids';
-  const shift = EAGERNESS_BID_PER_STEP * (eagerness - EAGERNESS_NEUTRAL);
-  if (shift === 0) return 'bids unchanged';
-  return `bids ${shift > 0 ? '+' : '-'}${Math.abs(shift).toFixed(1)}`;
+  if (eagerness === 0) return 'never speaks on its own';
+  if (eagerness === EAGERNESS_NEUTRAL) return 'normal';
+  if (eagerness > EAGERNESS_NEUTRAL) return 'speaks more';
+  return 'speaks less';
 }
 
 /**
@@ -448,7 +431,7 @@ function fillThinkingSelect(select, harness, selectedThinking) {
   const supported = Boolean(harness && harness.supports_thinking);
   select.replaceChildren();
   for (const level of supported ? THINKING_LEVELS : ['default']) {
-    const label = level === 'default' ? (supported ? 'harness default' : 'not supported') : level;
+    const label = level === 'default' ? (supported ? 'Default' : 'not supported') : level;
     const option = createElement('option', '', label);
     option.value = level;
     select.append(option);
@@ -470,14 +453,14 @@ function fillPersonaSelect(select, personas, selectedSlug) {
   select.value = selectedSlug || '';
 }
 
-/** A labelled textarea in a card, used for the custom instruction of a seat. */
+/** A labelled textarea in a card, used for the extra instruction of a seat. */
 function createInstructionCard(initialText, onInput, onChange) {
   const card = createElement('div', 'instruction-card');
   const textarea = document.createElement('textarea');
   textarea.rows = 3;
-  textarea.placeholder = 'Custom instruction for this seat, added to its persona if it has one.';
+  textarea.placeholder = 'Extra instruction for this seat';
   textarea.value = initialText || '';
-  textarea.setAttribute('aria-label', 'Custom instruction');
+  textarea.setAttribute('aria-label', 'Instruction');
   if (onInput) textarea.addEventListener('input', () => onInput(textarea.value));
   if (onChange) textarea.addEventListener('change', () => onChange(textarea.value));
   card.append(textarea);
@@ -491,16 +474,22 @@ function renderHarnessList(container, harnesses) {
     const name = harness.found ? `${harness.program} ${harness.version || ''}`.trim() : harness.program;
     // The pill carries only the status word; the login instruction is ink text beside it (docs/design-system.md, Colour).
     const status = harness.found
-      ? createElement('span', 'pill pill--good', 'found')
-      : createElement('span', 'pill pill--bad', 'not installed');
+      ? createElement('span', 'pill pill--good', 'Installed')
+      : createElement('span', 'pill pill--bad', 'Not installed');
     const statusCell = createElement('td');
     statusCell.append(status);
-    if (harness.found && harness.login_hint) {
-      statusCell.append(createElement('p', 'harness-hint', harness.login_hint));
+    // An installed agent needs no instruction; Adda cannot tell whether it is signed in.
+    if (!harness.found && harness.login_hint) {
+      statusCell.append(createElement('p', 'harness-hint', plainLoginHint(harness.login_hint)));
     }
     row.append(createElement('td', '', name), statusCell);
     container.append(row);
   }
+}
+
+/** The server writes commands in Markdown backticks; the page shows plain text, so they go. */
+function plainLoginHint(loginHint) {
+  return loginHint.replaceAll('`', '');
 }
 
 // ---------------------------------------------------------------------------

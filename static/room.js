@@ -24,18 +24,19 @@
 
 const MAX_BID_SCORE = 10;
 const DEFAULT_COOLDOWN_SECONDS = 20; // used only if /api/settings cannot be read
+const DEFAULT_MAX_AUTO_TURNS = 40; // used only if /api/settings cannot be read
 const DEFAULT_RESUME_LIVELINESS = 6;
 const NEAR_BOTTOM_PIXELS = 80;
 const HIGHLIGHT_DURATION_MS = 2500;
 const BID_ANIMATION_MS = 900;
 const SEARCH_DEBOUNCE_MS = 250;
 const COMPOSER_MAX_VIEWPORT_FRACTION = 0.4;
-const MODE_LABELS = { bidding: 'Bidding', roundrobin: 'Round-robin', manual: 'Manual' };
+const MODE_LABELS = { bidding: 'Automatic', roundrobin: 'Take turns', manual: 'Only when mentioned' };
 const WOKEN_BY_LABELS = {
   mention: 'woken by mention',
   all: 'woken by @all',
   wake: 'woken by Wake',
-  roundrobin: 'round-robin',
+  roundrobin: 'in turn',
   afterthought: 'afterthought',
   more: 'continued',
 };
@@ -68,6 +69,7 @@ const state = {
   harnesses: [],
   personas: [],
   cooldownSeconds: DEFAULT_COOLDOWN_SECONDS,
+  maxAutoTurns: DEFAULT_MAX_AUTO_TURNS,
   typingSeatIds: new Set(),
   lastBids: {}, // seat id -> {score, confidence}
   threshold: 5,
@@ -202,18 +204,6 @@ function removeWhitespace(text) {
   return text.replace(/\s+/g, '');
 }
 
-/** Seats that spoke because of an automatic bid since the last owner message or wake. */
-function countAutomaticTurns() {
-  let turns = 0;
-  for (let index = state.messages.length - 1; index >= 0; index--) {
-    const message = state.messages[index];
-    if (message.role === 'system') continue;
-    const wokenBy = (message.meta || {}).woken_by;
-    if (message.role !== 'seat' || (wokenBy !== 'bid' && wokenBy !== 'roundrobin')) break;
-    turns += 1;
-  }
-  return turns;
-}
 
 function addLocalMessage(text, isError, isPassed = false) {
   state.localMessageCounter += 1;
@@ -239,7 +229,8 @@ function sendFrame(frame) {
   if (socketClient && socketClient.send(frame)) {
     return true;
   }
-  showToast('Not connected. Try again when the room is live.', true);
+  // The connection pill already reads Offline or Reconnecting, so the owner gets no toast.
+  console.warn('Not connected; frame not sent', frame);
   return false;
 }
 
@@ -640,7 +631,7 @@ function quoteMessage(message, authorName) {
 async function copyThread() {
   const persisted = state.messages.filter((message) => !message.isLocal);
   const copied = await AddaMarkdown.copyText(AddaMarkdown.toMarkdown(persisted, state.ownerName));
-  showToast(copied ? 'Thread copied as Markdown.' : 'Copy failed.', !copied);
+  showToast(copied ? 'Thread copied.' : 'Copy failed.', !copied);
 }
 
 // ----- scrolling -----
@@ -682,6 +673,9 @@ function describeQuietNotice() {
   if (state.quietReason === 'budget') {
     const room = state.room;
     return `Budget reached (${formatMoney(room.spent_usd)} of ${formatMoney(room.budget_usd)}). Raise it to continue.`;
+  }
+  if (state.quietReason === 'safety') {
+    return `Paused after ${state.maxAutoTurns} replies without you. Say something to continue.`;
   }
   if (!frame || typeof frame.next_tick_in_s !== 'number') return describeQuiet({ reason: state.quietReason });
   const elapsedSeconds = (Date.now() - state.quietReceivedAt) / 1000;
@@ -734,7 +728,7 @@ function renderPanel() {
   elements.maxConcurrent.disabled = isRoomArchived();
   renderRoomAccess(room);
   elements.livelinessValue.textContent = room.liveliness;
-  elements.livelinessSentence.textContent = describeLiveliness(room.liveliness, countAutomaticTurns());
+  elements.livelinessSentence.textContent = describeLiveliness(room.liveliness);
   if (document.activeElement !== elements.budget) elements.budget.value = room.budget_usd;
   elements.spendText.textContent = `${formatMoney(room.spent_usd)} used`;
   for (const radio of elements.modeOptions.querySelectorAll('input[name="mode"]')) {
@@ -757,8 +751,10 @@ function renderRoomAccess(room) {
 }
 
 function renderRouterName() {
-  const names = { jev: 'Router: Jev', heuristic: 'Router: heuristic fallback' };
-  elements.routerName.textContent = names[state.router] || 'Router: waiting for the first bid';
+  // Only the fallback is worth a line: it explains why turn-taking feels different.
+  const isSimple = state.router === 'heuristic';
+  elements.routerName.textContent = isSimple ? 'Simple turn-taking (no network)' : '';
+  elements.routerName.hidden = !isSimple;
 }
 
 function sendRoomPatch(patch) {
@@ -859,8 +855,10 @@ function renderSeats(forceEditorSync = false) {
     references.programText.textContent = `${seat.program} · ${seat.model || 'default model'}`;
     references.meter.setAttribute('aria-valuenow', bid ? String(bid.score) : '0');
     references.scoreText.textContent = bid ? bid.score.toFixed(1) : '–';
-    const roundLabel = state.lastBidsKind === 'afterthought' ? 'Afterthought round. ' : '';
-    references.scoreText.title = bid ? `${roundLabel}Jev scored ${bid.rawScore.toFixed(1)}; with eagerness ${seat.eagerness} the bid is ${bid.score.toFixed(1)}` : 'No bid yet';
+    const roundLabel = state.lastBidsKind === 'afterthought' ? 'Afterthought. ' : '';
+    references.scoreText.title = bid
+      ? `${roundLabel}Urge to speak ${bid.score.toFixed(1)}, ${bid.rawScore.toFixed(1)} before eagerness ${seat.eagerness}`
+      : 'Quiet';
     references.eagernessText.textContent = `eagerness ${seat.eagerness}`;
     references.eagernessText.title = describeEagerness(seat.eagerness);
     references.statusText.textContent = describeSeatState(seat, seatState);
@@ -907,7 +905,7 @@ function buildSeatCards() {
 
     const meter = createElement('div', 'seat-meter');
     meter.setAttribute('role', 'meter');
-    meter.setAttribute('aria-label', `${seat.name}'s last bid`);
+    meter.setAttribute('aria-label', `${seat.name}'s urge to speak`);
     meter.setAttribute('aria-valuemin', '0');
     meter.setAttribute('aria-valuemax', String(MAX_BID_SCORE));
     meter.append(createElement('span', 'seat-meter-fill'), createElement('span', 'seat-meter-threshold'));
@@ -981,7 +979,7 @@ function buildSeatEditor(seat) {
   const modelInput = document.createElement('input');
   modelInput.type = 'text';
   modelInput.setAttribute('list', datalist.id);
-  modelInput.placeholder = harness && harness.default_model ? `default: ${harness.default_model}` : 'harness default';
+  modelInput.placeholder = harness && harness.default_model ? `default: ${harness.default_model}` : 'Default';
   modelInput.addEventListener('change', () => sendSeatPatch(seat.id, { model: modelInput.value.trim() || null }));
 
   const thinkingSelect = document.createElement('select');
@@ -1074,7 +1072,7 @@ function syncSeatEditor(seat, fields, force) {
   fields.instruction.card.hidden = !showInstruction;
   fields.instructionToggle.hidden = mustShowInstruction;
   fields.instructionToggle.textContent = showInstruction ? 'Hide instruction' : 'Add instruction';
-  fields.programNote.textContent = `Harness: ${seat.program}${seat.harness_version ? ' ' + seat.harness_version : ''}. Edits apply on the next turn.`;
+  fields.programNote.textContent = `Agent: ${seat.program}${seat.harness_version ? ' ' + seat.harness_version : ''}. Edits apply from the next reply.`;
 }
 
 async function removeSeat(seatId) {
@@ -1120,7 +1118,7 @@ function buildAddSeatForm() {
     const harness = findHarness(state.harnesses, harnessSelect.value);
     fillDatalist(datalist, harness);
     fillThinkingSelect(thinkingSelect, harness, 'default');
-    modelInput.placeholder = harness && harness.default_model ? `default: ${harness.default_model}` : 'harness default';
+    modelInput.placeholder = harness && harness.default_model ? `default: ${harness.default_model}` : 'Default';
   };
   harnessSelect.addEventListener('change', refreshForHarness);
   refreshForHarness();
@@ -1135,12 +1133,12 @@ function buildAddSeatForm() {
 
   form.append(
     labelledField('Name', nameInput),
-    labelledField('Harness', harnessSelect),
+    labelledField('Agent', harnessSelect),
     labelledField('Model', modelInput),
     datalist,
     labelledField('Thinking', thinkingSelect),
     labelledField('Persona', personaSelect),
-    labelledField('Custom instruction', instruction.card),
+    labelledField('Instruction', instruction.card),
     labelledField('Colour', colorInput),
     labelledField('Eagerness', eagerness.element, eagerness.input),
     actions,
@@ -1215,11 +1213,9 @@ function renderComposerState() {
   elements.stopButton.disabled = !seatIsComposing;
   elements.endButton.disabled = ended || !connected || state.endRequested || state.room === null;
   if (isRoomArchived()) {
-    elements.composerHint.textContent = 'This room is archived. Its threads can be read, not continued.';
+    elements.composerHint.textContent = 'This room is archived.';
   } else if (ended) {
-    elements.composerHint.textContent = 'This thread has ended. Start a new thread to go on.';
-  } else if (!connected) {
-    elements.composerHint.textContent = "Not connected. Messages can't be sent.";
+    elements.composerHint.textContent = 'This thread has ended.';
   } else {
     elements.composerHint.textContent = defaultComposerHint;
   }
@@ -1279,7 +1275,7 @@ function buildMentionCandidates() {
       key: 'all',
       insert: '@all',
       label: '@all',
-      description: `every seat answers, in roster order · ${enabledCount} ${enabledCount === 1 ? 'turn' : 'turns'}`,
+      description: `every seat replies, in order · ${enabledCount} ${enabledCount === 1 ? 'reply' : 'replies'}`,
       color: null,
     },
   ];
@@ -1644,7 +1640,7 @@ function renderThreadList() {
   }
   elements.threadNewTitle.disabled = isRoomArchived();
   elements.threadNewButton.disabled = isRoomArchived();
-  elements.threadNewTitle.placeholder = isRoomArchived() ? 'This room is archived' : 'Title of a new thread';
+  elements.threadNewTitle.placeholder = isRoomArchived() ? 'This room is archived' : 'New thread title';
 }
 
 /** Forget everything that belongs to the previous thread; the room and the libraries stay. */
@@ -1837,7 +1833,7 @@ function openMemoryDrawer() {
 function renderMemoryTabs() {
   elements.memoryTabs.replaceChildren();
   const tabs = seatsOfRoom().map((seat) => ({ key: seat.id, label: seat.name, color: seat.color }));
-  tabs.push({ key: THIS_ROOM_TAB, label: 'This room', color: null });
+  tabs.push({ key: THIS_ROOM_TAB, label: 'Room', color: null });
   for (const tab of tabs) {
     const selected = tab.key === state.memoryTab;
     const button = createButton('', 'btn memory-tab', () => selectMemoryTab(tab.key, true));
@@ -1912,15 +1908,15 @@ function renderMemoryPanel() {
   const panel = elements.memoryPanel;
   panel.replaceChildren();
   if (view.kind === 'none') {
-    panel.append(createElement('p', 'memory-empty', `${view.seat.name} has no persona, so no memory.`));
+    panel.append(createElement('p', 'memory-empty', `${view.seat.name} has no persona.`));
     return;
   }
   if (view.kind === 'persona') {
     const persona = personaBySlug(view.slug);
     const countWord = view.notes.length === 1 ? 'note' : 'notes';
     const personaName = persona ? `${persona.name} · ${persona.role}` : view.slug;
-    panel.append(createElement('p', 'hint', `${view.seat.name} speaks as ${personaName} · ${view.notes.length} ${countWord}, newest first`));
-    if (view.notes.length === 0) panel.append(createElement('p', 'memory-empty', 'No notes yet. Notes are written when a thread ends.'));
+    panel.append(createElement('p', 'hint', `${view.seat.name} as ${personaName} · ${view.notes.length} ${countWord}`));
+    if (view.notes.length === 0) panel.append(createElement('p', 'memory-empty', 'No notes yet.'));
     for (const note of view.notes) panel.append(createNoteElement(view.slug, note));
     return;
   }
@@ -1931,7 +1927,7 @@ function renderMemoryPanel() {
 function renderRoomMemoryGroups(panel, grouped) {
   const slugs = Object.keys(grouped).filter((slug) => grouped[slug].length > 0);
   if (slugs.length === 0) {
-    panel.append(createElement('p', 'memory-empty', 'No notes were written from this room yet. Notes are written when a thread ends.'));
+    panel.append(createElement('p', 'memory-empty', 'No notes from this room yet.'));
     return;
   }
   for (const slug of slugs) {
@@ -2051,9 +2047,7 @@ async function saveNote(slug, note, title, body, saveButton) {
 }
 
 async function deleteNote(slug, note) {
-  const persona = personaBySlug(slug);
-  const owner = persona ? `${persona.name}'s` : 'this persona’s';
-  if (!confirm(`Delete “${note.title}” from ${owner} memory? This removes the note file.`)) return;
+  if (!confirm(`Delete the note “${note.title}”?`)) return;
   try {
     await fetchJson(noteEndpoint(slug, note), { method: 'DELETE' });
     removeNoteFromView(slug, note);
@@ -2117,7 +2111,7 @@ function bindEvents() {
   elements.liveliness.addEventListener('input', () => {
     const value = Number(elements.liveliness.value);
     elements.livelinessValue.textContent = value;
-    elements.livelinessSentence.textContent = describeLiveliness(value, countAutomaticTurns());
+    elements.livelinessSentence.textContent = describeLiveliness(value);
   });
   elements.maxConcurrent.addEventListener('change', () => sendRoomPatch({ max_concurrent: Number(elements.maxConcurrent.value) }));
   fillAccessSelect(elements.access, 'talk');
@@ -2174,8 +2168,9 @@ async function loadLibraries() {
     state.harnesses = harnesses;
     state.personas = personas;
     state.cooldownSeconds = settings.room_defaults.cooldown_s;
+    state.maxAutoTurns = settings.room_defaults.max_auto_turns;
   } catch (error) {
-    reportError('Could not load harnesses and personas', error);
+    reportError('Could not load agents and personas', error);
   }
 }
 
@@ -2213,7 +2208,7 @@ async function chooseStartingThread() {
     return requestedThreadId;
   }
   if (requestedThreadId) {
-    showToast('That thread is not in this room; opening the newest one.', true);
+    showToast('Opened the newest thread.');
   }
   const newestOpen = state.threads.find((thread) => !thread.ended_at);
   const fallback = newestOpen || state.threads[0];
@@ -2225,7 +2220,7 @@ function showNoThreads() {
   renderThreadList();
   renderPanel();
   renderSeats(true);
-  elements.messageList.replaceChildren(createElement('li', 'msg msg--system', 'This room has no thread yet. Start one with New thread.'));
+  elements.messageList.replaceChildren(createElement('li', 'msg msg--system', 'No thread yet.'));
 }
 
 start();

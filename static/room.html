@@ -4,17 +4,17 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light dark">
-  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v=1.2">
-  <link rel="stylesheet" href="/static/style.css?v=1.2">
-  <link rel="stylesheet" href="/static/room.css?v=1.2">
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v=1.3">
+  <link rel="stylesheet" href="/static/style.css?v=1.3">
+  <link rel="stylesheet" href="/static/room.css?v=1.3">
   <title>Room · Adda</title>
-  <script src="/static/common.js?v=1.2" defer></script>
-  <script src="/static/markdown.js?v=1.2" defer></script>
-  <script src="/static/room.js?v=1.2" defer></script>
+  <script src="/static/common.js?v=1.3" defer></script>
+  <script src="/static/markdown.js?v=1.3" defer></script>
+  <script src="/static/room.js?v=1.3" defer></script>
 </head>
 <body class="page-room">
   <header class="top">
-    <a class="brand" href="/"><img class="brand-mark" src="/static/logo.svg?v=1.2" width="28" height="28" alt="">Adda <small lang="bn">আড্ডা</small></a>
+    <a class="brand" href="/"><img class="brand-mark" src="/static/logo.svg?v=1.3" width="28" height="28" alt="">Adda <small lang="bn">আড্ডা</small></a>
     <nav aria-label="Pages">
       <a href="/">Rooms</a>
       <a href="/settings">Settings</a>
@@ -26,12 +26,11 @@
     <nav class="threads" id="threads" aria-label="Threads in this room">
       <h2 class="threads-title">Threads</h2>
       <form class="thread-new" id="thread-new-form">
-        <label class="visually-hidden" for="thread-new-title">Title of the new thread</label>
-        <input type="text" id="thread-new-title" placeholder="Title of a new thread" maxlength="200" autocomplete="off" required>
+        <label class="visually-hidden" for="thread-new-title">New thread title</label>
+        <input type="text" id="thread-new-title" placeholder="New thread title" maxlength="200" autocomplete="off" required>
         <button class="btn" id="thread-new-button" type="submit">New thread</button>
       </form>
       <ol class="thread-list" id="thread-list"></ol>
-      <p class="hint thread-hint">Double-click a title to rename it.</p>
     </nav>
 
     <main class="chat">
@@ -57,11 +56,11 @@
         <form class="composer" id="composer">
           <ul class="menu mention-menu" id="mention-menu" role="listbox" aria-label="Mention a seat" hidden></ul>
           <label class="visually-hidden" for="composer-input">Message</label>
-          <textarea id="composer-input" rows="1" placeholder="Say something. @all wakes every seat; @name wakes one." autocomplete="off"
+          <textarea id="composer-input" rows="1" placeholder="Write a message. @name or @all calls a seat." autocomplete="off"
             role="combobox" aria-autocomplete="list" aria-controls="mention-menu" aria-expanded="false"></textarea>
           <button class="btn" id="stop-button" type="button" hidden>Stop</button>
           <button class="btn btn--primary" id="send-button" type="submit">Send</button>
-          <p class="hint composer-hint" id="composer-hint">Enter sends · Shift+Enter new line · Esc stops · Markdown is rendered</p>
+          <p class="hint composer-hint" id="composer-hint">Enter to send, Shift+Enter for a new line</p>
         </form>
       </div>
     </main>
@@ -71,16 +70,16 @@
         <h2>Seats</h2>
         <p class="hint" id="router-name"></p>
         <div class="seat-list" id="seat-list"></div>
-        <button class="btn" id="add-seat-button" type="button">Add a seat</button>
+        <button class="btn" id="add-seat-button" type="button">Add seat</button>
         <form id="add-seat-form" class="seat-editor" hidden></form>
       </section>
 
       <section class="side-section">
         <fieldset class="mode-options" id="mode-options">
-          <legend>Mode</legend>
-          <label><input type="radio" name="mode" value="bidding"> Bidding</label>
-          <label><input type="radio" name="mode" value="roundrobin"> Round-robin</label>
-          <label><input type="radio" name="mode" value="manual"> Manual</label>
+          <legend>Speaking order</legend>
+          <label><input type="radio" name="mode" value="bidding"> Automatic</label>
+          <label><input type="radio" name="mode" value="roundrobin"> Take turns</label>
+          <label><input type="radio" name="mode" value="manual"> Only when mentioned</label>
         </fieldset>
       </section>
 
@@ -100,14 +99,13 @@
       <details class="side-section side-settings">
         <summary>Settings</summary>
         <div class="field">
-          <label for="max-concurrent-select">Voices at once</label>
+          <label for="max-concurrent-select">Seats replying at once</label>
           <select id="max-concurrent-select">
             <option value="1">1</option>
             <option value="2">2</option>
             <option value="3">3</option>
             <option value="4">4</option>
           </select>
-          <p class="hint">How many seats may write a reply at the same time.</p>
         </div>
         <div class="field">
           <label for="access-select">Access</label>
@@ -121,7 +119,7 @@
             <input type="number" id="budget-input" min="0" step="0.25">
             <span class="small mute" id="spend-text"></span>
           </div>
-          <p class="hint">USD. 0 means unlimited.</p>
+          <p class="hint">In dollars. 0 means no limit.</p>
         </div>
         <div class="field">
           <span class="field-label">Folder</span>
@@ -131,12 +129,12 @@
       </details>
 
       <section class="side-section side-thread">
-        <h2>This thread</h2>
+        <h2>Thread</h2>
         <p class="hint room-meta"><span id="room-meta"></span><span id="room-state"></span></p>
         <button class="btn threads-toggle" id="threads-toggle" type="button" aria-controls="threads" aria-expanded="false">Show threads</button>
-        <button class="btn" id="copy-thread-button" type="button">Copy thread as Markdown</button>
+        <button class="btn" id="copy-thread-button" type="button">Copy thread</button>
         <button class="btn" id="memory-button" type="button" aria-haspopup="dialog">Memory</button>
-        <button class="btn btn--warning" id="end-button" type="button">End discussion</button>
+        <button class="btn btn--warning" id="end-button" type="button">End thread</button>
       </section>
     </aside>
   </div>
@@ -148,7 +146,6 @@
       <h2 id="memory-title">Memory</h2>
       <button class="btn" id="memory-close-button" type="button">Close</button>
     </div>
-    <p class="hint">What each persona remembers between threads. Notes are written when a thread ends.</p>
     <div class="memory-tabs" id="memory-tabs" role="tablist" aria-label="Whose memory"></div>
     <div class="memory-panel" id="memory-panel" role="tabpanel"></div>
   </dialog>

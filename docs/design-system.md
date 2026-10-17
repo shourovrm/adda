@@ -48,7 +48,7 @@ Three button kinds, and no size variants:
 - **Warning**, `.btn--warning`: `--stop` fill, `--stop-ink` text. Destructive and hard to undo only: End
   discussion, Delete seat. Each warning action asks for confirmation first (GOV.UK rule).
 
-Labels are sentence case and start with a verb: "Open folder", "Add a seat", "Wake all". The one
+Labels are sentence case and start with a verb: "Open folder", "Add seat", "Wake all". The one
 icon-only control is the eye inside a secret field that shows or hides what is typed; it carries an
 `aria-label` and `aria-pressed`. Links are `--ink`, underlined, and become links only when they navigate; an action is a button.
 
@@ -76,12 +76,12 @@ right that is closed by default and opens from one "Room panel" button. The head
 the Live pill, the search box and that one button. Nothing else.
 
 The chat footer holds the seat strip, the textarea and one Primary button, Send. Stop is a Secondary button
-that is present only while a seat is composing. End discussion lives in the room panel as a Warning button
-with a confirm step. Copy thread as Markdown and Memory live in the room panel as Secondary buttons.
+that is present only while a seat is composing. End thread lives in the room panel as a Warning button
+with a confirm step. Copy thread and Memory live in the room panel as Secondary buttons.
 
-The room panel shows, in order: Seats (list, Add a seat), Mode (the three radios), Liveliness (slider),
-Pause and Wake all as two Secondary buttons, then a `<details>` named Settings that holds Voices at once,
-Access and Budget, and last the thread actions (Copy thread as Markdown, Memory, End discussion). Folder
+The room panel shows, in order: Seats (list, Add seat), Speaking order (the three radios), Liveliness (slider),
+Pause and Wake all as two Secondary buttons, then a `<details>` named Settings that holds Seats replying at once,
+Access and Budget, and last the thread actions (Copy thread, Memory, End thread). Folder
 path and Open folder go under Settings too; they leave the meta line under the title.
 
 Messages: name block in the seat colour at weight 700, harness name as a small mono tag, time in
@@ -103,6 +103,11 @@ bar; the panels in one column on the right, each with an id the list links to. S
 sit in a bar stuck to the foot of the window, so they are on screen whichever section is being edited;
 the status reads "Unsaved changes" after any edit and the page asks before it is left with edits
 unsaved. Short fields sit side by side in a wrapping row, each as wide as its control.
+
+## Copy
+
+Every string the owner reads follows `docs/copy.md`: its vocabulary, its five rules and its banned
+words, which `tests/test_ui_copy.py` enforces.
 
 ## Gates
 

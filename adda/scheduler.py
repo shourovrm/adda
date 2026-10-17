@@ -344,7 +344,7 @@ class Scheduler:
         if "title" in patch:
             title = str(patch["title"]).strip()
             if not title:
-                raise ValueError("title must not be empty")
+                raise ValueError("The title is empty.")
             fields["title"] = title
         if "mode" in patch:
             if patch["mode"] not in MODES:
@@ -457,7 +457,7 @@ class Scheduler:
         room = self._require_open_room()
         seat = self._require_seat(seat_id)
         if not seat.enabled:
-            raise ValueError(f"seat {seat.name} is disabled")
+            raise ValueError(f"{seat.name} is disabled.")
         self._refuse_when_over_budget(room)
         self._reset_turn_counters()
         self._cancel_afterthought()
@@ -470,7 +470,7 @@ class Scheduler:
         room = self.current_room()
         seat_ids = [seat.id for seat in room.seats if seat.enabled and seat.available]
         if not seat_ids:
-            raise ValueError("no enabled seat is available to wake")
+            raise ValueError("No seat can be woken.")
         self._reset_turn_counters()
         self._cancel_afterthought()
         for seat_id in seat_ids:
@@ -515,7 +515,7 @@ class Scheduler:
             try:
                 persona = load_persona(self.settings.personas_dir, seat.persona)
             except PersonaError as error:
-                await self._post_system(f"Memory notes for {seat.name} not written: {error}")
+                await self._post_system(f"{seat.name}'s notes were not written. {error}")
                 continue
             notes[seat_id] = await self._collect_memory_notes(seat, persona, room, messages)
 
@@ -568,7 +568,9 @@ class Scheduler:
         except Exception as error:
             # Nobody awaits these tasks, so report here instead of losing the error.
             logger.exception("turn-taking failed in thread %s", self.thread_id)
-            await self.broadcast({"type": "error", "text": f"turn-taking failed: {error}"})
+            await self.broadcast(
+                {"type": "error", "text": f"Could not pick the next speaker. {error}"}
+            )
 
     def _start_seat(
         self,
@@ -606,7 +608,9 @@ class Scheduler:
             raise
         except Exception as error:
             logger.exception("seat turn failed in thread %s", self.thread_id)
-            await self.broadcast({"type": "error", "text": f"turn-taking failed: {error}"})
+            await self.broadcast(
+                {"type": "error", "text": f"Could not pick the next speaker. {error}"}
+            )
         finally:
             if self.speaking.get(seat_id) is asyncio.current_task():
                 del self.speaking[seat_id]
@@ -930,7 +934,7 @@ class Scheduler:
             if not self.router_failure_reported:
                 self.router_failure_reported = True
                 await self._post_system(
-                    f"Router {router.name} failed ({error}); using {self.fallback_router.name}."
+                    f"The turn-taking service is unavailable ({error}). Using simple turn-taking."
                 )
             router = self.fallback_router
             return router, await router.bids(transcript, bidders, library, question_kind)
@@ -948,12 +952,12 @@ class Scheduler:
             return None, False  # removed or disabled after it was queued
         adapter = self.adapters[seat.id]
         if not seat.available:
-            await self._post_system(f"Seat {seat.name}: program {seat.program} not found.")
+            await self._post_system(f"{seat.name} cannot reply: {seat.program} is not installed.")
             return None, False
         try:
             persona = self._persona_for(seat)
         except PersonaError as error:
-            await self._post_system(f"Seat {seat.name}: {error}")
+            await self._post_system(f"{seat.name} cannot reply: {error}")
             return None, False
 
         # The prompt holds what the seat has not seen at the moment it starts; replies posted
@@ -986,7 +990,7 @@ class Scheduler:
                 prompt, seat_system_prompt, session_id, self.settings.seat_timeout_s
             )
         except SeatError as error:
-            await self._post_system(f"Seat {seat.name} failed: {error.detail}")
+            await self._post_system(f"{seat.name} could not reply. {error.detail}")
             return None, False
         finally:
             self.last_spoke_at[seat.id] = self.clock()
@@ -1078,7 +1082,7 @@ class Scheduler:
                 self.settings.seat_timeout_s,
             )
         except SeatError as error:
-            await self._post_system(f"Memory notes for {seat.name} not written: {error.detail}")
+            await self._post_system(f"{seat.name}'s notes were not written. {error.detail}")
             return []
         finally:
             await self.broadcast({"type": "typing", "seat": seat.id, "state": "stop"})

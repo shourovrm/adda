@@ -104,11 +104,9 @@ function collectSettings() {
 function markEnvOverrides() {
   const overridden = overriddenPaths();
   for (const field of fieldElements()) {
-    const label = field.id ? document.querySelector(`label[for="${field.id}"]`) : null;
-    if (!overridden.has(field.dataset.path) || !label || label.querySelector('.tag--env')) continue;
-    const badge = createElement('span', 'pill pill--mute', 'env');
-    badge.title = 'A shell variable is set and overrides this value.';
-    label.append(' ', badge);
+    const wrapper = field.closest('.field');
+    if (!overridden.has(field.dataset.path) || !wrapper || wrapper.querySelector('.env-hint')) continue;
+    wrapper.append(createElement('div', 'hint env-hint', 'Set by your shell'));
   }
 }
 
@@ -122,13 +120,13 @@ function renderKeyFields() {
     const isSet = Boolean((state.settings.keys || {})[keyField.name]);
     const wrapper = createElement('div', 'field');
     const label = createElement('label', '', keyField.label + ' ');
-    label.append(createElement('span', isSet ? 'pill pill--good' : 'pill pill--bad', isSet ? 'set' : 'not set'));
+    label.append(createElement('span', isSet ? 'pill pill--good' : 'pill pill--bad', isSet ? 'Set' : 'Not set'));
     const input = document.createElement('input');
     input.type = 'password';
     input.autocomplete = 'off';
     input.id = `key-${keyField.name}`;
     input.dataset.key = keyField.name;
-    input.placeholder = isSet ? 'set; paste a new key to replace it' : 'paste to set';
+    input.placeholder = isSet ? 'Paste a new key to replace it' : 'Paste a key';
     label.htmlFor = input.id;
     // The eye reveals only what is typed now; saved keys never come back from the server.
     const toggle = createElement('button', 'field-eye');
@@ -155,15 +153,16 @@ function createHarnessRow(harness) {
   const program = harness.program;
   const row = createElement('tr');
 
-  // Name, where it was found and how it logs in share one cell so the model field gets the width.
+  // Name, where it was found and how to set it up share one cell so the model field gets the width.
   const nameCell = createElement('td');
   nameCell.append(createElement('b', '', program), createElement('br'));
   if (harness.found) {
     nameCell.append(createElement('span', 'small mute', `${harness.version || 'unknown version'} · ${harness.path}`));
   } else {
-    nameCell.append(createElement('span', 'pill pill--bad', 'not on PATH'));
+    // An installed agent needs no instruction; Adda cannot tell whether it is signed in.
+    nameCell.append(createElement('span', 'pill pill--bad', 'Not installed'));
+    nameCell.append(createElement('br'), createElement('span', 'small', plainLoginHint(harness.login_hint)));
   }
-  nameCell.append(createElement('br'), createElement('span', 'small', harness.login_hint));
 
   const modelInput = document.createElement('input');
   modelInput.type = 'text';
@@ -188,7 +187,7 @@ function createHarnessRow(harness) {
 
   row.append(
     nameCell,
-    wrapCell('Default model', modelInput, datalist),
+    wrapCell('Model', modelInput, datalist),
     wrapCell('Thinking', thinkingSelect),
     wrapCell('On', enabledInput),
   );
@@ -248,9 +247,9 @@ async function rescanHarnesses() {
   try {
     state.harnesses = await fetchJson('/api/harnesses');
     renderHarnessRows();
-    showToast('Harnesses scanned again.');
+    showToast('Agents checked.');
   } catch (error) {
-    reportError('Could not re-scan', error);
+    reportError('Could not check the agents', error);
   }
 }
 

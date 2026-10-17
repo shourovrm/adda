@@ -160,10 +160,6 @@ body.page-room.show-panel .side {
   font-weight: 600;
 }
 
-.thread-hint {
-  margin: 0;
-  padding: var(--space-2) var(--space-3) var(--space-3);
-}
 
 /* ---------- Chat header ---------- */
 
