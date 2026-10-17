@@ -53,7 +53,6 @@
 
   /* Layout widths: page files may not write raw px, so every width they need is named here. */
   --measure: 72ch; /* longest comfortable line of running text */
-  --page-width: 960px; /* widest column of a list page (rooms, settings) */
   --menu-width: 360px; /* floating list: mention menu, search results */
   --toast-width: 420px; /* widest toast */
   --dialog-width: 640px; /* widest dialog */

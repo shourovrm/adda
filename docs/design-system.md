@@ -24,7 +24,11 @@ only on headings, as `--display-tracking`.
 
 The spacing scale is GOV.UK's: 5, 10, 15, 20, 30, 40px, as `--space-1` to `--space-6`. Padding, margin and
 gap take a token or 0. Inside a component the gap between a label and its control is `--space-1`; between
-fields `--space-4`; between sections `--space-6`. Page gutter is `--space-5`. Text measure is at most 72ch.
+fields `--space-4`; between sections `--space-6`. Page gutter is `--space-5`.
+
+Adda is a desktop app. Every page fills the window and only the gutter is fixed; no page centres a
+narrow column. Intro paragraphs and hints may cap at `--measure` (72ch); messages, cards and tables do
+not. Phone widths only have to stay usable.
 
 ## Controls
 
@@ -72,11 +76,13 @@ Access and Budget, and last the thread actions (Copy thread as Markdown, Memory,
 path and Open folder go under Settings too; they leave the meta line under the title.
 
 Messages: name in seat colour at weight 600, time in `--text-small` and `--mute` on the same line, body
-below, `--space-4` between messages, no avatar column. The owner's messages use the same shape.
+below, `--space-4` between messages, no avatar column, full width of the chat column. The owner's
+messages use the same shape.
 
 ## Layout of the rooms page
 
-One column of room cards, each with the title, a status pill, the seat names, and one meta line in
+A grid of room cards, as many columns as fit at 440px minimum, each with the title, a status pill, the
+seat names, and one meta line in
 `--text-small` (threads, messages, spent of budget). Folder paths and Open folder are not on the card. The
 "Harnesses on this machine" panel lists each program with a status pill; its instruction text is `--ink`.
 

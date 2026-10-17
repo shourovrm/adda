@@ -3,11 +3,14 @@
   is the room cards, the new-room form and the folder chooser. Sizes and colours are tokens only.
 */
 
+body {
+  --room-card-min: calc(var(--space-6) * 11);
+}
+
 /* ---------- Page layout (identical in settings.css) ---------- */
 
+/* Adda is a desktop app: the page fills the window and only the gutter is fixed. */
 .page {
-  max-width: var(--page-width);
-  margin: 0 auto;
   padding: 0 var(--space-5) var(--space-6);
 }
 
@@ -49,9 +52,17 @@
 
 /* ---------- Room cards ---------- */
 
+/* Cards flow into as many columns as fit, so a wide window shows more rooms, not wider cards. */
 #room-list {
   display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(var(--room-card-min), 1fr));
   gap: var(--space-4);
+}
+
+/* The "Showing N of M" line is a grid child too; it takes a full row under the cards. */
+#room-list > p {
+  grid-column: 1 / -1;
+  margin: 0;
 }
 
 .room-card {

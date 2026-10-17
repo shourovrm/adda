@@ -251,7 +251,6 @@ a.search-result:hover {
   position: relative;
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  max-width: var(--measure);
   padding-left: var(--space-3);
   border-left: 3px solid var(--seat, var(--mute));
 }

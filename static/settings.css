@@ -1,7 +1,8 @@
 /* Settings page. Shared controls, pills and tokens come from style.css. */
 
 /* Page layout shared with rooms.css: one column of panels. */
-.page { max-width: var(--page-width); margin: 0 auto; padding: 0 var(--space-5) var(--space-6); }
+/* Adda is a desktop app: the page fills the window and only the gutter is fixed. */
+.page { padding: 0 var(--space-5) var(--space-6); }
 .page-head { margin: var(--space-5) 0 var(--space-6); }
 .page-head p { max-width: var(--measure); margin: var(--space-2) 0 0; color: var(--mute); }
 .panel { background: var(--panel); padding: var(--space-5); }
