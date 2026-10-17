@@ -42,6 +42,19 @@
   --font-code: "IBM Plex Mono", ui-monospace, "DejaVu Sans Mono", monospace; /* taste-skill-ignore: real code only */
   --display-tracking: -0.02em;
 
+  /* Scale from docs/design-system.md: four text sizes, GOV.UK's six spacings, one control height. */
+  --text-small: 13px;
+  --text-body: 16px;
+  --text-title: 20px;
+  --text-page: 28px;
+  --space-1: 5px;
+  --space-2: 10px;
+  --space-3: 15px;
+  --space-4: 20px;
+  --space-5: 30px;
+  --space-6: 40px;
+  --control-height: 40px;
+
   --ground: #eff0f1;
   --panel: #e3e4e6;
   --card: #f8f8f9;
