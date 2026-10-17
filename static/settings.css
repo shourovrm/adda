@@ -75,6 +75,18 @@ body {
   flex: 1 1 auto;
 }
 
+/* One key per line: the input is as wide as a provider key, with Show/Hide beside it. */
+.key-row {
+  display: flex;
+  gap: var(--space-2);
+}
+
+.key-row input {
+  flex: 0 1 auto;
+  width: 100%;
+  max-width: 64ch;
+}
+
 /* The last field of a panel needs no gap below it, the panel padding does that. */
 .panel > .field:last-child,
 .panel > .field-row:last-child > .field {

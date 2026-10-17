@@ -4,16 +4,16 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light dark">
-  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v=1.0">
-  <link rel="stylesheet" href="/static/style.css?v=1.0">
-  <link rel="stylesheet" href="/static/settings.css?v=1.0">
+  <link rel="icon" type="image/svg+xml" href="/static/favicon.svg?v=1.1">
+  <link rel="stylesheet" href="/static/style.css?v=1.1">
+  <link rel="stylesheet" href="/static/settings.css?v=1.1">
   <title>Settings · Adda</title>
-  <script src="/static/common.js?v=1.0" defer></script>
-  <script src="/static/settings.js?v=1.0" defer></script>
+  <script src="/static/common.js?v=1.1" defer></script>
+  <script src="/static/settings.js?v=1.1" defer></script>
 </head>
 <body>
   <header class="top">
-    <a class="brand" href="/"><img class="brand-mark" src="/static/logo.svg?v=1.0" width="28" height="28" alt="">Adda <small lang="bn">আড্ডা</small></a>
+    <a class="brand" href="/"><img class="brand-mark" src="/static/logo.svg?v=1.1" width="28" height="28" alt="">Adda <small lang="bn">আড্ডা</small></a>
     <nav aria-label="Pages">
       <a href="/">Rooms</a>
       <a href="/settings" aria-current="page">Settings</a>
@@ -98,8 +98,8 @@
             <input class="input--30" type="text" id="router-model-input" data-path="router.model" placeholder="provider default">
           </div>
         </div>
-        <div class="field-row" id="key-fields"></div>
-        <p class="panel-note">Keys are stored in <code>~/.config/adda/keys.env</code> with mode 600 and never shown again. Nothing here accepts an Anthropic key.</p>
+        <div id="key-fields"></div>
+        <p class="panel-note">A pasted key is saved by the Save button with everything else, into <code>~/.config/adda/keys.env</code> with mode 600, and never shown again. Nothing here accepts an Anthropic key.</p>
         <div class="field-row">
           <div class="field">
             <label for="floor-input">Lowest score that may speak</label>

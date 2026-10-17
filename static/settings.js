@@ -118,13 +118,23 @@ function renderKeyFields() {
     label.append(createElement('span', isSet ? 'pill pill--good' : 'pill pill--bad', isSet ? 'set' : 'not set'));
     const input = document.createElement('input');
     input.type = 'password';
-    input.className = 'input--30';
     input.autocomplete = 'off';
     input.id = `key-${keyField.name}`;
     input.dataset.key = keyField.name;
     input.placeholder = isSet ? 'set; paste a new key to replace it' : 'paste to set';
     label.htmlFor = input.id;
-    wrapper.append(label, input);
+    // Show/Hide reveals only what is typed now; saved keys never come back from the server.
+    const toggle = createButton('Show', 'btn', () => {
+      const revealing = input.type === 'password';
+      input.type = revealing ? 'text' : 'password';
+      toggle.textContent = revealing ? 'Hide' : 'Show';
+      toggle.setAttribute('aria-pressed', String(revealing));
+    });
+    toggle.setAttribute('aria-pressed', 'false');
+    toggle.setAttribute('aria-controls', input.id);
+    const row = createElement('div', 'key-row');
+    row.append(input, toggle);
+    wrapper.append(label, row);
     elements.keyFields.append(wrapper);
   }
 }
