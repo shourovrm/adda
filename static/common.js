@@ -421,13 +421,87 @@ function fillHarnessSelect(select, harnesses, selectedProgram) {
   select.value = selectedProgram;
 }
 
-function fillDatalist(datalist, harness) {
-  datalist.replaceChildren();
-  for (const suggestion of harness ? harness.model_suggestions : []) {
-    const option = document.createElement('option');
-    option.value = suggestion;
-    datalist.append(option);
+/**
+ * The model picker: a select of the agent's models, where "Type a name" swaps in a text box for a
+ * model the list does not know. A datalist was used before, but the browser draws its suggestion
+ * popup itself, so it never matched the selects beside it. One control shows at a time and the
+ * label's id follows it. `onChange` gets the chosen model name, '' for the agent's default.
+ */
+function createModelField(harness, onChange) {
+  const TYPE_A_NAME = '\u0000type-a-name';
+  const element = createElement('div', 'model-field');
+  const select = document.createElement('select');
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.placeholder = 'Model name';
+  input.hidden = true;
+  element.append(select, input);
+  let suggestions = [];
+
+  function show(control) {
+    const id = select.id || input.id;
+    select.hidden = control !== select;
+    input.hidden = control !== input;
+    select.removeAttribute('id');
+    input.removeAttribute('id');
+    if (id) control.id = id;
   }
+
+  function setHarness(nextHarness) {
+    suggestions = nextHarness ? nextHarness.model_suggestions : [];
+    const defaultModel = nextHarness ? nextHarness.default_model : null;
+    select.replaceChildren();
+    const defaultOption = createElement('option', '', defaultModel ? `Default (${defaultModel})` : 'Default');
+    defaultOption.value = '';
+    select.append(defaultOption);
+    for (const suggestion of suggestions) {
+      const option = createElement('option', '', suggestion);
+      option.value = suggestion;
+      select.append(option);
+    }
+    const typeOption = createElement('option', '', 'Type a name');
+    typeOption.value = TYPE_A_NAME;
+    select.append(typeOption);
+  }
+
+  function setValue(model) {
+    const value = model || '';
+    if (value === '' || suggestions.includes(value)) {
+      select.value = value;
+      show(select);
+    } else {
+      input.value = value;
+      show(input);
+    }
+  }
+
+  function value() {
+    return input.hidden ? select.value : input.value.trim();
+  }
+
+  function setDisabled(disabled) {
+    select.disabled = disabled;
+    input.disabled = disabled;
+  }
+
+  select.addEventListener('change', () => {
+    if (select.value === TYPE_A_NAME) {
+      input.value = '';
+      show(input);
+      input.focus();
+      return;
+    }
+    onChange(select.value);
+  });
+  input.addEventListener('change', () => {
+    const typed = input.value.trim();
+    // An emptied box means the default again, so the list comes back.
+    if (typed === '') setValue('');
+    onChange(typed);
+  });
+
+  setHarness(harness);
+  return { element, select, input, setHarness, setValue, value, setDisabled };
 }
 
 function fillThinkingSelect(select, harness, selectedThinking) {

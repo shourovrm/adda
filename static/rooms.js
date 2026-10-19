@@ -300,11 +300,11 @@ function renderSeatTable() {
 }
 
 /** A visible label tied to its control; ids only need to be unique among the rows on the page. */
-function createSeatField(row, fieldName, labelText, control) {
+function createSeatField(row, fieldName, labelText, control, labelTarget = control) {
   const field = createElement('div', 'field');
-  control.id = `seat-${row.key}-${fieldName}`;
+  labelTarget.id = `seat-${row.key}-${fieldName}`;
   const label = createElement('label', '', labelText);
-  label.htmlFor = control.id;
+  label.htmlFor = labelTarget.id;
   field.append(label, control);
   return field;
 }
@@ -338,17 +338,10 @@ function appendSeatRow(row) {
     renderSeatTable();
   });
 
-  const datalist = document.createElement('datalist');
-  datalist.id = `models-${row.key}`;
-  fillDatalist(datalist, harness);
-  const modelInput = document.createElement('input');
-  modelInput.type = 'text';
-  modelInput.setAttribute('list', datalist.id);
-  modelInput.placeholder = harness && harness.default_model ? `default: ${harness.default_model}` : 'Default';
-  modelInput.value = row.model;
-  modelInput.addEventListener('input', () => {
-    row.model = modelInput.value;
+  const modelField = createModelField(harness, (model) => {
+    row.model = model;
   });
+  modelField.setValue(row.model);
 
   const thinkingSelect = document.createElement('select');
   fillThinkingSelect(thinkingSelect, harness, row.thinking);
@@ -384,7 +377,7 @@ function appendSeatRow(row) {
     createSeatField(row, 'name', 'Name', nameInput),
     createSeatField(row, 'color', 'Colour', colorInput),
     createSeatField(row, 'harness', 'Agent', harnessSelect),
-    createSeatField(row, 'model', 'Model', modelInput),
+    createSeatField(row, 'model', 'Model', modelField.element, modelField.select),
     createSeatField(row, 'thinking', 'Thinking', thinkingSelect),
     createSeatField(row, 'persona', 'Persona', personaSelect),
     createSeatField(row, 'access', 'Access', accessSelect),
@@ -392,7 +385,6 @@ function appendSeatRow(row) {
   );
   // The eagerness sentence belongs to the slider, so it moves into the slider's field.
   fields.lastElementChild.append(eagerness.element.querySelector('.eagerness-sentence'));
-  fields.append(datalist);
 
   const actions = createElement('div', 'seat-actions');
   actions.append(

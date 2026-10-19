@@ -35,6 +35,8 @@ One control height, `--control-height: 40px`, for buttons, text inputs, selects,
 composer's single-line state. Controls use `--text-body`, horizontal padding `--space-3`, border-radius 0,
 no shadow. Text inputs, selects and textareas have a 2px solid `--ink` border (GOV.UK). Focus is a 3px solid
 `--ink` outline with 0 offset on every focusable element; no custom focus per component.
+No `datalist`: the browser draws its suggestion popup itself, so it never matches the selects beside it.
+A model is picked from a select whose last option, "Type a name", swaps in a text box (`createModelField`).
 
 A control is as wide as its longest expected answer, never as wide as its column (GOV.UK):
 `.input--10` for numbers, `.input--20` for names and short selects, `.input--30` for model names,

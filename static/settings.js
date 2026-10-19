@@ -170,16 +170,19 @@ function createHarnessRow(harness) {
     nameCell.append(createElement('br'), createElement('span', 'small', plainLoginHint(harness.login_hint)));
   }
 
-  const modelInput = document.createElement('input');
-  modelInput.type = 'text';
-  modelInput.className = 'input--30';
-  modelInput.dataset.path = `harness.${program}.model`;
-  modelInput.setAttribute('aria-label', `${program} default model`);
-  modelInput.disabled = !harness.found;
-  const datalist = document.createElement('datalist');
-  datalist.id = `settings-models-${program}`;
-  fillDatalist(datalist, harness);
-  modelInput.setAttribute('list', datalist.id);
+  // The picker is two controls, so a hidden input carries the data-path for fill and collect.
+  const modelValue = document.createElement('input');
+  modelValue.type = 'hidden';
+  modelValue.dataset.path = `harness.${program}.model`;
+  modelValue.disabled = !harness.found;
+  const modelField = createModelField(harness, (model) => {
+    modelValue.value = model;
+  });
+  modelField.element.classList.add('input--30');
+  modelField.select.setAttribute('aria-label', `${program} default model`);
+  modelField.input.setAttribute('aria-label', `${program} default model name`);
+  modelField.setDisabled(!harness.found);
+  modelField.setValue(readPath(state.settings, modelValue.dataset.path));
 
   const thinkingSelect = document.createElement('select');
   thinkingSelect.dataset.path = `harness.${program}.thinking`;
@@ -193,7 +196,7 @@ function createHarnessRow(harness) {
 
   row.append(
     nameCell,
-    wrapCell('Model', modelInput, datalist),
+    wrapCell('Model', modelField.element, modelValue),
     wrapCell('Thinking', thinkingSelect),
     wrapCell('On', enabledInput),
   );

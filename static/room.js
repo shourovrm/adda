@@ -1017,14 +1017,7 @@ function buildSeatEditor(seat) {
     if (newName) sendSeatPatch(seat.id, { name: newName });
   });
 
-  const datalist = document.createElement('datalist');
-  datalist.id = `models-${seat.id}`;
-  fillDatalist(datalist, harness);
-  const modelInput = document.createElement('input');
-  modelInput.type = 'text';
-  modelInput.setAttribute('list', datalist.id);
-  modelInput.placeholder = harness && harness.default_model ? `default: ${harness.default_model}` : 'Default';
-  modelInput.addEventListener('change', () => sendSeatPatch(seat.id, { model: modelInput.value.trim() || null }));
+  const modelField = createModelField(harness, (model) => sendSeatPatch(seat.id, { model: model || null }));
 
   const thinkingSelect = document.createElement('select');
   fillThinkingSelect(thinkingSelect, harness, seat.thinking);
@@ -1078,8 +1071,7 @@ function buildSeatEditor(seat) {
 
   editor.append(
     labelledField('Name', nameInput),
-    labelledField('Model', modelInput),
-    datalist,
+    labelledField('Model', modelField.element, modelField.select),
     labelledField('Thinking', thinkingSelect),
     labelledField('Persona', personaSelect),
     labelledField('Eagerness', eagerness.element, eagerness.input),
@@ -1092,7 +1084,7 @@ function buildSeatEditor(seat) {
   );
   editor.hidden = true;
 
-  const fields = { eagerness, accessSelect, nameInput, modelInput, thinkingSelect, personaSelect, instruction, instructionToggle, colorInput, enabledInput, programNote };
+  const fields = { eagerness, accessSelect, nameInput, modelField, thinkingSelect, personaSelect, instruction, instructionToggle, colorInput, enabledInput, programNote };
   return { editor, fields };
 }
 
@@ -1102,7 +1094,7 @@ function syncSeatEditor(seat, fields, force) {
     if (force || document.activeElement !== control) setter();
   };
   setIfIdle(fields.nameInput, () => (fields.nameInput.value = seat.name));
-  setIfIdle(fields.modelInput, () => (fields.modelInput.value = seat.model || ''));
+  if (force || !fields.modelField.element.contains(document.activeElement)) fields.modelField.setValue(seat.model);
   setIfIdle(fields.thinkingSelect, () => (fields.thinkingSelect.value = seat.thinking));
   setIfIdle(fields.personaSelect, () => (fields.personaSelect.value = seat.persona || ''));
   setIfIdle(fields.instruction.textarea, () => (fields.instruction.textarea.value = seat.instruction || ''));
@@ -1144,11 +1136,7 @@ function buildAddSeatForm() {
   nameInput.required = true;
   const harnessSelect = document.createElement('select');
   fillHarnessSelect(harnessSelect, state.harnesses, firstFound ? firstFound.program : 'claude');
-  const datalist = document.createElement('datalist');
-  datalist.id = 'add-seat-models';
-  const modelInput = document.createElement('input');
-  modelInput.type = 'text';
-  modelInput.setAttribute('list', datalist.id);
+  const modelField = createModelField(null, () => {});
   const thinkingSelect = document.createElement('select');
   const personaSelect = document.createElement('select');
   fillPersonaSelect(personaSelect, state.personas, '');
@@ -1160,9 +1148,9 @@ function buildAddSeatForm() {
 
   const refreshForHarness = () => {
     const harness = findHarness(state.harnesses, harnessSelect.value);
-    fillDatalist(datalist, harness);
+    modelField.setHarness(harness);
+    modelField.setValue('');
     fillThinkingSelect(thinkingSelect, harness, 'default');
-    modelInput.placeholder = harness && harness.default_model ? `default: ${harness.default_model}` : 'Default';
   };
   harnessSelect.addEventListener('change', refreshForHarness);
   refreshForHarness();
@@ -1178,8 +1166,7 @@ function buildAddSeatForm() {
   form.append(
     labelledField('Name', nameInput),
     labelledField('Agent', harnessSelect),
-    labelledField('Model', modelInput),
-    datalist,
+    labelledField('Model', modelField.element, modelField.select),
     labelledField('Thinking', thinkingSelect),
     labelledField('Persona', personaSelect),
     labelledField('Instruction', instruction.card),
@@ -1197,7 +1184,7 @@ function buildAddSeatForm() {
       color: colorInput.value,
       eagerness: Number(eagerness.input.value),
     };
-    if (modelInput.value.trim()) seat.model = modelInput.value.trim();
+    if (modelField.value()) seat.model = modelField.value();
     if (personaSelect.value) seat.persona = personaSelect.value;
     if (instruction.textarea.value.trim()) seat.instruction = instruction.textarea.value.trim();
     try {

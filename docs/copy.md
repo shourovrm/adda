@@ -38,6 +38,7 @@ Rooms page
 - "No rooms yet. Start one with New room." -> nothing: the New room button is beside it
 - "There is no earlier room to copy seats from." -> "No earlier room to copy from.": shorter
 - Seat field "Harness" -> "Agent"; model placeholder "harness default" -> "Default"; summary "2 harnesses" -> "2 agents": vocabulary
+- Model text box with browser suggestions -> a list: "Default (sonnet)" or "Default", the agent's models, then "Type a name", which swaps in a text box with placeholder "Model name" (2026-10-19): the browser draws the suggestion popup itself and it matched no other control. Same control in the room's seat editor, Add seat and Settings
 - Toast "Could not open the room" -> "Could not create the room": matches the button
 
 Room page
@@ -66,7 +67,7 @@ Settings page
 - "Your name in the room" hint -> deleted: rule 6. "Your line for the seats" -> "About you", hint -> "Shown to every seat.": banned word
 - Agents note -> "Defaults for seats that do not set their own."; columns "Harness"/"Default model" -> "Agent"/"Model"; "not on PATH" -> "Not installed"; login line only when not installed; "Re-scan PATH" -> "Look again"; toast -> "Agents checked."; error -> "Could not check the agents"
 - Personas note -> "A voice and a memory a seat can take."
-- "Who decides who speaks" -> "Turn-taking", options "Automatic (Jev)" / "Simple (no network)"; model placeholder -> "Default"; key pills "Set"/"Not set"; key placeholders -> "Paste a new key to replace it" / "Paste a key"; key note -> "Saved with Save and never shown again."
+- "Who decides who speaks" -> "Turn-taking", options "Automatic (Jev)" / "Simple (no network)"; model field -> the list described under Rooms page; key pills "Set"/"Not set"; key placeholders -> "Paste a new key to replace it" / "Paste a key"; key note -> "Saved with Save and never shown again."
 - "Lowest score that may speak" -> "Minimum urge to speak"; "Messages the router sees" -> "Messages considered"
 - Room defaults: "Budget (USD)" -> "Budget" + dollars hint; "Cooldown (s, 0 = off)" -> "Cooldown (seconds)" + "0 turns it off."; "Seat timeout (s)" -> "Reply timeout (seconds)"; "Safety stop (turns)" -> "Pause after (replies)" + "Replies without you before the room pauses."; "Who speaks next" -> "Speaking order"
 - Folder hints -> "New rooms get a folder here." / "Adda's own data."
