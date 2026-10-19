@@ -42,6 +42,7 @@ const elements = {
   folderChooseButton: document.getElementById('folder-choose-button'),
   folderCancelButton: document.getElementById('folder-cancel-button'),
   budget: document.getElementById('room-budget-input'),
+  cooldown: document.getElementById('room-cooldown-input'),
   mode: document.getElementById('room-mode-select'),
   maxConcurrent: document.getElementById('room-max-concurrent-select'),
   liveliness: document.getElementById('room-liveliness-input'),
@@ -171,6 +172,7 @@ function createDraft() {
     folder: '',
     folderEdited: false,
     budget: defaults.budget_usd,
+    cooldown: defaults.cooldown_s,
     mode: defaults.mode,
     liveliness: defaults.liveliness,
     maxConcurrent: defaults.max_concurrent ?? 2,
@@ -233,6 +235,7 @@ function renderDraftFields() {
     scheduleFolderSuggestion();
   }
   elements.budget.value = draft.budget;
+  elements.cooldown.value = draft.cooldown;
   elements.mode.value = draft.mode;
   elements.liveliness.value = draft.liveliness;
   elements.maxConcurrent.value = String(draft.maxConcurrent);
@@ -498,6 +501,7 @@ async function openRoom(event) {
     max_concurrent: draft.maxConcurrent,
     access: draft.access,
     budget_usd: Number(draft.budget) || 0,
+    cooldown_s: Math.max(0, Number(draft.cooldown) || 0),
     seats: draft.seats.map(buildNewSeat),
   };
   const folder = elements.folder.value.trim();
@@ -640,6 +644,9 @@ function bindEvents() {
   });
   elements.budget.addEventListener('input', () => {
     state.draft.budget = elements.budget.value;
+  });
+  elements.cooldown.addEventListener('input', () => {
+    state.draft.cooldown = elements.cooldown.value;
   });
   elements.mode.addEventListener('change', () => {
     state.draft.mode = elements.mode.value;

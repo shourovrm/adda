@@ -164,6 +164,7 @@ class NewRoom(BaseModel):
     budget_usd: float | None = Field(default=None, ge=0)
     max_concurrent: int | None = Field(default=None, ge=1, le=4)
     access: Access | None = None
+    cooldown_s: float | None = Field(default=None, ge=0)
     seats: list[NewSeat] = Field(default_factory=list)
 
 
@@ -353,6 +354,7 @@ class Hub:
         max_concurrent = (
             self.settings.max_concurrent if body.max_concurrent is None else body.max_concurrent
         )
+        cooldown_s = self.settings.cooldown_s if body.cooldown_s is None else body.cooldown_s
         if body.folder and body.folder.strip():
             folder = self._make_folder(Path(body.folder.strip()).expanduser())
         else:
@@ -365,6 +367,7 @@ class Hub:
             budget_usd,
             max_concurrent,
             body.access or self.settings.access,
+            cooldown_s,
         )
         for new_seat in body.seats:
             self._add_seats(room.id, new_seat)

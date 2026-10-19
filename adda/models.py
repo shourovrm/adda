@@ -106,6 +106,9 @@ class Room(BaseModel):
     spent_usd: float = 0.0
     # How many seats may compose a reply at the same time (1 reproduces strict turn-taking).
     max_concurrent: int = Field(default=2, ge=1, le=4)
+    # Seconds a seat is left out of bidding after it posts a reply; 0 = off. Paces the room so
+    # the owner can keep up. Mentions and wakes ignore it; an owner message clears it.
+    cooldown_s: float = Field(default=0.0, ge=0)
     access: Access = "talk"  # the level of every seat that has none of its own
     created_at: datetime = Field(default_factory=utc_now)
     # Set when the room is archived. Threads end one by one; the room stays open meanwhile.

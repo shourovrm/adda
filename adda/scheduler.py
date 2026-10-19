@@ -7,8 +7,10 @@ to the thread. `room` frames go to every tab of the room; everything else to the
 
 Every posted message (owner or seat) triggers one "reaction": mentions start seats, a `[more]`
 continuation restarts the author, and a Jev round lets seats bid to speak. Several seats may
-compose at once, up to `Room.max_concurrent`; each is its own asyncio task in `speaking`. When
-nobody is speaking the room is quiet, and an afterthought timer may wake seats later. REST and
+compose at once, up to `Room.max_concurrent`; each is its own asyncio task in `speaking`. A seat
+that has just replied sits out of bidding for `Room.cooldown_s` (the owner's pace control); when
+the earliest such wait ends a timer runs one more round. When nobody is speaking the room is
+quiet, and an afterthought timer may wake seats later. REST and
 WebSocket handlers both change rooms and seats through `apply_room_patch` and
 `apply_seat_patch`, so there is one code path for validation and for the `room` frame.
 """
@@ -65,7 +67,6 @@ AdapterBuilder = Callable[..., SeatAdapter]
 FIRST_TURN_HISTORY_LIMIT = 50
 MEMORY_NOTE_TITLE_LENGTH = 80
 EAGERNESS_STEP = 0.4
-COOLDOWN_PENALTY = 1.5
 
 # Reasons stored in Message.meta["woken_by"] and sent in quiet frames.
 WOKEN_BY_BID = "bid"
@@ -86,7 +87,15 @@ AFTERTHOUGHT_JITTER_HIGH = 1.3
 # The first tick of a quiet spell is shortened by 5 % per eagerness point above 5.
 AFTERTHOUGHT_EAGERNESS_STEP = 0.05
 
-ROOM_PATCH_FIELDS = ("title", "mode", "liveliness", "budget_usd", "max_concurrent", "access")
+ROOM_PATCH_FIELDS = (
+    "title",
+    "mode",
+    "liveliness",
+    "budget_usd",
+    "max_concurrent",
+    "access",
+    "cooldown_s",
+)
 SEAT_PATCH_FIELDS = (
     "name",
     "program",
@@ -133,18 +142,13 @@ def liveliness_threshold(liveliness: int, automatic_turns: int, floor: float) ->
     return max(floor, base + ramp * automatic_turns)
 
 
-def adjusted_bid_score(
-    raw_score: float, eagerness: int, cooling_down: bool, extra_penalty: float = 0.0
-) -> float:
+def adjusted_bid_score(raw_score: float, eagerness: int, extra_penalty: float = 0.0) -> float:
     """Jev's score shifted by the seat's eagerness and penalties, kept within 0..10.
 
-    Eagerness 5 changes nothing; each step moves the score by 0.4. A seat that spoke less than
-    `cooldown_s` ago loses COOLDOWN_PENALTY, so it can still win when it is far ahead.
-    `extra_penalty` is the self-reply penalty for the author of the latest message.
+    Eagerness 5 changes nothing; each step moves the score by 0.4. `extra_penalty` is the
+    self-reply penalty for the author of the latest message.
     """
     adjusted = raw_score + EAGERNESS_STEP * (eagerness - 5) - extra_penalty
-    if cooling_down:
-        adjusted -= COOLDOWN_PENALTY
     return min(10.0, max(0.0, adjusted))
 
 
@@ -226,6 +230,8 @@ class Scheduler:
         self.more_streak: dict[str, int] = {}
         self.afterthought: asyncio.Task | None = None
         self.afterthoughts_this_spell = 0
+        # Waits for the earliest cooldown to end, then runs one bidding round.
+        self.cooldown_round: asyncio.Task | None = None
         self.roundrobin_task: asyncio.Task | None = None
         # One task per posted message (and per silent end of a turn) that decides what happens
         # next. Tracked so `stop` can cancel them and tests can wait for them.
@@ -236,6 +242,7 @@ class Scheduler:
         # threshold (k in liveliness_threshold). Both reset on an owner message or wake.
         self.auto_turns_since_owner = 0
         self.bid_turns_since_owner = 0
+        # When each seat last posted a reply (clock time); the room's cooldown counts from it.
         self.last_spoke_at: dict[str, float] = {}
         # Seats that passed since the last posted message; they are not asked again until
         # someone speaks.
@@ -361,9 +368,14 @@ class Scheduler:
         if "max_concurrent" in patch:
             # The store checks the 1..4 range.
             fields["max_concurrent"] = _whole_number(patch["max_concurrent"], "max_concurrent")
+        if "cooldown_s" in patch:
+            fields["cooldown_s"] = _number(patch["cooldown_s"], "cooldown_s")
         self.store.update_room(self.room_id, **fields)
         if "budget_usd" in fields:
             self.forget_budget_notice()
+        if "cooldown_s" in fields and self._is_idle():
+            # A quiet room re-times its pending cooldown round against the new length.
+            self._spawn_reaction(None)
         return await self.publish_room()
 
     def forget_budget_notice(self) -> None:
@@ -425,10 +437,12 @@ class Scheduler:
         raise UnknownSeatError(f"no seat {seat_id!r} in room {self.room_id}")
 
     def _reset_turn_counters(self) -> None:
-        """A new quiet spell starts: the owner spoke or woke someone."""
+        """A new quiet spell starts: the owner spoke or woke someone. Cooldowns end too: the
+        owner is present and waiting, so the pace control has nothing to protect."""
         self.auto_turns_since_owner = 0
         self.bid_turns_since_owner = 0
         self.afterthoughts_this_spell = 0
+        self.last_spoke_at.clear()
 
     # Owner actions
 
@@ -460,7 +474,7 @@ class Scheduler:
             raise ValueError(f"{seat.name} is disabled.")
         self._refuse_when_over_budget(room)
         self._reset_turn_counters()
-        self._cancel_afterthought()
+        self._cancel_timers()
         self._start_seat(seat_id, WOKEN_BY_WAKE, automatic=False)
 
     async def wake_all(self) -> None:
@@ -472,12 +486,12 @@ class Scheduler:
         if not seat_ids:
             raise ValueError("No seat can be woken.")
         self._reset_turn_counters()
-        self._cancel_afterthought()
+        self._cancel_timers()
         for seat_id in seat_ids:
             self._start_seat(seat_id, WOKEN_BY_ALL, automatic=False)
 
     async def stop(self) -> None:
-        """Cancel every speaking seat, the pending afterthought and any round-robin pass.
+        """Cancel every speaking seat, the pending timers and any round-robin pass.
 
         A seat runner kills its child process on cancellation. Nothing is scheduled afterwards:
         the room stays silent until the owner speaks or wakes someone.
@@ -532,8 +546,12 @@ class Scheduler:
         candidates = [*self.speaking.values(), *self._reactions]
         if self.roundrobin_task is not None:
             candidates.append(self.roundrobin_task)
-        if include_afterthought and self.afterthought is not None:
-            candidates.append(self.afterthought)
+        if include_afterthought:
+            # Both timers only fire in a quiet room, so they are left out when the question is
+            # "is anyone about to speak".
+            candidates.extend(
+                task for task in (self.afterthought, self.cooldown_round) if task is not None
+            )
         current = asyncio.current_task()
         return [task for task in candidates if not task.done() and task is not current]
 
@@ -591,7 +609,7 @@ class Scheduler:
             if woken_by in FOLLOW_UP_REASONS:
                 self.follow_up[seat_id] = woken_by
             return None
-        self._cancel_afterthought()
+        self._cancel_timers()
         if automatic:
             self.auto_turns_since_owner += 1
         task = asyncio.create_task(self._speak(seat_id, woken_by, bid_score))
@@ -653,7 +671,7 @@ class Scheduler:
             return
         if message is not None:
             self.passed_seats.clear()
-            self._cancel_afterthought()
+            self._cancel_timers()
             if message.seat_id is not None and not wants_more:
                 self.more_streak.pop(message.seat_id, None)
         blocked = budget_exhausted(room) or self._safety_reached()
@@ -706,20 +724,63 @@ class Scheduler:
             await self._quiet("safety", room)
         elif room.liveliness == 0:
             await self._quiet("paused", room)
+        elif (cooling := self._cooling_seats(room)) and room.mode == "bidding":
+            # Seats sat out the last round; give them one more when the earliest wait ends.
+            delay = min(cooling.values())
+            waited_for = [seat_id for seat_id, left in cooling.items() if left <= delay]
+            await self._quiet("cooldown", room, delay)
+            self._cancel_timers()
+            self.cooldown_round = asyncio.create_task(
+                self._guarded(self._cooldown_round, delay, waited_for)
+            )
         elif self._afterthought_possible(room):
             delay = self._afterthought_delay(room)
             await self._quiet("nobody", room, delay)
-            self._cancel_afterthought()
+            self._cancel_timers()
             self.afterthought = asyncio.create_task(self._guarded(self._afterthought_loop, delay))
         else:
             await self._quiet("nobody", room)
 
-    def _cancel_afterthought(self) -> None:
-        task = self.afterthought
-        if task is not None and not task.done() and task is not asyncio.current_task():
-            task.cancel()
-        if task is not asyncio.current_task():
-            self.afterthought = None
+    def _cancel_timers(self) -> None:
+        """Cancel the afterthought and cooldown timers (never the caller's own task)."""
+        current = asyncio.current_task()
+        for attribute in ("afterthought", "cooldown_round"):
+            task = getattr(self, attribute)
+            if task is current:
+                continue
+            if task is not None and not task.done():
+                task.cancel()
+            setattr(self, attribute, None)
+
+    # Cooldown
+
+    def _cooling_seats(self, room: Room, now: float | None = None) -> dict[str, float]:
+        """Seats that could bid but replied less than `room.cooldown_s` ago, with the seconds
+        each still has to wait."""
+        if room.cooldown_s <= 0:
+            return {}
+        now = self.clock() if now is None else now
+        waiting: dict[str, float] = {}
+        for seat in room.seats:
+            last_spoke = self.last_spoke_at.get(seat.id)
+            if last_spoke is None or not seat.enabled or seat.eagerness == 0:
+                continue
+            left = room.cooldown_s - (now - last_spoke)
+            if left > 0:
+                waiting[seat.id] = left
+        return waiting
+
+    async def _cooldown_round(self, delay: float, seat_ids: list[str]) -> None:
+        """Wait for the given seats' cooldown to end, then let the room bid once more."""
+        await self._sleep(delay)
+        # Their wait is over whatever the clock says; otherwise a clock that does not move
+        # (tests) would time the same round again and again.
+        for seat_id in seat_ids:
+            self.last_spoke_at.pop(seat_id, None)
+        if self.speaking or not self._room_accepts_starts():
+            return
+        if await self._bid_and_start(MESSAGE_QUESTION) == 0:
+            await self._settle_if_idle()
 
     def _ticks_left(self, room: Room) -> int:
         if room.mode != "bidding" or room.liveliness == 0:
@@ -833,10 +894,14 @@ class Scheduler:
             if self._is_closed(room) or budget_exhausted(room):
                 return 0
             described = self.describe(room)
+            cooling = self._cooling_seats(room)
             bidders = [
                 seat
                 for seat in described.seats
-                if seat.enabled and seat.available and seat.id not in self.speaking
+                if seat.enabled
+                and seat.available
+                and seat.id not in self.speaking
+                and seat.id not in cooling
             ]
             if not bidders:
                 return 0
@@ -847,7 +912,6 @@ class Scheduler:
             transcript = render_transcript(window, self.settings.owner_name)
             router, bids = await self._ask_router(transcript, bidders, question_kind)
 
-            now = self.clock()
             seats_by_id = {seat.id: seat for seat in bidders}
             # `score` is what the threshold compares against; `raw_score` is the router's number.
             adjusted_bids: list[Bid] = []
@@ -856,10 +920,6 @@ class Scheduler:
                 seat = seats_by_id.get(bid.seat)
                 if seat is None:
                     continue
-                last_spoke = self.last_spoke_at.get(bid.seat)
-                cooling_down = (
-                    last_spoke is not None and now - last_spoke < self.settings.cooldown_s
-                )
                 # The author of the latest message may answer itself, but at a price.
                 self_reply_penalty = (
                     self.settings.self_reply_penalty if bid.seat == latest_author_id else 0.0
@@ -868,7 +928,7 @@ class Scheduler:
                     bid.model_copy(
                         update={
                             "score": adjusted_bid_score(
-                                bid.score, seat.eagerness, cooling_down, self_reply_penalty
+                                bid.score, seat.eagerness, self_reply_penalty
                             ),
                             "raw_score": bid.score,
                         }
@@ -993,7 +1053,6 @@ class Scheduler:
             await self._post_system(f"{seat.name} could not reply. {error.detail}")
             return None, False
         finally:
-            self.last_spoke_at[seat.id] = self.clock()
             await self.broadcast({"type": "typing", "seat": seat.id, "state": "stop"})
 
         latency_ms = round((self.clock() - started_at) * 1000)
@@ -1029,6 +1088,9 @@ class Scheduler:
             meta=meta,
         )
         await self._post(message)
+        # The cooldown counts from the reply landing, not from the seat starting to compose, so
+        # a slow seat gets the same quiet stretch as a fast one. A PASS starts no cooldown.
+        self.last_spoke_at[seat.id] = self.clock()
         await self._record_spend(reply.cost_usd)
         return message, wants_more
 

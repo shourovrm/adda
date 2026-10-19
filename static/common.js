@@ -275,6 +275,9 @@ const QUIET_REASON_TEXT = {
 /** The quiet notice for a `quiet` frame: a countdown to the next afterthought chance when one is scheduled. */
 function describeQuiet(frame) {
   const secondsLeft = frame.next_tick_in_s;
+  if (frame.reason === 'cooldown' && typeof secondsLeft === 'number' && secondsLeft >= 0) {
+    return `Cooling down. A seat may reply in ${Math.round(secondsLeft)} s. Say something to skip the wait.`;
+  }
   if (typeof secondsLeft !== 'number' || secondsLeft < 0) {
     return QUIET_REASON_TEXT[frame.reason] || QUIET_REASON_TEXT.nobody;
   }

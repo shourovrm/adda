@@ -360,6 +360,40 @@ def test_database_without_max_concurrent_is_upgraded_in_place(tmp_path):
     Store(database_path).close()  # a second open must not try to add the column again
 
 
+def test_database_without_cooldown_is_upgraded_in_place(tmp_path):
+    database_path = tmp_path / "v06.db"
+    connection = sqlite3.connect(database_path)
+    connection.executescript(
+        """
+        CREATE TABLE rooms (id TEXT PRIMARY KEY, title TEXT NOT NULL, created_at TEXT NOT NULL,
+            ended_at TEXT, mode TEXT NOT NULL, folder TEXT NOT NULL DEFAULT '',
+            liveliness INTEGER NOT NULL DEFAULT 6, budget_usd REAL NOT NULL DEFAULT 0,
+            spent_usd REAL NOT NULL DEFAULT 0, max_concurrent INTEGER NOT NULL DEFAULT 2,
+            access TEXT NOT NULL DEFAULT 'talk');
+        INSERT INTO rooms (id, title, created_at, mode)
+            VALUES ('r1', 'old', '2026-01-01', 'bidding');
+        """
+    )
+    connection.commit()
+    connection.close()
+
+    store = Store(database_path)
+    assert store.get_room("r1").cooldown_s == 0.0  # old rooms keep behaving as before
+    store.update_room("r1", cooldown_s=15.0)
+    assert store.get_room("r1").cooldown_s == 15.0
+    store.close()
+    Store(database_path).close()
+
+
+def test_cooldown_is_stored_and_never_negative(store):
+    room = store.create_room("paced", cooldown_s=15.0)
+    assert store.get_room(room.id).cooldown_s == 15.0
+    with pytest.raises(ValueError, match="cooldown_s"):
+        store.create_room("paced", cooldown_s=-1.0)
+    with pytest.raises(ValueError, match="cooldown_s"):
+        store.update_room(room.id, cooldown_s=-0.5)
+
+
 def test_max_concurrent_is_stored_and_limited_to_one_through_four(store):
     room = store.create_room("voices", max_concurrent=3)
     assert store.get_room(room.id).max_concurrent == 3

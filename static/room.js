@@ -23,7 +23,6 @@
 // ---------------------------------------------------------------------------
 
 const MAX_BID_SCORE = 10;
-const DEFAULT_COOLDOWN_SECONDS = 20; // used only if /api/settings cannot be read
 const DEFAULT_MAX_AUTO_TURNS = 40; // used only if /api/settings cannot be read
 const DEFAULT_RESUME_LIVELINESS = 6;
 const NEAR_BOTTOM_PIXELS = 80;
@@ -68,7 +67,6 @@ const state = {
   router: null,
   harnesses: [],
   personas: [],
-  cooldownSeconds: DEFAULT_COOLDOWN_SECONDS,
   maxAutoTurns: DEFAULT_MAX_AUTO_TURNS,
   typingSeatIds: new Set(),
   lastBids: {}, // seat id -> {score, confidence}
@@ -136,6 +134,7 @@ const elements = {
   livelinessValue: document.getElementById('liveliness-value'),
   livelinessSentence: document.getElementById('liveliness-sentence'),
   budget: document.getElementById('budget-input'),
+  cooldown: document.getElementById('cooldown-input'),
   spendText: document.getElementById('spend-text'),
   modeOptions: document.getElementById('mode-options'),
   pauseButton: document.getElementById('pause-button'),
@@ -347,10 +346,13 @@ function handleHello(frame) {
 function handleMessageFrame(message) {
   if (state.messages.some((existing) => existing.id === message.id)) return;
   // Cooldown 0 means off: no countdown, no cooling state.
-  if (message.role === 'seat' && message.seat_id && state.cooldownSeconds > 0) {
-    state.cooldownEndsAt[message.seat_id] = Date.now() + state.cooldownSeconds * 1000;
+  const cooldownSeconds = state.room ? state.room.cooldown_s : 0;
+  if (message.role === 'seat' && message.seat_id && cooldownSeconds > 0) {
+    state.cooldownEndsAt[message.seat_id] = Date.now() + cooldownSeconds * 1000;
     ensureCooldownTicker();
   }
+  // An owner message clears every seat's cooldown on the server.
+  if (message.role === 'owner') state.cooldownEndsAt = {};
   state.chosenSeatIds.clear();
   state.quietReason = null;
   state.messages.push(message);
@@ -730,6 +732,7 @@ function renderPanel() {
   elements.livelinessValue.textContent = room.liveliness;
   elements.livelinessSentence.textContent = describeLiveliness(room.liveliness);
   if (document.activeElement !== elements.budget) elements.budget.value = room.budget_usd;
+  if (document.activeElement !== elements.cooldown) elements.cooldown.value = room.cooldown_s;
   elements.spendText.textContent = `${formatMoney(room.spent_usd)} used`;
   for (const radio of elements.modeOptions.querySelectorAll('input[name="mode"]')) {
     radio.checked = radio.value === room.mode;
@@ -796,6 +799,11 @@ function renderEndedNotes(notesBySeatId) {
 // ---------------------------------------------------------------------------
 // 5. Seat cards and the seat editor
 // ---------------------------------------------------------------------------
+
+function clearCooldowns() {
+  state.cooldownEndsAt = {};
+  renderSeats();
+}
 
 function cooldownSecondsLeft(seatId) {
   const endsAt = state.cooldownEndsAt[seatId];
@@ -914,7 +922,10 @@ function buildSeatCards() {
     const statusText = createElement('span', 'seat-status');
     const eagernessText = createElement('span', 'seat-eagerness small mute');
     const accessMarker = createElement('span', 'access-marker');
-    const wakeButton = createButton('Wake', 'btn', () => sendFrame({ type: 'wake', seat: seat.id }));
+    const wakeButton = createButton('Wake', 'btn', () => {
+      clearCooldowns();
+      sendFrame({ type: 'wake', seat: seat.id });
+    });
     const editButton = createButton('Edit', 'btn', () => toggleSeatEditor(seat.id));
     editButton.setAttribute('aria-expanded', 'false');
     const foot = createElement('div', 'seat-foot');
@@ -2117,6 +2128,10 @@ function bindEvents() {
   fillAccessSelect(elements.access, 'talk');
   elements.access.addEventListener('change', () => sendRoomPatch({ access: elements.access.value }));
   elements.liveliness.addEventListener('change', () => sendRoomPatch({ liveliness: Number(elements.liveliness.value) }));
+  elements.cooldown.addEventListener('change', () => {
+    const cooldown = Math.max(0, Number(elements.cooldown.value) || 0);
+    sendRoomPatch({ cooldown_s: cooldown });
+  });
   elements.budget.addEventListener('change', () => {
     const budget = Math.max(0, Number(elements.budget.value) || 0);
     sendRoomPatch({ budget_usd: budget });
@@ -2125,7 +2140,10 @@ function bindEvents() {
     if (event.target.name === 'mode') sendRoomPatch({ mode: event.target.value });
   });
   elements.pauseButton.addEventListener('click', togglePause);
-  elements.wakeAllButton.addEventListener('click', () => sendFrame({ type: 'wake_all' }));
+  elements.wakeAllButton.addEventListener('click', () => {
+    clearCooldowns();
+    sendFrame({ type: 'wake_all' });
+  });
   elements.addSeatButton.addEventListener('click', toggleAddSeatForm);
 
   elements.searchForm.addEventListener('submit', (event) => {
@@ -2167,7 +2185,6 @@ async function loadLibraries() {
     ]);
     state.harnesses = harnesses;
     state.personas = personas;
-    state.cooldownSeconds = settings.room_defaults.cooldown_s;
     state.maxAutoTurns = settings.room_defaults.max_auto_turns;
   } catch (error) {
     reportError('Could not load agents and personas', error);

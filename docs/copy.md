@@ -32,6 +32,7 @@ Rooms page
 - "Voices at once" -> "Seats replying at once", hint deleted: rule 6
 - Liveliness sentence with bid numbers -> "How readily seats join in.": numbers the owner cannot act on
 - Seats intro -> "Two seats with one persona share its memory.": rule 3
+- New field "Cooldown (seconds)" + "A seat stays quiet this long after replying. 0 turns it off.": the owner's pace control, also in the room panel
 - "Add a seat" -> "Add seat"; "Copy seats from last room" -> "Same seats as last room": rule 2
 - Folder dialog "Go up" / "New folder here" / "Choose this folder" -> "Up" / "New folder" / "Choose": rule 2
 - "No rooms yet. Start one with New room." -> nothing: the New room button is beside it
@@ -51,7 +52,7 @@ Room page
 - Seat field "Custom instruction" -> "Instruction"; placeholder -> "Extra instruction for this seat": rule 3
 - Meter tooltip "Jev scored 6.0; with eagerness 7 the bid is 6.8" -> "Urge to speak 6.8, 6.0 before eagerness 7"; "No bid yet" -> "Quiet"; meter label "last bid" -> "urge to speak": banned words
 - "Router: Jev" / "Router: heuristic fallback" -> nothing, or "Simple turn-taking (no network)" when the fallback runs: rule 6
-- Quiet notices -> "Nobody has anything to add. Say something or wake a seat." / "Quiet. A seat may add a thought in about 40 s." / "Paused. Mention a seat or press Wake all." / "Paused after 40 replies without you. Say something to continue.": rule 4
+- Quiet notices -> "Nobody has anything to add. Say something or wake a seat." / "Quiet. A seat may add a thought in about 40 s." / "Paused. Mention a seat or press Wake all." / "Paused after 40 replies without you. Say something to continue." / "Cooling down. A seat may reply in 12 s. Say something to skip the wait.": rule 4
 - Meta line "round-robin" -> "in turn"; @all menu "every seat answers, in roster order · 3 turns" -> "every seat replies, in order · 3 replies": plain words
 - Memory drawer intro -> deleted: rule 6. Empty states -> "No notes yet." / "No notes from this room yet." / "X has no persona."; header -> "X as P · 3 notes"; delete confirm -> "Delete the note “T”?": rule 6
 - "This room has no thread yet. Start one with New thread." -> "No thread yet."; ended and archived hints lose their second sentence: rule 6

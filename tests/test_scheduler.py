@@ -87,6 +87,7 @@ def build_harness(
     liveliness=6,
     budget_usd=0.0,
     max_concurrent=1,
+    cooldown_s=0.0,
     sleeper=None,
     uniform=None,
     **setting_overrides,
@@ -105,6 +106,7 @@ def build_harness(
         liveliness=liveliness,
         budget_usd=budget_usd,
         max_concurrent=max_concurrent,
+        cooldown_s=cooldown_s,
     )
     for spec in seats:
         store.add_seat(
@@ -166,20 +168,18 @@ def test_liveliness_threshold_table(liveliness, turns, floor, expected):
 
 
 @pytest.mark.parametrize(
-    ("raw_score", "eagerness", "cooling_down", "expected"),
+    ("raw_score", "eagerness", "expected"),
     [
-        (5.0, 5, False, 5.0),
-        (5.0, 10, False, 7.0),
-        (5.0, 0, False, 3.0),
-        (5.0, 6, False, 5.4),
-        (9.5, 10, False, 10.0),  # clamped at the top
-        (1.0, 0, False, 0.0),  # clamped at the bottom
-        (5.0, 5, True, 3.5),
-        (5.0, 10, True, 5.5),
+        (5.0, 5, 5.0),
+        (5.0, 10, 7.0),
+        (5.0, 0, 3.0),
+        (5.0, 6, 5.4),
+        (9.5, 10, 10.0),  # clamped at the top
+        (1.0, 0, 0.0),  # clamped at the bottom
     ],
 )
-def test_adjusted_bid_score_table(raw_score, eagerness, cooling_down, expected):
-    assert adjusted_bid_score(raw_score, eagerness, cooling_down) == pytest.approx(expected)
+def test_adjusted_bid_score_table(raw_score, eagerness, expected):
+    assert adjusted_bid_score(raw_score, eagerness) == pytest.approx(expected)
 
 
 async def test_bid_below_threshold_stays_quiet_and_above_speaks(tmp_path):
@@ -277,27 +277,60 @@ async def test_self_reply_penalty_can_hand_the_floor_to_someone_else(tmp_path):
     assert [author for author, _ in room.spoken()][:2] == ["Ravi", "Tuli"]
 
 
-async def test_cooldown_is_a_penalty_not_an_exclusion(tmp_path):
-    room = build_harness(tmp_path, liveliness=10, cooldown_s=20.0)
-    # Round 3: Ravi spoke 0 s ago on the fake clock, so his raw 3.5 becomes 2.0, under the
-    # threshold of 2.6. Round 4: raw 9.0 becomes 7.5 and still wins.
-    room.router.script({"Ravi": 9.0}, {"Tuli": 9.0}, {"Ravi": 3.5}, {"Ravi": 9.0})
+async def test_cooling_seat_sits_out_until_its_wait_ends(tmp_path):
+    sleeper = FakeSleeper(hold=True)
+    room = build_harness(tmp_path, liveliness=10, cooldown_s=20.0, sleeper=sleeper)
+    # Ravi replies at once; in the next round he is not even asked, and Tuli's 1.0 is too low.
+    room.router.script({"Ravi": 9.0}, {"Tuli": 1.0}, {"Ravi": 9.0})
     await room.scheduler.say("go")
     await room.settle()
-    assert [author for author, _ in room.spoken()] == ["Ravi", "Tuli"]
-    cooling_bid = next(
-        bid for bid in room.frames_of("bids")[2]["bids"] if bid["seat"] == room.seat_id("Ravi")
-    )
-    assert cooling_bid["score"] == pytest.approx(2.0)
-    assert cooling_bid["raw_score"] == pytest.approx(3.5)
+    assert [author for author, _ in room.spoken()] == ["Ravi"]
+    second_round = [bid["seat"] for bid in room.frames_of("bids")[1]["bids"]]
+    assert room.seat_id("Ravi") not in second_round
+    assert room.seat_id("Tuli") in second_round
+    # The room says why it is quiet and waits exactly until Ravi's cooldown ends.
+    quiet = room.frames_of("quiet")[-1]
+    assert (quiet["reason"], quiet["next_tick_in_s"]) == ("cooldown", pytest.approx(20.0))
+    await asyncio.sleep(0)  # the timer task takes its first step
+    assert sleeper.delays == [20.0]
+
+    room.clock.advance(20.0)
+    sleeper.release()
+    await room.settle_afterthoughts()
+    assert [author for author, _ in room.spoken()] == ["Ravi", "Ravi"]
 
 
-async def test_cooling_seat_still_wins_with_a_strong_bid(tmp_path):
+async def test_owner_message_clears_every_cooldown(tmp_path):
     room = build_harness(tmp_path, liveliness=10, cooldown_s=20.0)
-    room.router.script({"Ravi": 9.0}, {"Tuli": 9.0}, {"Ravi": 9.0})
+    room.router.script({"Ravi": 9.0}, {}, {"Ravi": 9.0})
     await room.scheduler.say("go")
     await room.settle()
-    assert [author for author, _ in room.spoken()][:3] == ["Ravi", "Tuli", "Ravi"]
+    assert room.quiet_reasons()[-1] == "cooldown"
+    await room.scheduler.say("and?")
+    await room.settle_afterthoughts()
+    # Ravi is asked again straight away: the owner is present, so the pace control is moot.
+    assert [author for author, _ in room.spoken()] == ["Ravi", "Ravi"]
+
+
+async def test_mention_wakes_a_cooling_seat(tmp_path):
+    room = build_harness(tmp_path, liveliness=10, cooldown_s=20.0)
+    room.router.script({"Ravi": 9.0}, {"Tuli": 9.0})
+    room.adapter("Tuli").script("@Ravi, and you?")
+    await room.scheduler.say("go")
+    await room.settle_afterthoughts()
+    assert [author for author, _ in room.spoken()] == ["Ravi", "Tuli", "Ravi"]
+    assert room.messages()[-1].meta["woken_by"] == "mention"
+
+
+async def test_a_pass_starts_no_cooldown(tmp_path):
+    room = build_harness(tmp_path, liveliness=10, cooldown_s=20.0)
+    room.router.script({"Ravi": 9.0})
+    room.adapter("Ravi").script("PASS")
+    await room.scheduler.say("go")
+    await room.settle_afterthoughts()
+    # Ravi said nothing, so there is no reply to pace: the room is plainly quiet, not waiting.
+    assert room.spoken() == []
+    assert room.quiet_reasons() == ["nobody"]
 
 
 async def test_eagerness_shifts_scores_and_zero_never_bids(tmp_path):
@@ -824,13 +857,14 @@ async def test_ended_room_takes_no_more_input(harness):
 
 
 async def test_cooldown_is_off_by_default(tmp_path):
-    room = build_harness(tmp_path, liveliness=10)  # cooldown_s = 0 in make_settings
+    room = build_harness(tmp_path, liveliness=10)  # cooldown_s = 0 on the room
     room.router.script({"Ravi": 9.0}, {"Tuli": 9.0}, {"Ravi": 3.5})
     await room.scheduler.say("go")
     await room.settle()
     third_bids = room.frames_of("bids")[2]["bids"]
     ravi_bid = next(bid for bid in third_bids if bid["seat"] == room.seat_id("Ravi"))
     assert ravi_bid["score"] == pytest.approx(3.5)
+    assert "cooldown" not in room.quiet_reasons()
 
 
 async def test_quiet_decision_is_logged_with_reason_threshold_and_top_bid(tmp_path, caplog):

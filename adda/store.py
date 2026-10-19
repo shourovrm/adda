@@ -3,12 +3,12 @@
 Public API (all methods are thread-safe; ids are 12-char hex strings):
 
     Rooms    create_room(title, folder="", mode="bidding", liveliness=6, budget_usd=0.0,
-                         max_concurrent=2, access="talk") -> Room
+                         max_concurrent=2, access="talk", cooldown_s=0.0) -> Room
                          (with a first thread titled like the room)
              get_room(room_id) -> Room            (seats in position order, threads newest first)
              list_rooms() -> list[Room]           (newest first, seats and threads included)
              update_room(room_id, **fields) -> Room   (title, folder, mode, liveliness, budget_usd,
-                      max_concurrent, access)
+                      max_concurrent, access, cooldown_s)
              end_room(room_id) -> Room            (archives the room; threads are not touched)
              add_spend(room_id, usd) -> Room      (atomic increment of spent_usd)
     Threads  create_thread(room_id, title) -> Thread
@@ -75,7 +75,8 @@ CREATE TABLE IF NOT EXISTS rooms (
     budget_usd REAL NOT NULL DEFAULT 0,
     spent_usd REAL NOT NULL DEFAULT 0,
     max_concurrent INTEGER NOT NULL DEFAULT 2,
-    access TEXT NOT NULL DEFAULT 'talk'
+    access TEXT NOT NULL DEFAULT 'talk',
+    cooldown_s REAL NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS room_seats (
     id TEXT PRIMARY KEY,
@@ -152,6 +153,7 @@ ROOM_UPDATABLE_FIELDS = (
     "budget_usd",
     "max_concurrent",
     "access",
+    "cooldown_s",
 )
 SEAT_UPDATABLE_FIELDS = (
     "name",
@@ -313,6 +315,11 @@ class Store:
         if "access" not in seat_columns:
             with self._connection:
                 self._connection.execute("ALTER TABLE room_seats ADD COLUMN access TEXT")
+        if "cooldown_s" not in room_columns:
+            with self._connection:
+                self._connection.execute(
+                    "ALTER TABLE rooms ADD COLUMN cooldown_s REAL NOT NULL DEFAULT 0"
+                )
 
     def close(self) -> None:
         with self._lock:
@@ -329,6 +336,7 @@ class Store:
         budget_usd: float = 0.0,
         max_concurrent: int = 2,
         access: str = "talk",
+        cooldown_s: float = 0.0,
     ) -> Room:
         _check_room_fields(
             mode=mode,
@@ -336,6 +344,7 @@ class Store:
             budget_usd=budget_usd,
             max_concurrent=max_concurrent,
             access=access,
+            cooldown_s=cooldown_s,
         )
         room = Room(
             title=title,
@@ -345,13 +354,14 @@ class Store:
             budget_usd=budget_usd,
             max_concurrent=max_concurrent,
             access=access,
+            cooldown_s=cooldown_s,
         )
         first_thread = Thread(room_id=room.id, title=title, created_at=room.created_at)
         with self._lock, self._connection:
             self._connection.execute(
                 "INSERT INTO rooms (id, title, created_at, ended_at, mode, folder, liveliness,"
-                " budget_usd, spent_usd, max_concurrent, access)"
-                " VALUES (?, ?, ?, NULL, ?, ?, ?, ?, 0, ?, ?)",
+                " budget_usd, spent_usd, max_concurrent, access, cooldown_s)"
+                " VALUES (?, ?, ?, NULL, ?, ?, ?, ?, 0, ?, ?, ?)",
                 (
                     room.id,
                     room.title,
@@ -362,6 +372,7 @@ class Store:
                     room.budget_usd,
                     room.max_concurrent,
                     room.access,
+                    room.cooldown_s,
                 ),
             )
             # Every room has at least one thread, so a room page always has one to open.
@@ -432,6 +443,7 @@ class Store:
             spent_usd=room_row["spent_usd"],
             max_concurrent=room_row["max_concurrent"],
             access=room_row["access"],
+            cooldown_s=room_row["cooldown_s"],
             created_at=datetime.fromisoformat(room_row["created_at"]),
             ended_at=None if ended_at is None else datetime.fromisoformat(ended_at),
             seats=[_seat_from_row(seat_row, room_row["access"]) for seat_row in seat_rows],
@@ -824,6 +836,8 @@ def _check_room_fields(**fields: Any) -> None:
             raise ValueError(f"max_concurrent must be 1..4, got {max_concurrent!r}")
     if "access" in fields and fields["access"] not in ACCESS_LEVELS:
         raise ValueError(f"access must be one of {ACCESS_LEVELS}, got {fields['access']!r}")
+    if "cooldown_s" in fields and fields["cooldown_s"] < 0:
+        raise ValueError(f"cooldown_s must not be negative, got {fields['cooldown_s']!r}")
 
 
 def _check_seat_fields(**fields: Any) -> None:

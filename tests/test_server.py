@@ -211,6 +211,7 @@ def test_create_room_expands_copies_and_creates_the_default_folder(client, tmp_p
     assert expected_folder.is_dir()
     assert (room["mode"], room["liveliness"], room["budget_usd"]) == ("bidding", 0, 1.0)
     assert room["max_concurrent"] == 2  # settings default
+    assert room["cooldown_s"] == 0.0  # settings default
 
 
 def test_every_seat_in_a_room_gets_its_own_colour(client):
@@ -250,6 +251,7 @@ def test_create_room_uses_and_creates_an_explicit_folder(client, tmp_path):
         ({"title": "x", "liveliness": 11}, "liveliness"),
         ({"title": "x", "max_concurrent": 0}, "max_concurrent"),
         ({"title": "x", "max_concurrent": 5}, "max_concurrent"),
+        ({"title": "x", "cooldown_s": -1}, "cooldown_s"),
         ({"title": "x", "access": "root"}, "access"),
         ({"title": "x", "seats": [{"name": "A", "program": "pi", "access": "root"}]}, "access"),
         ({"title": "x", "seats": [{"name": "A", "program": "emacs"}]}, "program"),
@@ -351,8 +353,18 @@ def test_patch_room(client):
         {"max_concurrent": 0},
         {"max_concurrent": 5},
         {"max_concurrent": 1.5},
+        {"cooldown_s": -1},
     ):
         assert client.patch(f"/api/rooms/{room['id']}", json=bad_patch).status_code == 400
+
+
+def test_cooldown_is_set_on_create_and_patched(client):
+    room = make_room(client, cooldown_s=15)
+    assert room["cooldown_s"] == 15.0
+    response = client.patch(f"/api/rooms/{room['id']}", json={"cooldown_s": 0})
+    assert response.status_code == 200
+    assert response.json()["cooldown_s"] == 0.0
+    assert client.get(f"/api/rooms/{room['id']}").json()["room"]["cooldown_s"] == 0.0
 
 
 def test_max_concurrent_is_set_on_create_and_patched(client):

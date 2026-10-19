@@ -343,8 +343,8 @@ tuned for a 1..10 spread and stopped rooms at liveliness 8 after a few turns. Ne
   L=6: 4.5 + 0.15k. L=1: 7.0 + 0.275k. Floor default 2.5 (`router.threshold_floor`).
 - k counts **bid-driven turns only** since the last owner message or wake. Mention, @all,
   wake and round-robin turns do not raise k.
-- Cooldown is a penalty, not an exclusion: a seat still cooling bids at `score - 1.5`. The
-  author of the latest message is still excluded from the next round.
+- Cooldown (superseded 2026-10-19): it was a `-1.5` penalty; it is now a per-room exclusion,
+  see H1. The author of the latest message is still excluded from the next round.
 - Per-seat **eagerness** (D2) adjusts every bid: `adjusted = score + 0.4 * (eagerness - 5)`,
   clamped to 0..10. Eagerness 0 means the seat never bids (mentions and wake only).
 - `bids` frame: each bid carries `score` (adjusted, what the threshold compares against) and
@@ -626,3 +626,16 @@ argument. The system prompt tells the seat its level in one sentence ("You may r
 
 - **S9 backend:** `adda/**`, `tests/**`, `README.md`.
 - **S10 frontend:** `static/**`, `scripts/mock_server.py`.
+
+# v0.7 delta (2026-10-19): cooldown as the owner's pace control
+
+## H1. Cooldown per room
+- `Room.cooldown_s` (float, >= 0, default from `room_defaults.cooldown_s`, 0 = off) replaces
+  the server-wide penalty. Set in the New room form, patched from the room panel
+  (`cooldown_s` in the room patch), stored in `rooms.cooldown_s` (added in place).
+- A seat that posted a reply is left out of bidding until `cooldown_s` seconds after the reply
+  landed. A PASS starts no cooldown. Mentions, @all, wake and `[more]` ignore it.
+- An owner message, wake or wake-all clears every cooldown.
+- When the room is idle and a seat is cooling, the scheduler broadcasts `quiet` with reason
+  `cooldown` and `next_tick_in_s`, sleeps until the earliest wait ends, and runs one more
+  bidding round. This replaces the v0.2 silence from exclusion with no re-trigger.

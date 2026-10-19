@@ -81,7 +81,7 @@ with a confirm step. Copy thread and Memory live in the room panel as Secondary 
 
 The room panel shows, in order: Seats (list, Add seat), Speaking order (the three radios), Liveliness (slider),
 Pause and Wake all as two Secondary buttons, then a `<details>` named Settings that holds Seats replying at once,
-Access and Budget, and last the thread actions (Copy thread, Memory, End thread). Folder
+Access, Budget and Cooldown, and last the thread actions (Copy thread, Memory, End thread). Folder
 path and Open folder go under Settings too; they leave the meta line under the title.
 
 Messages: name block in the seat colour at weight 700, harness name as a small mono tag, time in
