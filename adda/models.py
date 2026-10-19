@@ -17,6 +17,8 @@ Program = Literal["claude", "opencode", "pi", "codex"]
 # What a seat may do in the room folder: talk = no tools, look = read-only tools,
 # work = read, edit, write and run commands (no approval prompts in v0.6).
 Access = Literal["talk", "look", "work"]
+# How a seat's replies are paid for; see Harness.billing.
+Billing = Literal["subscription", "metered"]
 ACCESS_LEVELS: tuple[str, ...] = ("talk", "look", "work")
 
 
@@ -58,6 +60,8 @@ class Seat(SeatConfig):
     handle: str = ""
     available: bool = False
     harness_version: str | None = None
+    # From the seat's harness (Harness.billing); the scheduler fills it in with `available`.
+    billing: Billing = "metered"
     # The seat's own level, else the room's. Filled in by the store, which knows the room.
     effective_access: Access = "talk"
 
@@ -145,7 +149,14 @@ class Bid(BaseModel):
 class SeatReply(BaseModel):
     text: str
     session_id: str | None = None
+    # What the tool reported this reply cost at its provider's prices. For a seat on a
+    # subscription it is notional: nothing was charged, see Seat.billing.
     cost_usd: float | None = None
+    # Token counts when the tool reports them; `cached_input_tokens` is the part of the input
+    # served from the prompt cache (already included in `input_tokens`).
+    input_tokens: int | None = None
+    cached_input_tokens: int | None = None
+    output_tokens: int | None = None
     raw: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -162,6 +173,10 @@ class Harness(BaseModel):
     default_model: str | None = None
     default_thinking: Thinking = "default"
     enabled: bool = True
+    # "subscription": the program runs under a login whose plan covers it (claude under the Max
+    # login, codex under a ChatGPT login) and its cost_usd is notional. "metered": every reply
+    # is paid per token (opencode, pi, codex on an API provider, claude on a custom base URL).
+    billing: Billing = "metered"
 
 
 class PersonaSummary(BaseModel):

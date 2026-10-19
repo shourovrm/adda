@@ -7,6 +7,7 @@ import json
 import os
 import shutil
 from abc import ABC, abstractmethod
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -25,6 +26,18 @@ class SeatError(RuntimeError):
         super().__init__(f"seat {seat} failed: {detail}")
         self.seat = seat
         self.detail = detail
+
+
+class SeatRateLimitedError(SeatError):
+    """The program's plan refused the request (the Max 5-hour window, a weekly cap...).
+
+    `resets_at` is when the tool said the limit lifts, in UTC, or None when it did not say.
+    The scheduler sets the seat aside until then instead of asking it every round.
+    """
+
+    def __init__(self, seat: str, detail: str, resets_at: datetime | None = None) -> None:
+        super().__init__(seat, detail)
+        self.resets_at = resets_at
 
 
 class SeatTimeoutError(SeatError):

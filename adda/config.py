@@ -140,6 +140,9 @@ class HarnessSettings:
     thinking: str = "default"
     enabled: bool = True
     extra_models: tuple[str, ...] = ()
+    # Claude only: an Anthropic-compatible endpoint (OpenRouter, a proxy) instead of the Max
+    # login; its token lives in keys.env as ANTHROPIC_AUTH_TOKEN. Empty = the login.
+    base_url: str = ""
 
 
 @dataclass(frozen=True)
