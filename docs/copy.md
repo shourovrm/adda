@@ -70,7 +70,7 @@ Settings page
 - "Lowest score that may speak" -> "Minimum urge to speak"; "Messages the router sees" -> "Messages considered"
 - Room defaults: "Budget (USD)" -> "Budget" + dollars hint; "Cooldown (s, 0 = off)" -> "Cooldown (seconds)" + "0 turns it off."; "Seat timeout (s)" -> "Reply timeout (seconds)"; "Safety stop (turns)" -> "Pause after (replies)" + "Replies without you before the room pauses."; "Who speaks next" -> "Speaking order"
 - Folder hints -> "New rooms get a folder here." / "Adda's own data."
-- Agents: "Base URL" + hint "Empty uses your Claude login." and key "Claude provider key" (2026-10-19): a Claude seat on OpenRouter or a proxy instead of the Max login
+- Agents: "Claude base URL" + hint "Empty uses your Claude login." and key "Claude provider key" (2026-10-19): a Claude seat on OpenRouter or a proxy instead of the Max login
 
 Room page, billing and limits (2026-10-19)
 - Meta line: "$0.012 at API prices" for a subscription seat (nothing was charged), "3.1k cached · 0.4k new · 0.2k out" when the agent reports tokens
