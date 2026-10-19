@@ -62,6 +62,9 @@ class Seat(SeatConfig):
     harness_version: str | None = None
     # From the seat's harness (Harness.billing); the scheduler fills it in with `available`.
     billing: Billing = "metered"
+    # When the program's plan limit lifts (UTC), while it is in force; else None. The limit
+    # belongs to the login, so every seat of the program shares it.
+    limited_until: datetime | None = None
     # The seat's own level, else the room's. Filled in by the store, which knows the room.
     effective_access: Access = "talk"
 
@@ -133,7 +136,9 @@ class Message(BaseModel):
     mentions: list[str] = Field(default_factory=list)  # seat ids
     cost_usd: float | None = None
     # bid_score, model, latency_ms, woken_by
-    # ("mention"|"all"|"wake"|"bid"|"roundrobin"|"more"|"afterthought")
+    # ("mention"|"all"|"wake"|"bid"|"roundrobin"|"more"|"afterthought"), billing
+    # ("subscription"|"metered"; a subscription seat's cost_usd is notional), and when the tool
+    # reported them: input_tokens, cached_input_tokens, output_tokens (cached is part of input).
     meta: dict[str, Any] = Field(default_factory=dict)
 
 

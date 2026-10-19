@@ -142,7 +142,11 @@ def test_settings_carry_the_provider_key_and_view_shows_only_booleans(tmp_path, 
     settings = load(isolated)
     assert settings.jev_api_key == "sk-test-value"
     view = settings_view(settings)
-    assert view["keys"] == {"openrouter": True, "typesafe": False}
+    assert view["keys"] == {
+        "openrouter": True,
+        "typesafe": False,
+        "anthropic_auth_token": False,
+    }
     assert "sk-test-value" not in repr(settings)
     assert "sk-test-value" not in str(view)
 
@@ -209,3 +213,24 @@ def test_access_default_comes_from_toml_then_environment_and_is_validated(isolat
     with pytest.raises(ConfigError, match="access"):
         load(isolated, {"ADDA_ACCESS": "root"})
     assert settings_view(load(isolated))["room_defaults"]["access"] == "look"
+
+
+def test_claude_base_url_round_trips_and_token_stays_in_keys_env(tmp_path, isolated):
+    (tmp_path / "keys.env").write_text("ANTHROPIC_AUTH_TOKEN=tok-secret\n", encoding="utf-8")
+    settings = load(isolated)
+    assert settings.harnesses["claude"].base_url == ""
+    assert settings.harnesses["claude"].auth_token == "tok-secret"
+    assert settings.harnesses["opencode"].auth_token == ""
+    assert "tok-secret" not in repr(settings)
+
+    view = settings_view(settings)
+    assert view["keys"]["anthropic_auth_token"] is True
+    assert view["harness"]["claude"]["base_url"] == ""
+    assert "base_url" not in view["harness"]["opencode"]
+    assert "tok-secret" not in str(view)
+
+    view["harness"]["claude"]["base_url"] = "https://openrouter.ai/api"
+    written = save_settings(view, isolated["config_path"])
+    assert "tok-secret" not in written.read_text(encoding="utf-8")
+    reloaded = load(isolated)
+    assert reloaded.harnesses["claude"].base_url == "https://openrouter.ai/api"

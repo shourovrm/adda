@@ -60,6 +60,14 @@
           <thead><tr><th>Agent</th><th>Model</th><th>Thinking</th><th>On</th></tr></thead>
           <tbody id="harness-rows"></tbody>
         </table>
+        <div class="field-row">
+          <div class="field">
+            <label for="claude-base-url-input">Base URL</label>
+            <input class="input--30" type="text" id="claude-base-url-input" data-path="harness.claude.base_url">
+            <div class="hint">Empty uses your Claude login.</div>
+          </div>
+          <div class="field" id="claude-key-field"></div>
+        </div>
         <p class="panel-actions"><button class="btn" id="rescan-button" type="button">Look again</button></p>
       </section>
 
@@ -92,7 +100,7 @@
           </div>
         </div>
         <div id="key-fields"></div>
-        <p class="panel-note">Saved with Save and never shown again. Claude uses your login, not a key.</p>
+        <p class="panel-note">Saved with Save and never shown again.</p>
         <div class="field-row">
           <div class="field">
             <label for="floor-input">Minimum urge to speak</label>

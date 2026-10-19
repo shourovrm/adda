@@ -11,23 +11,28 @@ Thinking flags, verified on this machine on 2026-10-14 by reading `--help` (no p
     opencode  1.17.7    `run --variant <level>`  provider-specific string ("high", "max",
                         "minimal"); it is passed through unchanged. Do not confuse it with
                         `run --thinking`, which only shows thinking blocks.
-    codex     not installed here. `-c model_reasoning_effort=<level>` comes from the spec and is
-              UNVERIFIED; check `codex --help` once the binary exists.
+    codex     0.163.0   `-c model_reasoning_effort=<level>`. `codex exec --help` documents `-c`
+                        as "Override a configuration value that would otherwise be loaded from
+                        `~/.codex/config.toml`"; the key name itself is present in the binary's
+                        config schema (checked 2026-10-19), but no call was run with it.
 
 Our four levels (default, low, medium, high) map as follows: "default" sends nothing; low,
 medium and high are sent as is to all four programs, because each accepts those three words.
 `thinking_arguments()` builds the argument list so adapters do not repeat this table.
 
-Version output: claude prints "2.1.299 (Claude Code)", opencode "1.17.7", pi "1.1.0".
+Version output: claude prints "2.1.299 (Claude Code)", opencode "1.17.7", pi "1.1.0", codex
+"codex-cli 0.163.0".
 """
 
 from __future__ import annotations
 
 import json
+import logging
 import re
 import shutil
 import subprocess
 import time
+import tomllib
 from collections.abc import Callable
 from pathlib import Path
 
@@ -55,6 +60,9 @@ BUILT_IN_MODEL_SUGGESTIONS = {
 }
 PI_FALLBACK_MODELS = ["z-ai/glm-5.3-flash"]
 PI_SETTINGS_PATH = Path("~/.pi/agent/settings.json").expanduser()
+CODEX_HOME = Path("~/.codex").expanduser()
+
+logger = logging.getLogger(__name__)
 
 LOGIN_HINTS = {
     "claude": "Run `claude` once and sign in with your Max account (/login).",
@@ -153,6 +161,41 @@ def pi_models(settings_path: Path) -> list[str]:
     return names or list(PI_FALLBACK_MODELS)
 
 
+def _read_toml(path: Path) -> dict:
+    """Parse a TOML file; a missing or unparsable file is logged and gives an empty dict."""
+    try:
+        return tomllib.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    except (OSError, tomllib.TOMLDecodeError, UnicodeDecodeError) as error:
+        logger.warning("cannot read codex config %s: %s", path, error)
+        return {}
+
+
+def codex_models(codex_home: Path) -> list[str]:
+    """`model` of config.toml, then of each `<name>.config.toml` profile, without repeats.
+
+    Codex has no model-list command; these files are the only place the owner's models are
+    written down. Profiles are the files `codex exec -p <name>` layers on the base config.
+    """
+    config_paths = [codex_home / "config.toml"]
+    config_paths += sorted(codex_home.glob("*.config.toml"))
+    names: list[str] = []
+    for config_path in config_paths:
+        model = _read_toml(config_path).get("model")
+        if isinstance(model, str):
+            names.append(model)
+    return _deduplicated(names)
+
+
+def codex_billing(codex_home: Path) -> str:
+    """ "metered" when config.toml routes codex to a provider other than OpenAI's own login."""
+    model_provider = _read_toml(codex_home / "config.toml").get("model_provider")
+    if isinstance(model_provider, str) and model_provider not in ("", "openai"):
+        return "metered"
+    return "subscription"
+
+
 def _deduplicated(names: list[str]) -> list[str]:
     seen: set[str] = set()
     ordered: list[str] = []
@@ -169,6 +212,7 @@ def detect_harnesses(
     which: Finder = shutil.which,
     now: Callable[[], float] = time.monotonic,
     pi_settings_path: Path = PI_SETTINGS_PATH,
+    codex_home: Path = CODEX_HOME,
 ) -> list[Harness]:
     """One Harness per program in the fixed order claude, opencode, pi, codex."""
     harnesses: list[Harness] = []
@@ -183,8 +227,18 @@ def detect_harnesses(
             base_models = _opencode_models(run, now()) if found else []
         elif program == "pi":
             base_models = pi_models(pi_settings_path)
+        elif program == "codex":
+            base_models = codex_models(codex_home) or list(BUILT_IN_MODEL_SUGGESTIONS["codex"])
         else:
             base_models = list(BUILT_IN_MODEL_SUGGESTIONS[program])
+
+        if program == "claude":
+            has_base_url = bool(harness_settings and harness_settings.base_url)
+            billing = "metered" if has_base_url else "subscription"
+        elif program == "codex":
+            billing = codex_billing(codex_home)
+        else:
+            billing = "metered"
 
         harnesses.append(
             Harness(
@@ -198,6 +252,7 @@ def detect_harnesses(
                 default_model=(harness_settings.model or None) if harness_settings else None,
                 default_thinking=harness_settings.thinking if harness_settings else "default",
                 enabled=harness_settings.enabled if harness_settings else True,
+                billing=billing,
             )
         )
     return harnesses

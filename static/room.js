@@ -537,10 +537,34 @@ function appendMessageElement(message) {
   elements.messageList.append(item);
 }
 
+/** 3100 -> "3.1k", 420 -> "420". */
+function formatTokenCount(count) {
+  return count < 1000 ? String(count) : `${(count / 1000).toFixed(1)}k`;
+}
+
+/** "3.1k cached · 0.4k new · 0.2k out"; empty when the tool reported no tokens. */
+function describeTokens(meta) {
+  const parts = [];
+  const { input_tokens: input, cached_input_tokens: cached, output_tokens: output } = meta;
+  if (typeof input === 'number') {
+    const cachedCount = typeof cached === 'number' ? cached : 0;
+    if (typeof cached === 'number') parts.push(`${formatTokenCount(cachedCount)} cached`);
+    parts.push(`${formatTokenCount(Math.max(0, input - cachedCount))} new`);
+  }
+  if (typeof output === 'number') parts.push(`${formatTokenCount(output)} out`);
+  return parts.join(' · ');
+}
+
 function describeMessageMeta(message) {
   const parts = [formatClock(message.created_at)];
-  if (typeof message.cost_usd === 'number') parts.push(formatMoney(message.cost_usd));
   const meta = message.meta || {};
+  if (typeof message.cost_usd === 'number') {
+    // A subscription seat is not charged per reply; its cost is what the same reply would cost on the API.
+    const costText = formatMoney(message.cost_usd);
+    parts.push(meta.billing === 'subscription' ? `${costText} at API prices` : costText);
+  }
+  const tokensText = describeTokens(meta);
+  if (tokensText) parts.push(tokensText);
   if (typeof meta.latency_ms === 'number') parts.push(formatDuration(meta.latency_ms));
   if (meta.woken_by === 'bid' && typeof meta.bid_score === 'number') {
     parts.push(`bid ${meta.bid_score.toFixed(1)}`);
@@ -810,9 +834,16 @@ function cooldownSecondsLeft(seatId) {
   return endsAt ? Math.max(0, Math.ceil((endsAt - Date.now()) / 1000)) : 0;
 }
 
+function limitedUntilDate(seat) {
+  if (!seat.limited_until) return null;
+  const until = new Date(seat.limited_until);
+  return until.getTime() > Date.now() ? until : null;
+}
+
 function computeSeatState(seat) {
   if (!seat.available) return 'unavailable';
   if (!seat.enabled) return 'disabled';
+  if (limitedUntilDate(seat)) return 'limited';
   if (state.typingSeatIds.has(seat.id)) return 'speaking';
   if (cooldownSecondsLeft(seat.id) > 0) return 'cooldown';
   if (state.chosenSeatIds.has(seat.id)) return 'chosen';
@@ -827,6 +858,8 @@ function describeSeatState(seat, seatState) {
       return 'Disabled';
     case 'speaking':
       return 'Speaking';
+    case 'limited':
+      return `Limit reached · back ${formatClock(limitedUntilDate(seat).toISOString())}`;
     case 'cooldown':
       return `Cooling down ${cooldownSecondsLeft(seat.id)} s`;
     case 'chosen':

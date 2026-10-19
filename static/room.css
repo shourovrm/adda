@@ -475,6 +475,7 @@ a.search-result:hover {
 }
 
 .seat-chip[data-state="disabled"],
+.seat-chip[data-state="limited"],
 .seat-chip[data-state="unavailable"] {
   opacity: 0.55;
 }
@@ -766,6 +767,7 @@ a.search-result:hover {
 }
 
 .seat-card[data-state="disabled"],
+.seat-card[data-state="limited"],
 .seat-card[data-state="unavailable"] {
   opacity: 0.6;
 }

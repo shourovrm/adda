@@ -66,10 +66,15 @@ Settings page
 - "Your name in the room" hint -> deleted: rule 6. "Your line for the seats" -> "About you", hint -> "Shown to every seat.": banned word
 - Agents note -> "Defaults for seats that do not set their own."; columns "Harness"/"Default model" -> "Agent"/"Model"; "not on PATH" -> "Not installed"; login line only when not installed; "Re-scan PATH" -> "Look again"; toast -> "Agents checked."; error -> "Could not check the agents"
 - Personas note -> "A voice and a memory a seat can take."
-- "Who decides who speaks" -> "Turn-taking", options "Automatic (Jev)" / "Simple (no network)"; model placeholder -> "Default"; key pills "Set"/"Not set"; key placeholders -> "Paste a new key to replace it" / "Paste a key"; key note -> "Saved with Save and never shown again. Claude uses your login, not a key."
+- "Who decides who speaks" -> "Turn-taking", options "Automatic (Jev)" / "Simple (no network)"; model placeholder -> "Default"; key pills "Set"/"Not set"; key placeholders -> "Paste a new key to replace it" / "Paste a key"; key note -> "Saved with Save and never shown again."
 - "Lowest score that may speak" -> "Minimum urge to speak"; "Messages the router sees" -> "Messages considered"
 - Room defaults: "Budget (USD)" -> "Budget" + dollars hint; "Cooldown (s, 0 = off)" -> "Cooldown (seconds)" + "0 turns it off."; "Seat timeout (s)" -> "Reply timeout (seconds)"; "Safety stop (turns)" -> "Pause after (replies)" + "Replies without you before the room pauses."; "Who speaks next" -> "Speaking order"
 - Folder hints -> "New rooms get a folder here." / "Adda's own data."
+- Agents: "Base URL" + hint "Empty uses your Claude login." and key "Claude provider key" (2026-10-19): a Claude seat on OpenRouter or a proxy instead of the Max login
+
+Room page, billing and limits (2026-10-19)
+- Meta line: "$0.012 at API prices" for a subscription seat (nothing was charged), "3.1k cached · 0.4k new · 0.2k out" when the agent reports tokens
+- Seat card state "Limit reached · back 14:00"; system messages "X has reached its plan's limit. It will be tried again at 14:00." / "... in 30 min." / "X is at its plan's limit until 14:00.": rule 4
 
 Server messages
 - "Seat X: program claude not found." -> "X cannot reply: claude is not installed."; "Seat X failed: D" -> "X could not reply. D"; "Seat X: E" -> "X cannot reply: E"

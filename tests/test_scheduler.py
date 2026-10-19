@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
+from datetime import timedelta
 
 import pytest
 
-from adda.models import Room, SeatReply
+from adda.models import Room, SeatReply, utc_now
 from adda.personas import PersonaError, list_memory_notes, load_persona
 from adda.prompts import END_OF_DISCUSSION_PROMPT
 from adda.routers.base import RouterError
@@ -20,7 +21,7 @@ from adda.scheduler import (
     adjusted_bid_score,
     liveliness_threshold,
 )
-from adda.seats.base import SeatError
+from adda.seats.base import SeatError, SeatRateLimitedError
 from adda.store import Store
 from tests.fakes import FakeAdapterFactory, FakeClock, FakeRouter, FakeSleeper, make_settings
 
@@ -1638,3 +1639,122 @@ def test_note_title_prefers_first_sentence_and_word_boundary():
     assert len(title) <= 80
     assert not title.endswith('"a')
     assert title.endswith("explicit")
+
+
+# Billing and spend ------------------------------------------------------------------------
+
+
+async def test_subscription_cost_is_shown_but_never_spent(tmp_path):
+    room = build_harness(tmp_path, budget_usd=0.01)
+    room.scheduler.harness_billing = lambda: {"claude": "subscription"}
+    room.adapter("Ravi").script(
+        SeatReply(
+            text="covered",
+            cost_usd=0.5,
+            input_tokens=3500,
+            cached_input_tokens=3100,
+            output_tokens=200,
+        )
+    )
+    await room.scheduler.say("@ravi status")
+    await room.settle()
+    reply = next(m for m in room.messages() if m.role == "seat")
+    assert reply.cost_usd == 0.5
+    assert reply.meta["billing"] == "subscription"
+    assert (reply.meta["input_tokens"], reply.meta["cached_input_tokens"]) == (3500, 3100)
+    assert reply.meta["output_tokens"] == 200
+    assert room.store.get_room(room.room_id).spent_usd == 0
+    assert room.system_texts() == []
+    assert room.current_room().seats[0].billing == "subscription"
+
+
+async def test_metered_seat_trips_the_budget_and_omits_missing_tokens(tmp_path):
+    room = build_harness(tmp_path, budget_usd=0.01)
+    room.adapter("Ravi").script(SeatReply(text="costly", cost_usd=0.02))
+    await room.scheduler.say("@ravi status")
+    await room.settle()
+    reply = next(m for m in room.messages() if m.role == "seat")
+    assert reply.meta["billing"] == "metered"
+    assert "input_tokens" not in reply.meta
+    assert room.system_texts() == ["Budget of $0.01 reached; raise it to continue."]
+
+
+# Plan limits ------------------------------------------------------------------------------
+
+
+async def test_rate_limit_sets_the_program_aside_until_the_reset(tmp_path):
+    room = build_harness(
+        tmp_path,
+        seats=(
+            {"name": "Ravi", "program": "claude"},
+            {"name": "Tuli", "program": "claude"},
+            {"name": "Pi", "program": "pi"},
+        ),
+        liveliness=10,
+    )
+    reset = utc_now() + timedelta(hours=2)
+    room.adapter("Ravi").script(SeatRateLimitedError("Ravi", "weekly cap", reset))
+    await room.scheduler.say("@ravi hello")
+    await room.settle()
+    assert room.spoken() == []
+    assert room.system_texts() == [
+        f"Ravi has reached its plan's limit. It will be tried again at "
+        f"{reset.astimezone().strftime('%H:%M')}."
+    ]
+    seats = {seat.name: seat for seat in room.current_room().seats}
+    assert seats["Ravi"].limited_until == reset
+    assert seats["Tuli"].limited_until == reset  # the limit belongs to the login
+    assert seats["Pi"].limited_until is None
+
+    # Not a bidder while limited: only Pi is asked in the next round.
+    room.router.script({"Pi": 9.0, "Tuli": 9.0})
+    await room.scheduler.say("anyone?")
+    await room.settle()
+    asked = [bid["seat"] for bid in room.frames_of("bids")[-1]["bids"]]
+    assert asked == [room.seat_id("Pi")]
+
+    # A mention says so once, then stays silent, and runs nothing.
+    await room.scheduler.say("@tuli hi")
+    await room.scheduler.say("@tuli again")
+    await room.settle()
+    notices = [t for t in room.system_texts() if "is at its plan's limit until" in t]
+    assert notices == [f"Tuli is at its plan's limit until {reset.astimezone().strftime('%H:%M')}."]
+    assert room.adapter("Tuli").calls == []
+
+    # Past the reset the seat is eligible again with no timer.
+    room.clock.advance(2 * 3600 + 1)
+    assert room.current_room().seats[0].limited_until is None
+    room.router.script({"Tuli": 9.0})
+    await room.scheduler.say("back?")
+    await room.settle()
+    assert ("Tuli", "default reply from Tuli") in room.spoken()
+
+
+async def test_rate_limit_without_a_reset_time_waits_thirty_minutes(tmp_path):
+    room = build_harness(tmp_path)
+    room.adapter("Ravi").script(SeatRateLimitedError("Ravi", "limit"))
+    await room.scheduler.say("@ravi hello")
+    await room.settle()
+    assert room.system_texts() == [
+        "Ravi has reached its plan's limit. It will be tried again in 30 min."
+    ]
+    room.clock.advance(1799)
+    assert room.current_room().seats[0].limited_until is not None
+    room.clock.advance(2)
+    assert room.current_room().seats[0].limited_until is None
+
+
+async def test_limited_program_is_left_out_of_round_robin(tmp_path):
+    room = build_harness(
+        tmp_path,
+        seats=({"name": "Ravi", "program": "claude"}, {"name": "Pi", "program": "pi"}),
+        mode="roundrobin",
+    )
+    room.adapter("Ravi").script(SeatRateLimitedError("Ravi", "limit"))
+    await room.scheduler.say("@ravi go")
+    await room.settle()
+    await room.scheduler.say("everyone")
+    await room.settle()
+    # Pi answers both owner messages (a pass each); Ravi was only tried once.
+    assert [author for author, _ in room.spoken()] == ["Pi", "Pi"]
+    assert len(room.adapter("Ravi").calls) == 1

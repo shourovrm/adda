@@ -69,6 +69,7 @@ from adda.routers.jev import JevRouter
 from adda.scheduler import (
     AdapterBuilder,
     BudgetReachedError,
+    RateLimit,
     RoomEndedError,
     Scheduler,
     UnknownSeatError,
@@ -226,6 +227,8 @@ class Hub:
         self.connections: dict[str, dict[WebSocket, str]] = {}
         self.background_tasks: set[asyncio.Task] = set()
         self.harness_cache: list[Harness] | None = None
+        # Plan limits by program, shared by every scheduler: the limit belongs to the login.
+        self.rate_limits: dict[str, RateLimit] = {}
 
     # Harnesses
 
@@ -243,6 +246,12 @@ class Hub:
             return {}
         return {harness.program: harness.version for harness in self.harness_cache}
 
+    def harness_billing(self) -> dict[str, str]:
+        """How each program is paid for, from the last scan; empty until the first scan."""
+        if self.harness_cache is None:
+            return {}
+        return {harness.program: harness.billing for harness in self.harness_cache}
+
     # Threads and their schedulers
 
     def scheduler(self, thread_id: str) -> Scheduler:
@@ -259,6 +268,8 @@ class Hub:
                 broadcast_room=lambda frame: self.broadcast(room_id, frame),
                 adapter_builder=self.adapter_builder,
                 harness_versions=self.harness_versions,
+                harness_billing=self.harness_billing,
+                rate_limits=self.rate_limits,
             )
         return self.schedulers[thread_id]
 

@@ -22,6 +22,8 @@ import logging
 import random
 import time
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -35,7 +37,9 @@ from adda.models import (
     Message,
     Room,
     Seat,
+    SeatReply,
     Thread,
+    utc_now,
 )
 from adda.personas import Persona, PersonaError, load_persona, load_personas, write_memory_note
 from adda.prompts import (
@@ -53,7 +57,7 @@ from adda.routers.base import (
     Router,
     RouterError,
 )
-from adda.seats.base import SeatAdapter, SeatError, is_pass
+from adda.seats.base import SeatAdapter, SeatError, SeatRateLimitedError, is_pass
 from adda.seats.registry import build_adapter
 from adda.store import Store
 
@@ -67,6 +71,8 @@ AdapterBuilder = Callable[..., SeatAdapter]
 FIRST_TURN_HISTORY_LIMIT = 50
 MEMORY_NOTE_TITLE_LENGTH = 80
 EAGERNESS_STEP = 0.4
+# How long a program stays set aside when its plan limit comes without a reset time.
+RATE_LIMIT_RETRY_S = 1800
 
 # Reasons stored in Message.meta["woken_by"] and sent in quiet frames.
 WOKEN_BY_BID = "bid"
@@ -111,6 +117,21 @@ SEAT_PATCH_FIELDS = (
 )
 # Text fields where the UI sends "" to mean "unset".
 EMPTY_MEANS_NONE_FIELDS = ("model", "persona", "instruction")
+
+
+@dataclass
+class RateLimit:
+    """A program's plan limit. `deadline` is on the scheduler clock (what decides when the
+    program is eligible again); `until` is the same moment as a date for display."""
+
+    deadline: float
+    until: datetime
+    # The "at its limit" notice for a mention goes out once per limit.
+    announced: bool = False
+
+
+def local_time_text(moment: datetime) -> str:
+    return moment.astimezone().strftime("%H:%M")
 
 
 class RoomEndedError(RuntimeError):
@@ -195,6 +216,8 @@ class Scheduler:
         broadcast: Broadcast,
         adapter_builder: AdapterBuilder = build_adapter,
         harness_versions: Callable[[], dict[str, str | None]] = dict,
+        harness_billing: Callable[[], dict[str, str]] = dict,
+        rate_limits: dict[str, RateLimit] | None = None,
         clock: Callable[[], float] = time.monotonic,
         sleep: Sleep = asyncio.sleep,
         uniform: Callable[[float, float], float] = random.uniform,
@@ -212,6 +235,10 @@ class Scheduler:
         self.broadcast_room = broadcast_room if broadcast_room is not None else broadcast
         self.adapter_builder = adapter_builder
         self.harness_versions = harness_versions
+        self.harness_billing = harness_billing
+        # Plan limits by program. The caller shares one dict between the threads of a room (the
+        # limit belongs to the login, not to a thread).
+        self.rate_limits = rate_limits if rate_limits is not None else {}
         # Time and randomness are injected so tests never wait for an afterthought delay.
         self.clock = clock
         self._sleep = sleep
@@ -266,18 +293,31 @@ class Scheduler:
     def describe(self, room: Room) -> Room:
         self._sync_adapters(room)
         versions = self.harness_versions()
+        billing = self.harness_billing()
         seats = []
         for seat in room.seats:
             adapter = self.adapters[seat.id]
+            limit = self._active_limit(seat.program)
             seats.append(
                 seat.model_copy(
                     update={
                         "available": adapter.available(),
                         "harness_version": versions.get(seat.program),
+                        "billing": billing.get(seat.program, "metered"),
+                        "limited_until": limit.until if limit else None,
                     }
                 )
             )
         return room.model_copy(update={"seats": seats})
+
+    def _active_limit(self, program: str) -> RateLimit | None:
+        """The program's plan limit while it is in force; an expired one is forgotten, so the
+        program is eligible again without any timer."""
+        limit = self.rate_limits.get(program)
+        if limit is not None and self.clock() >= limit.deadline:
+            del self.rate_limits[program]
+            return None
+        return limit
 
     def update_settings(self, settings: Settings, router: Router | None = None) -> None:
         """New settings take effect on the next turn; adapters rebuild when defaults changed."""
@@ -794,7 +834,10 @@ class Scheduler:
             return False
         if room.mode != "bidding" or room.liveliness == 0 or self._ticks_left(room) == 0:
             return False
-        return any(seat.enabled and seat.eagerness > 0 for seat in room.seats)
+        return any(
+            seat.enabled and seat.eagerness > 0 and self._active_limit(seat.program) is None
+            for seat in room.seats
+        )
 
     def _afterthought_delay(self, room: Room) -> float:
         """(11 - L) * 20 s, jittered 0.7..1.3, scaled by `afterthought_scale`; the first tick of
@@ -865,7 +908,10 @@ class Scheduler:
         queue = [
             seat.id
             for seat in room.seats
-            if seat.enabled and seat.available and seat.id not in already_started
+            if seat.enabled
+            and seat.available
+            and seat.id not in already_started
+            and self._active_limit(seat.program) is None
         ]
         self.roundrobin_task = asyncio.create_task(self._guarded(self._roundrobin_pass, queue))
 
@@ -902,6 +948,7 @@ class Scheduler:
                 and seat.available
                 and seat.id not in self.speaking
                 and seat.id not in cooling
+                and self._active_limit(seat.program) is None
             ]
             if not bidders:
                 return 0
@@ -1014,6 +1061,10 @@ class Scheduler:
         if not seat.available:
             await self._post_system(f"{seat.name} cannot reply: {seat.program} is not installed.")
             return None, False
+        limit = self._active_limit(seat.program)
+        if limit is not None:
+            await self._announce_limit_for_mention(seat, limit, woken_by)
+            return None, False
         try:
             persona = self._persona_for(seat)
         except PersonaError as error:
@@ -1049,6 +1100,9 @@ class Scheduler:
             reply = await adapter.run(
                 prompt, seat_system_prompt, session_id, self.settings.seat_timeout_s
             )
+        except SeatRateLimitedError as error:
+            await self._set_aside_for_limit(seat, error)
+            return None, False
         except SeatError as error:
             await self._post_system(f"{seat.name} could not reply. {error.detail}")
             return None, False
@@ -1066,14 +1120,19 @@ class Scheduler:
             logger.info("seat %s passed", seat.name)
             self.passed_seats.add(seat.id)
             await self.broadcast({"type": "passed", "seat": seat.id})
-            await self._record_spend(reply.cost_usd)  # a PASS still cost money
+            await self._record_spend(reply, seat)  # a PASS still cost money
             return None, False
 
         meta: dict[str, Any] = {
             "model": self._effective_model(seat),
             "latency_ms": latency_ms,
             "woken_by": woken_by,
+            "billing": seat.billing,
         }
+        for token_key in ("input_tokens", "cached_input_tokens", "output_tokens"):
+            token_count = getattr(reply, token_key)
+            if token_count is not None:
+                meta[token_key] = token_count
         if bid_score is not None:
             meta["bid_score"] = bid_score
         message = Message(
@@ -1091,13 +1150,47 @@ class Scheduler:
         # The cooldown counts from the reply landing, not from the seat starting to compose, so
         # a slow seat gets the same quiet stretch as a fast one. A PASS starts no cooldown.
         self.last_spoke_at[seat.id] = self.clock()
-        await self._record_spend(reply.cost_usd)
+        await self._record_spend(reply, seat)
         return message, wants_more
 
-    async def _record_spend(self, cost_usd: float | None) -> None:
-        if cost_usd:
-            self.store.add_spend(self.room_id, cost_usd)
+    async def _record_spend(self, reply: SeatReply, seat: Seat) -> None:
+        """Count the reply's cost against the budget, unless the seat's plan covers it: a
+        subscription seat's cost is notional and only shown."""
+        if reply.cost_usd and seat.billing == "metered":
+            self.store.add_spend(self.room_id, reply.cost_usd)
             await self.publish_room()
+
+    async def _set_aside_for_limit(self, seat: Seat, error: SeatRateLimitedError) -> None:
+        """The seat's plan refused the request: set its program aside until the reset."""
+        now = utc_now()
+        seconds_left = RATE_LIMIT_RETRY_S
+        if error.resets_at is not None:
+            seconds_left = (error.resets_at - now).total_seconds()
+            if seconds_left <= 0:
+                seconds_left = RATE_LIMIT_RETRY_S
+        known_reset = error.resets_at is not None and error.resets_at > now
+        already_limited = self._active_limit(seat.program) is not None
+        until = error.resets_at if known_reset else now + timedelta(seconds=RATE_LIMIT_RETRY_S)
+        self.rate_limits[seat.program] = RateLimit(
+            deadline=self.clock() + seconds_left, until=until
+        )
+        if not already_limited:
+            when = f"at {local_time_text(until)}" if known_reset else "in 30 min"
+            await self._post_system(
+                f"{seat.name} has reached its plan's limit. It will be tried again {when}."
+            )
+        await self.publish_room()
+
+    async def _announce_limit_for_mention(
+        self, seat: Seat, limit: RateLimit, woken_by: str
+    ) -> None:
+        """A mention or wake of a limited seat runs nothing; say so once per limit."""
+        if woken_by not in FOLLOW_UP_REASONS or limit.announced:
+            return
+        limit.announced = True
+        await self._post_system(
+            f"{seat.name} is at its plan's limit until {local_time_text(limit.until)}."
+        )
 
     def _unseen_messages(self, seat_id: str, messages: list[Message]) -> list[Message]:
         """Messages by others after the last one this seat saw, or after its own last message.
@@ -1148,7 +1241,7 @@ class Scheduler:
             return []
         finally:
             await self.broadcast({"type": "typing", "seat": seat.id, "state": "stop"})
-        if reply.cost_usd:
+        if reply.cost_usd and seat.billing == "metered":
             self.store.add_spend(self.room_id, reply.cost_usd)
 
         bullets = parse_memory_bullets(reply.text)

@@ -12,6 +12,8 @@
 const KEY_FIELDS = [
   { name: 'openrouter', label: 'OpenRouter key', variable: 'OPENROUTER_API_KEY' },
   { name: 'typesafe', label: 'TypeSafe key', variable: 'TYPESAFE_API_KEY' },
+  // Sits beside the Base URL in the Agents section instead of the turn-taking keys.
+  { name: 'anthropic_auth_token', label: 'Claude provider key', variable: 'ANTHROPIC_AUTH_TOKEN', containerId: 'claude-key-field' },
 ];
 
 // Two 24-unit strokes: an open eye, and the same eye crossed out while the key is shown.
@@ -30,6 +32,7 @@ const elements = {
   harnessRows: document.getElementById('harness-rows'),
   personaRows: document.getElementById('persona-rows'),
   keyFields: document.getElementById('key-fields'),
+  claudeKeyField: document.getElementById('claude-key-field'),
   rescanButton: document.getElementById('rescan-button'),
   saveButton: document.getElementById('save-button'),
   saveStatus: document.getElementById('save-status'),
@@ -93,7 +96,7 @@ function collectSettings() {
     writePath(body, field.dataset.path, collectField(field));
   }
   const keys = {};
-  for (const input of elements.keyFields.querySelectorAll('input[data-key]')) {
+  for (const input of elements.form.querySelectorAll('input[data-key]')) {
     if (input.value.trim() !== '') keys[input.dataset.key] = input.value.trim();
   }
   if (Object.keys(keys).length > 0) body.keys = keys;
@@ -116,9 +119,12 @@ function markEnvOverrides() {
 
 function renderKeyFields() {
   elements.keyFields.replaceChildren();
+  elements.claudeKeyField.replaceChildren();
   for (const keyField of KEY_FIELDS) {
     const isSet = Boolean((state.settings.keys || {})[keyField.name]);
-    const wrapper = createElement('div', 'field');
+    // A key with its own container (already a .field in the page) fills it; the rest get a new field.
+    const ownContainer = keyField.containerId ? document.getElementById(keyField.containerId) : null;
+    const wrapper = ownContainer || createElement('div', 'field');
     const label = createElement('label', '', keyField.label + ' ');
     label.append(createElement('span', isSet ? 'pill pill--good' : 'pill pill--bad', isSet ? 'Set' : 'Not set'));
     const input = document.createElement('input');
@@ -145,7 +151,7 @@ function renderKeyFields() {
     const row = createElement('div', 'key-row');
     row.append(input, toggle);
     wrapper.append(label, row);
-    elements.keyFields.append(wrapper);
+    if (!ownContainer) elements.keyFields.append(wrapper);
   }
 }
 

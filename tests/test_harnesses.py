@@ -1,3 +1,5 @@
+from dataclasses import replace
+
 import pytest
 
 from adda import harnesses
@@ -9,6 +11,8 @@ from adda.harnesses import (
     pi_models,
     thinking_arguments,
 )
+
+PROGRAMS = ("claude", "opencode", "pi", "codex")
 
 
 @pytest.fixture(autouse=True)
@@ -88,7 +92,11 @@ def test_defaults_come_from_settings_and_extras_are_appended(tmp_path):
     by_program = {
         h.program: h
         for h in detect_harnesses(
-            settings, system.run, system.which, pi_settings_path=tmp_path / "no-pi.json"
+            settings,
+            system.run,
+            system.which,
+            pi_settings_path=tmp_path / "no-pi.json",
+            codex_home=tmp_path / "no-codex",
         )
     }
     claude, pi, codex = by_program["claude"], by_program["pi"], by_program["codex"]
@@ -194,3 +202,85 @@ def test_detect_harnesses_lists_pi_models_from_the_given_file(settings, tmp_path
     system = FakeSystem({"pi"})
     result = detect_harnesses(settings, system.run, system.which, pi_settings_path=settings_file)
     assert result[2].model_suggestions == ["p/m"]
+
+
+# --- codex models and billing, claude billing ------------------------------------------------
+
+
+def write_codex_home(codex_home, base="", profiles=None):
+    codex_home.mkdir(exist_ok=True)
+    (codex_home / "config.toml").write_text(base, encoding="utf-8")
+    for name, text in (profiles or {}).items():
+        (codex_home / f"{name}.config.toml").write_text(text, encoding="utf-8")
+
+
+def test_codex_models_lists_base_then_profiles_without_repeats(tmp_path):
+    write_codex_home(
+        tmp_path,
+        'model = "openai/gpt-6-luna"\nmodel_provider = "openrouter"\n',
+        {"fast": 'model = "gpt-5-mini"\n', "same": 'model = "openai/gpt-6-luna"\n'},
+    )
+    assert harnesses.codex_models(tmp_path) == ["openai/gpt-6-luna", "gpt-5-mini"]
+
+
+def test_codex_models_tolerates_missing_and_broken_files(tmp_path, caplog):
+    assert harnesses.codex_models(tmp_path / "absent") == []
+    write_codex_home(tmp_path, "model = [unclosed", {"ok": 'model = "m"\n'})
+    assert harnesses.codex_models(tmp_path) == ["m"]
+    assert "cannot read codex config" in caplog.text
+
+
+def test_detect_uses_codex_config_and_falls_back_to_built_in_models(settings, tmp_path):
+    system = FakeSystem({"codex"})
+    write_codex_home(tmp_path, 'model = "openai/gpt-6-luna"\n')
+    result = detect_harnesses(settings, system.run, system.which, codex_home=tmp_path)
+    codex = {harness.program: harness for harness in result}["codex"]
+    assert codex.model_suggestions == ["openai/gpt-6-luna"]
+    result = detect_harnesses(settings, system.run, system.which, codex_home=tmp_path / "none")
+    codex = {harness.program: harness for harness in result}["codex"]
+    assert codex.model_suggestions == harnesses.BUILT_IN_MODEL_SUGGESTIONS["codex"]
+
+
+@pytest.mark.parametrize(
+    ("config_text", "expected_billing"),
+    [
+        ('model_provider = "openrouter"\n', "metered"),
+        ('model_provider = "openai"\n', "subscription"),
+        ('model_provider = ""\n', "subscription"),
+        ('model = "gpt-5"\n', "subscription"),
+        ("", "subscription"),
+    ],
+)
+def test_codex_billing_follows_model_provider(tmp_path, config_text, expected_billing):
+    write_codex_home(tmp_path, config_text)
+    assert harnesses.codex_billing(tmp_path) == expected_billing
+
+
+def test_billing_per_harness(tmp_path):
+    settings = load_settings(
+        {"ADDA_KEYS_FILE": str(tmp_path / "k"), "ADDA_JEV_KEY_FILE": ""}, tmp_path / "config.toml"
+    )
+    write_codex_home(tmp_path / "codex", 'model_provider = "openrouter"\n')
+    system = FakeSystem(set(PROGRAMS))
+
+    def billing_of(current_settings):
+        found = detect_harnesses(
+            current_settings,
+            system.run,
+            system.which,
+            pi_settings_path=tmp_path / "no-pi.json",
+            codex_home=tmp_path / "codex",
+        )
+        return {harness.program: harness.billing for harness in found}
+
+    assert billing_of(settings) == {
+        "claude": "subscription",
+        "opencode": "metered",
+        "pi": "metered",
+        "codex": "metered",
+    }
+    with_base_url = dict(settings.harnesses)
+    with_base_url["claude"] = replace(
+        settings.harnesses["claude"], base_url="https://proxy.example/v1"
+    )
+    assert billing_of(replace(settings, harnesses=with_base_url))["claude"] == "metered"

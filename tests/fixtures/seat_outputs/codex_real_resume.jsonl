@@ -1,0 +1,5 @@
+{"type":"thread.started","thread_id":"01a152ed-2775-77f2-b158-486b676fa5b5"}
+{"type":"item.completed","item":{"id":"item_0","type":"error","message":"Model metadata for `openai/gpt-5-nano` not found. Defaulting to fallback metadata; this can degrade performance and cause issues."}}
+{"type":"turn.started"}
+{"type":"item.completed","item":{"id":"item_1","type":"agent_message","text":"ok"}}
+{"type":"turn.completed","usage":{"input_tokens":24329,"cached_input_tokens":11904,"cache_write_input_tokens":0,"output_tokens":169,"reasoning_output_tokens":128}}

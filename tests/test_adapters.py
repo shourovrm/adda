@@ -379,12 +379,14 @@ def test_seat_environment_adds_extra_variables_and_still_drops_billing_keys(monk
     assert "ANTHROPIC_API_KEY" not in environment
 
 
-@pytest.mark.parametrize("access", LEVELS)
-def test_codex_falls_back_to_talk_because_its_flags_are_unverified(access):
-    codex = CodexSeat("di")
-    assert codex.build_command("hi", SYSTEM, None, access) == codex.build_command(
-        "hi", SYSTEM, None, "talk"
-    )
+@pytest.mark.parametrize(
+    ("access", "sandbox"),
+    [("talk", "read-only"), ("look", "read-only"), ("work", "workspace-write")],
+)
+def test_codex_maps_access_to_its_sandbox(access, sandbox):
+    # Codex cannot run with no tools, so talk shares look's read-only sandbox.
+    command = CodexSeat("di").build_command("hi", SYSTEM, None, access)
+    assert command[command.index("--sandbox") + 1] == sandbox
 
 
 def test_registry_gives_the_adapter_the_effective_access_and_data_dir(tmp_path):

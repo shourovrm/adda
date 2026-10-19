@@ -13,12 +13,13 @@ View shape (key values never appear, only booleans):
                        "seat_timeout_s", "max_auto_turns", "max_concurrent", "access",
                        "self_reply_penalty", "more_limit", "afterthought_limit",
                        "afterthought_scale"},
-     "harness": {"claude": {"model", "thinking", "enabled", "extra_models"}, ...},
-     "keys": {"openrouter": bool, "typesafe": bool},
+     "harness": {"claude": {"model", "thinking", "enabled", "extra_models", "base_url"}, ...},
+     "keys": {"openrouter": bool, "typesafe": bool, "anthropic_auth_token": bool},
      "env_overrides": ["router.kind", ...]}   # dotted paths of fields an env var is setting
 
 Keys live in `~/.config/adda/keys.env` (mode 600). ANTHROPIC_API_KEY is deliberately never
 read: headless `claude -p` prefers it over the owner's Max login and would bill the API.
+ANTHROPIC_AUTH_TOKEN is read only as the token for a custom `harness.claude.base_url`.
 """
 
 from __future__ import annotations
@@ -46,6 +47,7 @@ JEV_KEY_VARIABLES = {
 KEY_VARIABLES = {
     "openrouter": "OPENROUTER_API_KEY",
     "typesafe": "TYPESAFE_API_KEY",
+    "anthropic_auth_token": "ANTHROPIC_AUTH_TOKEN",
 }
 
 PROGRAMS = ("claude", "opencode", "pi", "codex")
@@ -88,7 +90,13 @@ DEFAULT_VALUES: dict[str, Any] = {
         "afterthought_scale": 1.0,
     },
     "harness": {
-        "claude": {"model": "sonnet", "thinking": "medium", "enabled": True, "extra_models": []},
+        "claude": {
+            "model": "sonnet",
+            "thinking": "medium",
+            "enabled": True,
+            "extra_models": [],
+            "base_url": "",
+        },
         "opencode": {
             "model": "deepseek/deepseek-flash",
             "thinking": "default",
@@ -97,7 +105,8 @@ DEFAULT_VALUES: dict[str, Any] = {
         },
         "pi": {"model": "", "thinking": "default", "enabled": True, "extra_models": []},
         "codex": {
-            "model": "gpt-5-codex",
+            # Empty: codex picks the model from its own ~/.codex/config.toml.
+            "model": "",
             "thinking": "default",
             "enabled": False,
             "extra_models": [],
@@ -143,6 +152,8 @@ class HarnessSettings:
     # Claude only: an Anthropic-compatible endpoint (OpenRouter, a proxy) instead of the Max
     # login; its token lives in keys.env as ANTHROPIC_AUTH_TOKEN. Empty = the login.
     base_url: str = ""
+    # Claude only, filled from keys.env at load time. Never in the settings view or config.toml.
+    auth_token: str = field(default="", repr=False)
 
 
 @dataclass(frozen=True)
@@ -451,6 +462,7 @@ def _settings_from_values(
     jev_api_key: str | None,
     keys_set: dict[str, bool],
     env_overrides: list[str],
+    claude_auth_token: str = "",
 ) -> Settings:
     harnesses = {
         program: HarnessSettings(
@@ -458,6 +470,8 @@ def _settings_from_values(
             thinking=table["thinking"],
             enabled=table["enabled"],
             extra_models=tuple(table["extra_models"]),
+            base_url=table.get("base_url", ""),
+            auth_token=claude_auth_token if program == "claude" else "",
         )
         for program, table in values["harness"].items()
     }
@@ -516,6 +530,7 @@ def load_settings(
         jev_api_key=keys.get(key_variable),
         keys_set=keys_set,
         env_overrides=env_overrides,
+        claude_auth_token=keys.get("ANTHROPIC_AUTH_TOKEN", ""),
     )
 
 
@@ -563,17 +578,25 @@ def settings_view(settings: Settings) -> dict[str, Any]:
             "afterthought_scale": settings.afterthought_scale,
         },
         "harness": {
-            program: {
-                "model": harness.model,
-                "thinking": harness.thinking,
-                "enabled": harness.enabled,
-                "extra_models": list(harness.extra_models),
-            }
+            program: _harness_view(program, harness)
             for program, harness in settings.harnesses.items()
         },
         "keys": dict(settings.keys_set),
         "env_overrides": list(settings.env_overrides),
     }
+
+
+def _harness_view(program: str, harness: HarnessSettings) -> dict[str, Any]:
+    view = {
+        "model": harness.model,
+        "thinking": harness.thinking,
+        "enabled": harness.enabled,
+        "extra_models": list(harness.extra_models),
+    }
+    if program == "claude":
+        # The token (harness.auth_token) is deliberately absent; the keys view says if it is set.
+        view["base_url"] = harness.base_url
+    return view
 
 
 def save_settings(view: dict[str, Any], config_path: Path | None = None) -> Path:

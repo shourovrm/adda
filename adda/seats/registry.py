@@ -46,6 +46,12 @@ def build_adapter(
     if thinking == "default" and harness_settings is not None:
         thinking = harness_settings.thinking
     access = getattr(config, "effective_access", None) or config.access or "talk"
+    extra_arguments = {}
+    if config.program == "claude" and harness_settings is not None:
+        extra_arguments = {
+            "base_url": harness_settings.base_url,
+            "auth_token": harness_settings.auth_token,
+        }
     return adapter_class(
         name=config.name,
         model=model,
@@ -53,4 +59,5 @@ def build_adapter(
         thinking_arguments=thinking_arguments(config.program, thinking),
         access=access,
         data_dir=data_dir,
+        **extra_arguments,
     )
