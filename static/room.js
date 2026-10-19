@@ -1071,7 +1071,7 @@ function buildSeatEditor(seat) {
 
   editor.append(
     labelledField('Name', nameInput),
-    labelledField('Model', modelField.element, modelField.select),
+    labelledField('Model', modelField.element, modelField.input),
     labelledField('Thinking', thinkingSelect),
     labelledField('Persona', personaSelect),
     labelledField('Eagerness', eagerness.element, eagerness.input),
@@ -1166,7 +1166,7 @@ function buildAddSeatForm() {
   form.append(
     labelledField('Name', nameInput),
     labelledField('Agent', harnessSelect),
-    labelledField('Model', modelField.element, modelField.select),
+    labelledField('Model', modelField.element, modelField.input),
     labelledField('Thinking', thinkingSelect),
     labelledField('Persona', personaSelect),
     labelledField('Instruction', instruction.card),

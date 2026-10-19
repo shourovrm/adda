@@ -377,7 +377,7 @@ function appendSeatRow(row) {
     createSeatField(row, 'name', 'Name', nameInput),
     createSeatField(row, 'color', 'Colour', colorInput),
     createSeatField(row, 'harness', 'Agent', harnessSelect),
-    createSeatField(row, 'model', 'Model', modelField.element, modelField.select),
+    createSeatField(row, 'model', 'Model', modelField.element, modelField.input),
     createSeatField(row, 'thinking', 'Thinking', thinkingSelect),
     createSeatField(row, 'persona', 'Persona', personaSelect),
     createSeatField(row, 'access', 'Access', accessSelect),

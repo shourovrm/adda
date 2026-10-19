@@ -551,6 +551,39 @@ dialog::backdrop {
   box-shadow: var(--floating-shadow); /* taste-skill-ignore: a real pop-up menu */
 }
 
+/* ---------- Model picker ---------- */
+
+.model-field {
+  position: relative;
+}
+
+/* The list hangs under its box, as wide as its longest name, and scrolls past six rows. */
+.model-list {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  z-index: 20;
+  width: max-content;
+  min-width: 100%;
+  max-width: min(var(--menu-width), 90vw);
+  max-height: calc(var(--control-height) * 6);
+  margin: 0;
+  padding: var(--space-1) 0;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.model-option {
+  padding: var(--space-1) var(--space-3);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.model-option:hover,
+.model-option[aria-selected="true"] {
+  background: var(--panel);
+}
+
 .toasts {
   position: fixed;
   right: var(--space-4);

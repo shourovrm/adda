@@ -36,7 +36,8 @@ composer's single-line state. Controls use `--text-body`, horizontal padding `--
 no shadow. Text inputs, selects and textareas have a 2px solid `--ink` border (GOV.UK). Focus is a 3px solid
 `--ink` outline with 0 offset on every focusable element; no custom focus per component.
 No `datalist`: the browser draws its suggestion popup itself, so it never matches the selects beside it.
-A model is picked from a select whose last option, "Type a name", swaps in a text box (`createModelField`).
+A model is typed into a box that opens a `.menu` list of the agent's models below it, narrowed as you
+type (`createModelField`, the combobox pattern). Any name can be typed; an empty box is the default.
 
 A control is as wide as its longest expected answer, never as wide as its column (GOV.UK):
 `.input--10` for numbers, `.input--20` for names and short selects, `.input--30` for model names,

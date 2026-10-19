@@ -422,86 +422,120 @@ function fillHarnessSelect(select, harnesses, selectedProgram) {
 }
 
 /**
- * The model picker: a select of the agent's models, where "Type a name" swaps in a text box for a
- * model the list does not know. A datalist was used before, but the browser draws its suggestion
- * popup itself, so it never matched the selects beside it. One control shows at a time and the
- * label's id follows it. `onChange` gets the chosen model name, '' for the agent's default.
+ * The model picker: a text box that opens the agent's models in a list below it and narrows the
+ * list to what is typed; any other name can be typed as well. An empty box means the agent's
+ * default, which the placeholder names. The browser's own datalist popup cannot take the page's
+ * styling, so the page draws the list itself, following the combobox pattern (aria-expanded,
+ * aria-activedescendant, arrow keys, Enter, Escape). `onChange` gets the model name, '' for the
+ * default, once per change.
  */
 function createModelField(harness, onChange) {
-  const TYPE_A_NAME = '\u0000type-a-name';
   const element = createElement('div', 'model-field');
-  const select = document.createElement('select');
   const input = document.createElement('input');
   input.type = 'text';
-  input.placeholder = 'Model name';
-  input.hidden = true;
-  element.append(select, input);
-  let suggestions = [];
+  input.autocomplete = 'off';
+  input.setAttribute('role', 'combobox');
+  input.setAttribute('aria-autocomplete', 'list');
+  input.setAttribute('aria-expanded', 'false');
+  const list = createElement('ul', 'menu model-list');
+  list.id = `model-list-${Math.random().toString(36).slice(2, 9)}`;
+  list.setAttribute('role', 'listbox');
+  list.hidden = true;
+  input.setAttribute('aria-controls', list.id);
+  element.append(input, list);
 
-  function show(control) {
-    const id = select.id || input.id;
-    select.hidden = control !== select;
-    input.hidden = control !== input;
-    select.removeAttribute('id');
-    input.removeAttribute('id');
-    if (id) control.id = id;
+  let suggestions = [];
+  let committed = '';
+  let activeIndex = -1;
+
+  function markActive(index) {
+    const options = [...list.children];
+    // -1 is "no row": the box keeps what was typed, so Enter never swaps a typed name for a row.
+    activeIndex = index < 0 || options.length === 0 ? -1 : Math.min(index, options.length - 1);
+    options.forEach((option, position) => {
+      option.setAttribute('aria-selected', String(position === activeIndex));
+    });
+    if (activeIndex === -1) {
+      input.removeAttribute('aria-activedescendant');
+      return;
+    }
+    input.setAttribute('aria-activedescendant', options[activeIndex].id);
+    options[activeIndex].scrollIntoView({ block: 'nearest' });
+  }
+
+  function close() {
+    list.hidden = true;
+    input.setAttribute('aria-expanded', 'false');
+    markActive(-1);
+  }
+
+  /** Show the models whose name contains the typed text; all of them when the box is empty. */
+  function open() {
+    const typed = input.value.trim().toLowerCase();
+    const matching = suggestions.filter((name) => name.toLowerCase().includes(typed));
+    list.replaceChildren();
+    matching.forEach((name, position) => {
+      const option = createElement('li', 'model-option', name);
+      option.id = `${list.id}-${position}`;
+      option.setAttribute('role', 'option');
+      option.addEventListener('click', () => commit(name));
+      list.append(option);
+    });
+    list.hidden = matching.length === 0;
+    input.setAttribute('aria-expanded', String(matching.length > 0));
+    markActive(-1);
+  }
+
+  function commit(name) {
+    input.value = name;
+    close();
+    if (name === committed) return;
+    committed = name;
+    onChange(name);
   }
 
   function setHarness(nextHarness) {
     suggestions = nextHarness ? nextHarness.model_suggestions : [];
     const defaultModel = nextHarness ? nextHarness.default_model : null;
-    select.replaceChildren();
-    const defaultOption = createElement('option', '', defaultModel ? `Default (${defaultModel})` : 'Default');
-    defaultOption.value = '';
-    select.append(defaultOption);
-    for (const suggestion of suggestions) {
-      const option = createElement('option', '', suggestion);
-      option.value = suggestion;
-      select.append(option);
-    }
-    const typeOption = createElement('option', '', 'Type a name');
-    typeOption.value = TYPE_A_NAME;
-    select.append(typeOption);
+    input.placeholder = defaultModel ? `Default (${defaultModel})` : 'Default';
+    close();
   }
 
   function setValue(model) {
-    const value = model || '';
-    if (value === '' || suggestions.includes(value)) {
-      select.value = value;
-      show(select);
-    } else {
-      input.value = value;
-      show(input);
-    }
+    committed = model || '';
+    input.value = committed;
   }
 
   function value() {
-    return input.hidden ? select.value : input.value.trim();
+    return input.value.trim();
   }
 
   function setDisabled(disabled) {
-    select.disabled = disabled;
     input.disabled = disabled;
   }
 
-  select.addEventListener('change', () => {
-    if (select.value === TYPE_A_NAME) {
-      input.value = '';
-      show(input);
-      input.focus();
-      return;
+  // Pressing in the list (an option, or its scrollbar) must not blur the box and close the list.
+  list.addEventListener('mousedown', (event) => event.preventDefault());
+  input.addEventListener('focus', open);
+  input.addEventListener('click', open);
+  input.addEventListener('input', open);
+  input.addEventListener('blur', () => commit(input.value.trim()));
+  input.addEventListener('keydown', (event) => {
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault();
+      if (list.hidden) open();
+      markActive(activeIndex + (event.key === 'ArrowDown' ? 1 : -1));
+    } else if (event.key === 'Enter' && !list.hidden) {
+      // With the list open, Enter picks; with it closed, Enter reaches the form as usual.
+      event.preventDefault();
+      commit(activeIndex === -1 ? input.value.trim() : list.children[activeIndex].textContent);
+    } else if (event.key === 'Escape') {
+      close();
     }
-    onChange(select.value);
-  });
-  input.addEventListener('change', () => {
-    const typed = input.value.trim();
-    // An emptied box means the default again, so the list comes back.
-    if (typed === '') setValue('');
-    onChange(typed);
   });
 
   setHarness(harness);
-  return { element, select, input, setHarness, setValue, value, setDisabled };
+  return { element, input, setHarness, setValue, value, setDisabled };
 }
 
 function fillThinkingSelect(select, harness, selectedThinking) {

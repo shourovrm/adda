@@ -38,7 +38,7 @@ Rooms page
 - "No rooms yet. Start one with New room." -> nothing: the New room button is beside it
 - "There is no earlier room to copy seats from." -> "No earlier room to copy from.": shorter
 - Seat field "Harness" -> "Agent"; model placeholder "harness default" -> "Default"; summary "2 harnesses" -> "2 agents": vocabulary
-- Model text box with browser suggestions -> a list: "Default (sonnet)" or "Default", the agent's models, then "Type a name", which swaps in a text box with placeholder "Model name" (2026-10-19): the browser draws the suggestion popup itself and it matched no other control. Same control in the room's seat editor, Add seat and Settings
+- Model text box with browser suggestions -> a text box that opens the agent's models in a list below it, narrowed by what is typed; placeholder "Default (sonnet)" or "Default" (2026-10-19): the browser draws the suggestion popup itself and it matched no other control. Same control in the room's seat editor, Add seat and Settings
 - Toast "Could not open the room" -> "Could not create the room": matches the button
 
 Room page

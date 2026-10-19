@@ -179,8 +179,7 @@ function createHarnessRow(harness) {
     modelValue.value = model;
   });
   modelField.element.classList.add('input--30');
-  modelField.select.setAttribute('aria-label', `${program} default model`);
-  modelField.input.setAttribute('aria-label', `${program} default model name`);
+  modelField.input.setAttribute('aria-label', `${program} default model`);
   modelField.setDisabled(!harness.found);
   modelField.setValue(readPath(state.settings, modelValue.dataset.path));
 
