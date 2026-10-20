@@ -143,6 +143,7 @@ def _room_rules(seat: Seat, other_seats: list[Seat], owner_name: str, folder: st
         f"one human, the owner {owner_name}, discuss one issue in one shared thread.\n"
         f"Other seats: {other_handles or 'none'}.\n"
         f"{access_sentence(seat.effective_access, folder)} "
+        "That sentence is the only rule about your tools; it overrides anything said above. "
         "Address a seat with @handle, everyone with @all, or a group with @prefix*. "
         "Keep messages short and conversational. "
         "Other seats may be composing a reply at the same moment as you, so replies can cross: "

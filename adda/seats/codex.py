@@ -24,7 +24,7 @@ Access levels: `codex exec` has `--sandbox read-only|workspace-write|danger-full
 `--ask-for-approval` (exec never stops to ask). Look maps to read-only and work to
 workspace-write. `codex exec resume` has no `--sandbox` flag, so a resumed turn sets the same
 policy with `-c sandbox_mode=...`. Talk is read-only too, because codex cannot be started with
-no tools; the persona prompt tells it to only talk.
+no tools; the access sentence in the room rules tells it to only talk.
 """
 
 from __future__ import annotations
