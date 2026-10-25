@@ -139,6 +139,16 @@
             <input class="input--10" type="number" id="default-auto-turns-input" data-path="room_defaults.max_auto_turns" step="1" min="1">
             <div class="hint">Replies without you before the room pauses.</div>
           </div>
+          <div class="field">
+            <label for="default-afterthoughts-input">Afterthoughts</label>
+            <input class="input--10" type="number" id="default-afterthoughts-input" data-path="room_defaults.afterthought_limit" step="1" min="0">
+            <div class="hint">Chances to speak up in a quiet room. 0 turns them off.</div>
+          </div>
+          <div class="field">
+            <label for="default-afterthought-wait-input">Afterthought wait</label>
+            <input class="input--10" type="number" id="default-afterthought-wait-input" data-path="room_defaults.afterthought_scale" step="0.1" min="0.1">
+            <div class="hint">Multiplies the wait. 0.5 halves it, 2 doubles it.</div>
+          </div>
         </div>
         <div class="field">
           <label for="default-mode-select">Speaking order</label>

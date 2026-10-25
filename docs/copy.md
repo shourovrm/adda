@@ -70,6 +70,7 @@ Settings page
 - "Who decides who speaks" -> "Turn-taking", options "Automatic (Jev)" / "Simple (no network)"; model field -> the list described under Rooms page; key pills "Set"/"Not set"; key placeholders -> "Paste a new key to replace it" / "Paste a key"; key note -> "Saved with Save and never shown again."
 - "Lowest score that may speak" -> "Minimum urge to speak"; "Messages the router sees" -> "Messages considered"
 - Room defaults: "Budget (USD)" -> "Budget" + dollars hint; "Cooldown (s, 0 = off)" -> "Cooldown (seconds)" + "0 turns it off."; "Seat timeout (s)" -> "Reply timeout (seconds)"; "Safety stop (turns)" -> "Pause after (replies)" + "Replies without you before the room pauses."; "Who speaks next" -> "Speaking order"
+- New fields "Afterthoughts" + "Chances to speak up in a quiet room. 0 turns them off." and "Afterthought wait" + "Multiplies the wait. 0.5 halves it, 2 doubles it.": the owner asked to tune the quiet-room timer
 - Folder hints -> "New rooms get a folder here." / "Adda's own data."
 - Agents: "Claude base URL" + hint "Empty uses your Claude login." and key "Claude provider key" (2026-10-19): a Claude seat on OpenRouter or a proxy instead of the Max login
 
